@@ -5,7 +5,10 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
 ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
-LOG_DIR = os.path.expanduser("~/ops/log")
+cwd = os.getcwd()
+LOG_DIR = os.path.expanduser(f"{cwd}/ops/log")
+
+print(LOG_DIR)
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
