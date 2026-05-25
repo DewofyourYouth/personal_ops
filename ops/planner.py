@@ -128,8 +128,9 @@ async def parse_reminder(text):
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "The reminder message"},
-                    "type": {"type": "string", "enum": ["daily", "interval"], "description": "'daily' for once per day at a fixed time, 'interval' for repeating every N minutes"},
-                    "time": {"type": "string", "description": "HH:MM (24h) — required for daily type"},
+                    "type": {"type": "string", "enum": ["once", "daily", "interval"], "description": "'once' for a one-time reminder on a specific date/time (default), 'daily' only if user says 'every day' or 'daily', 'interval' for repeating every N minutes"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD — required for 'once' type. Resolve relative expressions: 'tomorrow', 'in a week', 'on June 23rd', etc. against today's date."},
+                    "time": {"type": "string", "description": "HH:MM (24h) — required for 'once' and 'daily' types"},
                     "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for interval type"},
                     "window_start": {"type": "string", "description": "HH:MM — start of active window for interval type (default 08:00)"},
                     "window_end": {"type": "string", "description": "HH:MM — end of active window for interval type (default 22:00)"},
@@ -138,7 +139,7 @@ async def parse_reminder(text):
             },
         }],
         tool_choice={"type": "tool", "name": "create_reminder"},
-        messages=[{"role": "user", "content": f"Parse this reminder: {text}"}],
+        messages=[{"role": "user", "content": f"Today is {date.today().isoformat()}. Parse this reminder: {text}"}],
     )
     for block in response.content:
         if block.type == "tool_use":

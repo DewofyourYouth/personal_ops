@@ -32,14 +32,24 @@ def remove(reminder_id):
 
 
 def due_now(reminders):
-    """Return reminders that should fire right now."""
+    """Return (due_reminders, updated_reminders_list) — one-time reminders are removed after firing."""
     now = datetime.now(TZ)
+    today = now.date().isoformat()
     current_time = now.time().replace(second=0, microsecond=0)
     current_minutes = now.hour * 60 + now.minute
     due = []
+    remaining = []
 
     for r in reminders:
-        if r["type"] == "daily":
+        fired = False
+
+        if r["type"] == "once":
+            h, m = map(int, r["time"].split(":"))
+            if current_time == time(h, m) and r.get("date", today) == today:
+                due.append(r)
+                fired = True
+
+        elif r["type"] == "daily":
             h, m = map(int, r["time"].split(":"))
             if current_time == time(h, m):
                 due.append(r)
@@ -53,5 +63,11 @@ def due_now(reminders):
             if start_minutes <= current_minutes <= end_minutes:
                 if (current_minutes - start_minutes) % interval == 0:
                     due.append(r)
+
+        if not fired:
+            remaining.append(r)
+
+    if len(remaining) != len(reminders):
+        save(remaining)
 
     return due

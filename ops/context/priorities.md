@@ -28,3 +28,5 @@
 - At least one walk
 - At least 3 strength training sessions per week
 - Writing output at least 3 times per week.
+- Weigh myself in the morning at least 3 times per week and log it in Apple Health
+- Manage weight - lose 10 kg by end of year, then maintain in a healthy range

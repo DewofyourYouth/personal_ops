@@ -47,6 +47,7 @@ PREFIXES = {
 
 # Pending proposal state keyed by chat_id (single-user bot, in-memory is fine)
 _pending: dict = {}
+_awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
 
 
 def _reminded_path():
@@ -269,13 +270,33 @@ _NUM_WORDS = {
 }
 
 def _normalize(text: str) -> str:
-    def _replace(w):
+    def _replace(w: str) -> str:
         clean = w.strip(".,!?;:")
         return _NUM_WORDS.get(clean, w)
     return " ".join(_replace(w) for w in text.split())
 
 
-async def _process_text(text: str, reply) -> None:
+def _parse_time(text: str) -> str | None:
+    text = text.strip().lower()
+    m = re.search(r'(\d{1,2}):(\d{2})', text)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    m = re.search(r'(\d{1,2})\s*(am|pm)', text)
+    if m:
+        h = int(m.group(1))
+        if m.group(2) == 'pm' and h != 12:
+            h += 12
+        elif m.group(2) == 'am' and h == 12:
+            h = 0
+        return f"{h:02d}:00"
+    m = re.match(r'^(\d{1,2})$', text)
+    if m:
+        return f"{int(m.group(1)):02d}:00"
+    return None
+
+
+async def _process_text(text: str, reply, chat_id: int = 0) -> None:
+    update_chat_id = chat_id
     now = datetime.now().strftime("%H:%M")
     lower = _normalize(text.lower()).strip(".,!?;: ")
 
@@ -356,11 +377,26 @@ async def _process_text(text: str, reply) -> None:
             if not parsed:
                 await reply("Couldn't parse the reminder. Try: remind: eat lunch at 13:00 or remind: drink water every 60 minutes")
                 return
-            entry = reminders_mod.add(**parsed)
-            if entry["type"] == "daily":
-                await reply(f"⏰ Reminder set: <b>{html.escape(entry['text'])}</b> daily at {entry['time']}", )
+            from datetime import date as _date
+            extra = {k: v for k, v in parsed.items() if k not in ("text", "type")}
+            if parsed["type"] == "once" and "date" not in extra:
+                extra["date"] = _date.today().isoformat()
+            if parsed["type"] in ("once", "daily") and "time" not in extra:
+                # ask for the time rather than defaulting
+                _awaiting_time[update_chat_id] = {"text": parsed["text"], "type": parsed["type"], **extra}
+                d = extra.get("date", _date.today().isoformat())
+                when = "today" if d == _date.today().isoformat() else d
+                await reply(f"What time on {when} should I remind you?")
+                return
+            entry = reminders_mod.add(text=parsed["text"], reminder_type=parsed["type"], **extra)
+            if entry["type"] == "once":
+                d = entry.get("date", _date.today().isoformat())
+                when = "today" if d == _date.today().isoformat() else d
+                await reply(f"⏰ Reminder set: \"{entry['text']}\" on {when} at {entry['time']}")
+            elif entry["type"] == "daily":
+                await reply(f"⏰ Reminder set: \"{entry['text']}\" every day at {entry['time']}")
             else:
-                await reply(f"⏰ Reminder set: <b>{html.escape(entry['text'])}</b> every {entry['interval_minutes']} min")
+                await reply(f"⏰ Reminder set: \"{entry['text']}\" every {entry['interval_minutes']} min")
         except Exception as e:
             await reply(f"Failed to set reminder: {e}")
         return
@@ -407,7 +443,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await _process_text(text, update.message.reply_text)
+    # intercept time reply for pending reminder
+    if chat_id in _awaiting_time:
+        partial = _awaiting_time.pop(chat_id)
+        t = _parse_time(text)
+        if not t:
+            await update.message.reply_text("Couldn't parse that as a time. Reminder cancelled.")
+            return
+        from datetime import date as _date
+        entry = reminders_mod.add(text=partial["text"], reminder_type=partial["type"],
+                                   **{k: v for k, v in partial.items() if k not in ("text", "type")},
+                                   time=t)
+        d = entry.get("date", _date.today().isoformat())
+        when = "today" if d == _date.today().isoformat() else d
+        await update.message.reply_text(f"⏰ Reminder set: \"{entry['text']}\" on {when} at {t}")
+        return
+
+    await _process_text(text, update.message.reply_text, chat_id=chat_id)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -429,7 +481,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.unlink(tmp_path)
 
     await update.message.reply_text(f'🎙 "{text}"')
-    await _process_text(text, update.message.reply_text)
+    await _process_text(text, update.message.reply_text, chat_id=update.effective_chat.id)
 
 
 # --- Scheduled morning plan ---
