@@ -2,3 +2,6 @@ venv
 .env
 .vscode/settings.json
 ops/log
+*.pyc
+credentials.json
+token.json
