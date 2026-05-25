@@ -37,7 +37,7 @@ def _load_recent_logs(log_dir, days=3):
     return "\n\n".join(entries) if entries else "No recent logs."
 
 
-async def propose(model, log_dir, calendar_events=""):
+async def propose(model, log_dir, calendar_events="", existing_summary=""):
     client = anthropic.AsyncAnthropic()
     context = _load_context()
     recent = _load_recent_logs(log_dir)
@@ -45,6 +45,8 @@ async def propose(model, log_dir, calendar_events=""):
     user_content = f"Today is a {day_type()}.\n\n"
     if calendar_events:
         user_content += f"Today's calendar:\n{calendar_events}\n\n"
+    if existing_summary:
+        user_content += f"Today's agenda so far:\n{existing_summary}\n\n"
     user_content += f"Recent log entries:\n{recent}\n\nPropose today's agenda."
 
     response = await client.messages.create(
@@ -58,6 +60,8 @@ async def propose(model, log_dir, calendar_events=""):
                     "Propose a focused, realistic agenda for today based on the user's goals, "
                     "constraints, calendar, and recent activity. "
                     "Schedule around calendar events — don't suggest deep work blocks that overlap with them. "
+                    "Each item must be a single, independently completable action — never bundle two distinct activities into one item. "
+                    "If today's agenda already has open items, include them in your proposal. Do not re-propose items already marked done or missed. "
                     "Return 3–7 specific, actionable items as a plain numbered list (e.g. '1. Do X'). "
                     "Nothing else — no preamble, no commentary."
                 ),
@@ -105,6 +109,36 @@ async def parse_event(text):
             "role": "user",
             "content": f"Today is {date.today()} ({day_type()}). Parse this event: {text}",
         }],
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            return block.input
+    return None
+
+
+async def parse_reminder(text):
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        tools=[{
+            "name": "create_reminder",
+            "description": "Parse a natural language reminder into structured fields",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The reminder message"},
+                    "type": {"type": "string", "enum": ["daily", "interval"], "description": "'daily' for once per day at a fixed time, 'interval' for repeating every N minutes"},
+                    "time": {"type": "string", "description": "HH:MM (24h) — required for daily type"},
+                    "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for interval type"},
+                    "window_start": {"type": "string", "description": "HH:MM — start of active window for interval type (default 08:00)"},
+                    "window_end": {"type": "string", "description": "HH:MM — end of active window for interval type (default 22:00)"},
+                },
+                "required": ["text", "type"],
+            },
+        }],
+        tool_choice={"type": "tool", "name": "create_reminder"},
+        messages=[{"role": "user", "content": f"Parse this reminder: {text}"}],
     )
     for block in response.content:
         if block.type == "tool_use":

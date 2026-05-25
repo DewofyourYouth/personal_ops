@@ -28,7 +28,7 @@
 
 ## Cognitive load
 
-- Morning is the only deep work window; afternoon is for maintenance tasks
+- Morning is the main deep work window; afternoon is for maintenance tasks
 - Context-switching between job search and dev work within a single day is costly
 - Anki streak must not be broken — low overhead but daily
 
