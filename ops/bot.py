@@ -559,21 +559,31 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_reply_markup(reply_markup=None)
 
 
-HELP_TEXT = """<b>Commands</b>
-/plan — propose today's agenda (also runs at 06:00)
-/agenda — show open items with Done/Missed buttons
-/events — show today's calendar
-/reminders — list recurring reminders (with delete)
-/help — show this message
+HELP_TEXT = """<b>Planning</b>
+/plan — generate today's agenda (also runs daily at 06:00)
+/agenda — view open items with ✅ Done / ❌ Missed buttons
 
-<b>Messages</b>
-<code>done &lt;N or name&gt;</code> — mark agenda item done
-<code>missed &lt;N or name&gt;</code> — mark agenda item missed
-<code>add: &lt;text&gt;</code> — add your own agenda item
-<code>edit &lt;N&gt; &lt;text&gt;</code> — edit an agenda item
+<b>Calendar</b>
+/events — upcoming events for today
 <code>event: &lt;description&gt;</code> — create a Google Calendar event
-<code>remind: &lt;description&gt;</code> — set a recurring reminder
-<code>note: / insight: / task: / hypothesis: / checkin</code> — log an entry
+  e.g. <i>event: dentist tomorrow at 10am</i>
+
+<b>Reminders</b>
+/reminders — list all reminders (tap 🗑 to delete)
+<code>remind me &lt;...&gt;</code> — set a reminder
+  e.g. <i>remind me at 3pm to start a walk</i>
+  e.g. <i>remind me every 60 minutes to drink water</i>
+  e.g. <i>remind me of my meeting on June 15th</i>
+
+<b>Agenda</b>
+<code>done &lt;N or name&gt;</code> — mark item done
+<code>missed &lt;N or name&gt;</code> — mark item missed
+<code>add: &lt;text&gt;</code> — add your own agenda item
+<code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
+
+<b>Logging</b>
+<code>note: / insight: / task: / hypothesis: / checkin</code>
+Anything else is logged as <code>#log</code>
 
 Voice notes are transcribed automatically."""
 
