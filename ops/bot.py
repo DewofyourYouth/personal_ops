@@ -502,6 +502,31 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_reply_markup(reply_markup=None)
 
 
+HELP_TEXT = """<b>Commands</b>
+/plan — propose today's agenda (also runs at 06:00)
+/agenda — show open items with Done/Missed buttons
+/events — show today's calendar
+/reminders — list recurring reminders (with delete)
+/help — show this message
+
+<b>Messages</b>
+<code>done &lt;N or name&gt;</code> — mark agenda item done
+<code>missed &lt;N or name&gt;</code> — mark agenda item missed
+<code>add: &lt;text&gt;</code> — add your own agenda item
+<code>edit &lt;N&gt; &lt;text&gt;</code> — edit an agenda item
+<code>event: &lt;description&gt;</code> — create a Google Calendar event
+<code>remind: &lt;description&gt;</code> — set a recurring reminder
+<code>note: / insight: / task: / hypothesis: / checkin</code> — log an entry
+
+Voice notes are transcribed automatically."""
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+
+
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     due = reminders_mod.due_now(reminders_mod.load())
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✓ Dismiss", callback_data="remind_dismiss")]])
@@ -519,6 +544,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
 
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("agenda", cmd_agenda))
     app.add_handler(CommandHandler("events", cmd_events))
