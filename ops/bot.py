@@ -269,7 +269,10 @@ _NUM_WORDS = {
 }
 
 def _normalize(text: str) -> str:
-    return " ".join(_NUM_WORDS.get(w, w) for w in text.split())
+    def _replace(w):
+        clean = w.strip(".,!?;:")
+        return _NUM_WORDS.get(clean, w)
+    return " ".join(_replace(w) for w in text.split())
 
 
 async def _process_text(text: str, reply) -> None:
@@ -280,7 +283,9 @@ async def _process_text(text: str, reply) -> None:
     edit_match = re.match(r"^edit\s+(\d+)\s+(.+)$", lower)
     if edit_match:
         item_id = int(edit_match.group(1)) - 1
-        new_text = text[edit_match.start(2):]
+        # Extract new text from original (preserves case, avoids offset mismatch after normalization)
+        orig_match = re.match(r"^edit\s+\S+\s+(.*?)[\s.,!?;:]*$", text, re.IGNORECASE)
+        new_text = orig_match.group(1) if orig_match else edit_match.group(2)
         agenda.edit_item(LOG_DIR, item_id, new_text)
         await reply(f"✏️ Item {item_id + 1} updated.")
         return
@@ -342,9 +347,9 @@ async def _process_text(text: str, reply) -> None:
             await reply(f"Failed to create event: {e}")
         return
 
-    # remind: — create a recurring reminder
-    if lower.startswith("remind:"):
-        reminder_text = text[7:].strip()
+    # remind: / remind me — create a recurring reminder
+    if lower.startswith("remind:") or lower.startswith("remind me"):
+        reminder_text = re.sub(r"^remind(:|(\s+me\b))\s*", "", text, flags=re.IGNORECASE).strip()
         await reply("⏰ Parsing reminder…")
         try:
             parsed = await planner.parse_reminder(reminder_text)

@@ -29,11 +29,10 @@ def _service():
 
 def get_today_events():
     now = datetime.now(TZ)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
+    end = now.replace(hour=23, minute=59, second=59, microsecond=0)
     result = _service().events().list(
         calendarId="primary",
-        timeMin=start.isoformat(),
+        timeMin=now.isoformat(),
         timeMax=end.isoformat(),
         singleEvents=True,
         orderBy="startTime",
