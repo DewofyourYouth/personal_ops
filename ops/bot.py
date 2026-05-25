@@ -104,26 +104,35 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_proposal(update.effective_chat.id, context)
 
 
+def _reminder_label(r: dict) -> str:
+    if r["type"] == "once":
+        return f"⏰ {r['text']} — {r.get('date', 'today')} at {r.get('time', '?')}"
+    elif r["type"] == "daily":
+        return f"⏰ {r['text']} — daily at {r['time']}"
+    else:
+        return f"⏰ {r['text']} — every {r['interval_minutes']} min"
+
+
+def _reminders_keyboard(all_reminders: list) -> InlineKeyboardMarkup:
+    rows = []
+    for r in all_reminders:
+        rows.append([
+            InlineKeyboardButton(_reminder_label(r), callback_data="noop"),
+            InlineKeyboardButton("🗑", callback_data=f"rm_del:{r['id']}"),
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
 async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     all_reminders = reminders_mod.load()
     if not all_reminders:
-        await update.message.reply_text("No recurring reminders set. Use remind: to add one.")
+        await update.message.reply_text("No reminders set. Use 'remind me...' to add one.")
         return
-    rows = []
-    for r in all_reminders:
-        if r["type"] == "daily":
-            label = f"⏰ {r['text']} — daily at {r['time']}"
-        else:
-            label = f"⏰ {r['text']} — every {r['interval_minutes']} min"
-        rows.append([
-            InlineKeyboardButton(label, callback_data="noop"),
-            InlineKeyboardButton("🗑", callback_data=f"rm_del:{r['id']}"),
-        ])
     await update.message.reply_text(
-        "⏰ <b>Recurring reminders:</b>", parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(rows)
+        "⏰ <b>Reminders:</b>", parse_mode="HTML",
+        reply_markup=_reminders_keyboard(all_reminders)
     )
 
 
