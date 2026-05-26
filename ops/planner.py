@@ -1,4 +1,6 @@
+import json
 import re
+from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -31,22 +33,57 @@ def _load_recent_logs(log_dir, days=3):
     entries = []
     for i in range(1, days + 1):
         d = date.today() - timedelta(days=i)
-        path = Path(log_dir) / f"{d}.md"
+        path = Path(log_dir) / f"{d}.jsonl"
         if path.exists():
-            entries.append(f"### {d}\n{path.read_text().strip()}")
+            lines = []
+            for line in path.read_text().splitlines():
+                try:
+                    e = json.loads(line)
+                    lines.append(f"[{e['ts']}] #{e['tag']}: {e['content']}")
+                except Exception:
+                    pass
+            if lines:
+                entries.append(f"### {d}\n" + "\n".join(lines))
     return "\n\n".join(entries) if entries else "No recent logs."
+
+
+def _load_completion_history(log_dir, days=14):
+    counts: dict = defaultdict(lambda: {"done": 0, "missed": 0, "total": 0})
+    for i in range(1, days + 1):
+        d = date.today() - timedelta(days=i)
+        path = Path(log_dir) / f"{d}-agenda.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+            for item in data.get("items", []):
+                key = item["text"].lower()[:60]
+                counts[key]["total"] += 1
+                if item["status"] in ("done", "missed"):
+                    counts[key][item["status"]] += 1
+        except Exception:
+            pass
+
+    lines = []
+    for text, c in sorted(counts.items(), key=lambda x: -x[1]["total"]):
+        if c["total"] >= 2:
+            lines.append(f"- \"{text}\": done {c['done']}/{c['total']}, missed {c['missed']}/{c['total']}")
+    return ("Completion history (last 14 days):\n" + "\n".join(lines)) if lines else ""
 
 
 async def propose(model, log_dir, calendar_events="", existing_summary=""):
     client = anthropic.AsyncAnthropic()
     context = _load_context()
     recent = _load_recent_logs(log_dir)
+    history = _load_completion_history(log_dir)
 
     user_content = f"Today is a {day_type()}.\n\n"
     if calendar_events:
         user_content += f"Today's calendar:\n{calendar_events}\n\n"
     if existing_summary:
         user_content += f"Today's agenda so far:\n{existing_summary}\n\n"
+    if history:
+        user_content += f"{history}\n\n"
     user_content += f"Recent log entries:\n{recent}\n\nPropose today's agenda."
 
     response = await client.messages.create(
@@ -62,6 +99,8 @@ async def propose(model, log_dir, calendar_events="", existing_summary=""):
                     "Schedule around calendar events — don't suggest deep work blocks that overlap with them. "
                     "Each item must be a single, independently completable action — never bundle two distinct activities into one item. "
                     "If today's agenda already has open items, include them in your proposal. Do not re-propose items already marked done or missed. "
+                    "Use completion history to calibrate: if the user consistently misses an item type, reduce its frequency or reframe it as smaller. "
+                    "If they consistently complete something, keep it. Adapt to their real capacity, not their ideal. "
                     "Return 3–7 specific, actionable items as a plain numbered list (e.g. '1. Do X'). "
                     "Nothing else — no preamble, no commentary."
                 ),
@@ -132,8 +171,8 @@ async def parse_reminder(text):
                     "date": {"type": "string", "description": "YYYY-MM-DD — required for 'once' type. Resolve relative expressions: 'tomorrow', 'in a week', 'on June 23rd', etc. against today's date."},
                     "time": {"type": "string", "description": "HH:MM (24h) — required for 'once' and 'daily' types"},
                     "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for interval type"},
-                    "window_start": {"type": "string", "description": "HH:MM — start of active window for interval type (default 08:00)"},
-                    "window_end": {"type": "string", "description": "HH:MM — end of active window for interval type (default 22:00)"},
+                    "window_start": {"type": "string", "description": "HH:MM — start of active window for interval type. Only set if user explicitly says a start time (e.g. 'from 9am'). Do NOT set a default — the system defaults to 08:00."},
+                    "window_end": {"type": "string", "description": "HH:MM — end of active window for interval type. Only set if user explicitly says an end time (e.g. 'until 6pm'). Do NOT set a default — the system defaults to 22:00."},
                 },
                 "required": ["text", "type"],
             },

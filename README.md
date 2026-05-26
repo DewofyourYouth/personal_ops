@@ -29,7 +29,7 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 | `missed <N or name>` | Mark agenda item missed |
 | `add: <text>` | Add your own agenda item |
 | `edit <N> <new text>` | Edit an agenda item |
-| `event: <description>` | Create a Google Calendar event |
+| `event: <description>` / `new calendar event: …` / `add to calendar: …` | Create a Google Calendar event |
 | `remind me <...>` | Set a reminder (one-time or recurring) |
 | `note: / insight: / task: / hypothesis: / checkin` | Log a structured entry |
 | *(anything else)* | Logged as `#log` |

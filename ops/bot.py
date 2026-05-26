@@ -1,10 +1,13 @@
 import asyncio
 import difflib
 import html
+import json
 import os
+import random
 import re
 import tempfile
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import openai
@@ -45,9 +48,31 @@ PREFIXES = {
     "note:": "#note",
 }
 
+CONTEXT_DIR = Path(__file__).parent / "context"
+CONTEXT_FILES = ["goals.md", "priorities.md", "constraints.md", "projects.md", "principles.md"]
+
 # Pending proposal state keyed by chat_id (single-user bot, in-memory is fine)
 _pending: dict = {}
-_awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
+_awaiting_time: dict = {}    # chat_id -> partial reminder dict waiting for a time reply
+_awaiting_context: dict = {} # chat_id -> filename waiting for new content
+
+_ENCOURAGEMENTS = [
+    "Look at you, a functioning adult!",
+    "Your future self just breathed a sigh of relief.",
+    "Scientists confirm: doing things is better than not doing things.",
+    "Task defeated. It never stood a chance.",
+    "You absolute legend. Probably.",
+    "Gold star. Imaginary, but still.",
+    "This is going straight to your permanent record. The good one.",
+    "Somewhere a productivity guru is shedding a single tear of joy.",
+    "Your mom would be proud. Assuming she cares about task management.",
+    "That task is dead. You killed it. No regrets.",
+    "Wow. Just... wow. (Keep going.)",
+    "The dopamine was real. Ride it.",
+]
+
+def _encourage() -> str:
+    return random.choice(_ENCOURAGEMENTS)
 
 
 def _reminded_path():
@@ -105,17 +130,28 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _reminder_label(r: dict) -> str:
+    text = r["text"]
+    short = text if len(text) <= 20 else text[:17] + "…"
     if r["type"] == "once":
-        return f"⏰ {r['text']} — {r.get('date', 'today')} at {r.get('time', '?')}"
+        return f"⏰ {short} — {r.get('date', 'today')} {r.get('time', '?')}"
     elif r["type"] == "daily":
-        return f"⏰ {r['text']} — daily at {r['time']}"
+        return f"⏰ {short} — daily {r['time']}"
     else:
-        return f"⏰ {r['text']} — every {r['interval_minutes']} min"
+        return f"⏰ {short} — every {r['interval_minutes']}m"
+
+
+def _reminder_sort_key(r: dict) -> tuple:
+    if r["type"] == "once":
+        return (0, r.get("date", "9999-99-99"), r.get("time", "99:99"))
+    elif r["type"] == "daily":
+        return (1, "", r.get("time", "99:99"))
+    else:
+        return (2, "", r.get("window_start", "99:99"))
 
 
 def _reminders_keyboard(all_reminders: list) -> InlineKeyboardMarkup:
     rows = []
-    for r in all_reminders:
+    for r in sorted(all_reminders, key=_reminder_sort_key):
         rows.append([
             InlineKeyboardButton(_reminder_label(r), callback_data="noop"),
             InlineKeyboardButton("🗑", callback_data=f"rm_del:{r['id']}"),
@@ -143,19 +179,9 @@ async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_T
     reminders_mod.remove(reminder_id)
     all_reminders = reminders_mod.load()
     if not all_reminders:
-        await query.edit_message_text("All recurring reminders removed.")
+        await query.edit_message_text("All reminders removed.")
         return
-    rows = []
-    for r in all_reminders:
-        if r["type"] == "daily":
-            label = f"⏰ {r['text']} — daily at {r['time']}"
-        else:
-            label = f"⏰ {r['text']} — every {r['interval_minutes']} min"
-        rows.append([
-            InlineKeyboardButton(label, callback_data="noop"),
-            InlineKeyboardButton("🗑", callback_data=f"rm_del:{r['id']}"),
-        ])
-    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+    await query.edit_message_reply_markup(reply_markup=_reminders_keyboard(all_reminders))
 
 
 async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,6 +195,18 @@ async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📅 <b>Today's events:</b>\n{html.escape(text)}", parse_mode="HTML")
 
 
+def _agenda_message(open_items: list) -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["📋 <b>Open items:</b>\n"]
+    rows = []
+    for i, item in enumerate(open_items, 1):
+        lines.append(f"{i}. {html.escape(item['text'])}")
+        rows.append([
+            InlineKeyboardButton(f"✅ {i} Done", callback_data=f"ag_done:{item['id']}"),
+            InlineKeyboardButton(f"❌ {i} Missed", callback_data=f"ag_missed:{item['id']}"),
+        ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
 async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -176,42 +214,24 @@ async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not open_items:
         await update.message.reply_text("No open agenda items. Use /plan to generate one.")
         return
-    rows = []
-    for item in open_items:
-        label = item["text"] if len(item["text"]) <= 40 else item["text"][:37] + "…"
-        rows.append([InlineKeyboardButton(html.escape(label), callback_data="noop")])
-        rows.append([
-            InlineKeyboardButton("✅ Done", callback_data=f"ag_done:{item['id']}"),
-            InlineKeyboardButton("❌ Missed", callback_data=f"ag_missed:{item['id']}"),
-        ])
-    keyboard = InlineKeyboardMarkup(rows)
-    await update.message.reply_text("📋 <b>Open items:</b>", parse_mode="HTML", reply_markup=keyboard)
+    text, keyboard = _agenda_message(open_items)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data == "noop":
-        return
-    action, item_id = data.split(":")[0], int(data.split(":")[1])
+    action, item_id = query.data.split(":")[0], int(query.data.split(":")[1])
     status = "done" if action == "ag_done" else "missed"
     agenda.mark_status(LOG_DIR, item_id, status)
 
-    # refresh the keyboard with remaining open items
+    await query.answer(_encourage() if status == "done" else "Marked missed.")
+
     open_items = agenda.get_open(LOG_DIR)
     if not open_items:
         await query.edit_message_text("✅ All items resolved.")
         return
-    rows = []
-    for item in open_items:
-        label = item["text"] if len(item["text"]) <= 40 else item["text"][:37] + "…"
-        rows.append([InlineKeyboardButton(html.escape(label), callback_data="noop")])
-        rows.append([
-            InlineKeyboardButton("✅ Done", callback_data=f"ag_done:{item['id']}"),
-            InlineKeyboardButton("❌ Missed", callback_data=f"ag_missed:{item['id']}"),
-        ])
-    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+    text, keyboard = _agenda_message(open_items)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 # --- Proposal callback ---
@@ -327,7 +347,8 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         item_id = n - 1
         agenda.mark_status(LOG_DIR, item_id, action)
         icon = "✅" if action == "done" else "❌"
-        await reply(f"{icon} Item {n} marked {action}.")
+        suffix = f" {_encourage()}" if action == "done" else ""
+        await reply(f"{icon} Item {n} marked {action}.{suffix}")
         return
 
     # done <name> / missed <name> — mark by fuzzy name match
@@ -345,19 +366,28 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 item = open_items[item_texts.index(matches[0])]
                 agenda.mark_status(LOG_DIR, item["id"], action)
                 icon = "✅" if action == "done" else "❌"
-                await reply(f"{icon} \"{item['text']}\" marked {action}.")
+                suffix = f" {_encourage()}" if action == "done" else ""
+                await reply(f"{icon} \"{item['text']}\" marked {action}.{suffix}")
                 return
         await reply(f"Couldn't match \"{query_text}\" to any open agenda item.")
         return
 
-    # event: — create a Google Calendar event
-    if lower.startswith("event:"):
-        event_text = text[6:].strip()
+    # event: / new event / add to calendar / etc — create a Google Calendar event
+    _event_pattern = re.match(
+        r"^(?:new\s+)?(?:calendar\s+)?event[:\s]+(.+)$"
+        r"|^add(?:\s+(?:calendar\s+)?event)[:\s]+(.+)$"
+        r"|^add\s+to\s+(?:(?:google\s+)?calendar)[:\s]+(.+)$",
+        lower,
+    )
+    if _event_pattern:
+        event_text = next(g for g in _event_pattern.groups() if g is not None)
+        # use original text with preserved case, same offset as matched group
+        event_text = text[lower.index(event_text):].strip()
         await reply("📅 Parsing event…")
         try:
             parsed = await planner.parse_event(event_text)
             if not parsed:
-                await reply("Couldn't parse the event. Try: event: Meeting with X tomorrow at 3pm")
+                await reply("Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am")
                 return
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("Asia/Jerusalem")
@@ -405,7 +435,9 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
             elif entry["type"] == "daily":
                 await reply(f"⏰ Reminder set: \"{entry['text']}\" every day at {entry['time']}")
             else:
-                await reply(f"⏰ Reminder set: \"{entry['text']}\" every {entry['interval_minutes']} min")
+                ws = entry.get("window_start", "08:00")
+                we = entry.get("window_end", "22:00")
+                await reply(f"⏰ Reminder set: \"{entry['text']}\" every {entry['interval_minutes']} min ({ws}–{we})")
         except Exception as e:
             await reply(f"Failed to set reminder: {e}")
         return
@@ -418,19 +450,24 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         return
 
     # standard log entry
-    tag = "#log"
+    tag = "log"
     content = text
     for prefix, t in PREFIXES.items():
         if lower.startswith(prefix):
-            tag = t
+            tag = t.lstrip("#")
             content = text[len(prefix):].strip()
             break
 
-    log_file = os.path.join(LOG_DIR, f"{datetime.now().date()}.md")
+    entry = {
+        "ts": datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
+        "tag": tag,
+        "content": content,
+    }
+    log_file = os.path.join(LOG_DIR, f"{datetime.now().date()}.jsonl")
     with open(log_file, "a") as f:
-        f.write(f"\n## {now} {tag}\n{content}\n")
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    await reply(f"Logged {tag} ✓")
+    await reply(f"Logged #{tag} ✓")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,6 +487,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=_proposal_keyboard(state["items"], state["selected"]),
         )
+        return
+
+    # intercept context file edit
+    if chat_id in _awaiting_context:
+        fname = _awaiting_context.pop(chat_id)
+        if text.strip().lower() == "/cancel":
+            await update.message.reply_text("Edit cancelled.")
+            return
+        path = CONTEXT_DIR / fname
+        path.write_text(text)
+        title = fname.replace(".md", "").title()
+        await update.message.reply_text(f"✅ {title} updated.")
         return
 
     # intercept time reply for pending reminder
@@ -540,7 +589,19 @@ async def _send_proposal(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+QUIET_START = time(0, 0)   # 00:00
+QUIET_END   = time(8, 0)   # 08:00
+EVENT_QUIET_END = time(22, 0)  # 22:00
+
+
+def _in_active_window() -> bool:
+    now_t = datetime.now(ZoneInfo("Asia/Jerusalem")).time().replace(second=0, microsecond=0)
+    return QUIET_END <= now_t <= EVENT_QUIET_END
+
+
 async def remind_upcoming(context: ContextTypes.DEFAULT_TYPE):
+    if not _in_active_window():
+        return
     try:
         events = await asyncio.to_thread(gcal.get_upcoming_events, within_minutes=15)
     except Exception:
@@ -575,7 +636,8 @@ HELP_TEXT = """<b>Planning</b>
 <b>Calendar</b>
 /events — upcoming events for today
 <code>event: &lt;description&gt;</code> — create a Google Calendar event
-  e.g. <i>event: dentist tomorrow at 10am</i>
+  e.g. <i>new calendar event: PTA meeting April 13th at 4:20pm</i>
+  e.g. <i>add to calendar: dentist tomorrow at 10am</i>
 
 <b>Reminders</b>
 /reminders — list all reminders (tap 🗑 to delete)
@@ -590,6 +652,9 @@ HELP_TEXT = """<b>Planning</b>
 <code>add: &lt;text&gt;</code> — add your own agenda item
 <code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
 
+<b>Context</b>
+/context — view and edit your goals, priorities, constraints, projects, principles
+
 <b>Logging</b>
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
@@ -601,6 +666,54 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+
+
+async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    rows = [
+        [InlineKeyboardButton(f.replace(".md", "").title(), callback_data=f"ctx_view:{f}")]
+        for f in CONTEXT_FILES
+    ]
+    await update.message.reply_text("📁 <b>Context files:</b>", parse_mode="HTML",
+                                    reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("ctx_view:"):
+        fname = data.split(":", 1)[1]
+        path = CONTEXT_DIR / fname
+        content = path.read_text().strip() if path.exists() else "(empty)"
+        title = fname.replace(".md", "").title()
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Edit", callback_data=f"ctx_edit:{fname}"),
+            InlineKeyboardButton("« Back", callback_data="ctx_back"),
+        ]])
+        text = f"📄 <b>{title}</b>\n\n{html.escape(content)}"
+        if len(text) > 4000:
+            text = text[:4000] + "\n…(truncated)"
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    elif data.startswith("ctx_edit:"):
+        fname = data.split(":", 1)[1]
+        _awaiting_context[query.message.chat_id] = fname
+        title = fname.replace(".md", "").title()
+        await query.edit_message_text(
+            f"✏️ Send new content for <b>{title}</b>.\n\n<i>This replaces the entire file. Send /cancel to abort.</i>",
+            parse_mode="HTML",
+        )
+
+    elif data == "ctx_back":
+        rows = [
+            [InlineKeyboardButton(f.replace(".md", "").title(), callback_data=f"ctx_view:{f}")]
+            for f in CONTEXT_FILES
+        ]
+        await query.edit_message_text("📁 <b>Context files:</b>", parse_mode="HTML",
+                                      reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
@@ -625,10 +738,12 @@ def main():
     app.add_handler(CommandHandler("agenda", cmd_agenda))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
+    app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
-    app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_|^noop$"))
+    app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss$"))
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
+    app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
