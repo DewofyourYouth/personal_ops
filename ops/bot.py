@@ -46,6 +46,7 @@ PREFIXES = {
     "checkin": "#checkin",
     "task:": "#task",
     "note:": "#note",
+    "did:": "#win",
 }
 
 CONTEXT_DIR = Path(__file__).parent / "context"
@@ -656,6 +657,8 @@ HELP_TEXT = """<b>Planning</b>
 /context — view and edit your goals, priorities, constraints, projects, principles
 
 <b>Logging</b>
+/logs — view today's log entries
+<code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
 
@@ -666,6 +669,31 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+
+
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    from datetime import date as _date
+    log_file = os.path.join(LOG_DIR, f"{_date.today()}.jsonl")
+    if not os.path.exists(log_file):
+        await update.message.reply_text("No log entries today.")
+        return
+    lines = []
+    for line in open(log_file):
+        try:
+            e = json.loads(line)
+            t = e["ts"][11:16]  # HH:MM from ISO timestamp
+            lines.append(f"<code>{t}</code> <b>#{e['tag']}</b> {html.escape(e['content'])}")
+        except Exception:
+            pass
+    if not lines:
+        await update.message.reply_text("No log entries today.")
+        return
+    text = f"📋 <b>Today's log ({len(lines)} entries):</b>\n\n" + "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n…(truncated)"
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -739,6 +767,7 @@ def main():
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("context", cmd_context))
+    app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss$"))
