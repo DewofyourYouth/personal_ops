@@ -59,6 +59,13 @@ PREFIXES = {
     "did:":        "#win",
 }
 
+# Matches "feedback:", "feedback request", "question:", "I have a question", etc.
+_FEEDBACK_RE = re.compile(
+    r"^(?:feedback(?:\s+request)?|question|i\s+have\s+a\s+(?:question|thought)|i\s+want\s+(?:feedback|your\s+take))"
+    r"(?:[,:.\s\-]+(.+))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Matches "checkin", "checking in", "check in", "update", "status update", etc.
 _CHECKIN_RE = re.compile(
     r"^(?:check(?:ing|in)?(?:\s+in)?|update|status(?:\s+update)?)"
@@ -521,6 +528,22 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         await reply(f"📊 Metric logged: {key} = {raw_val}")
         return
 
+    # feedback request — log it and respond with Claude's take
+    feedback_m = _FEEDBACK_RE.match(text)
+    if feedback_m:
+        content = (feedback_m.group(1) or "").strip()
+        if not content:
+            await reply("What's on your mind? Send your idea or question after 'feedback:'")
+            return
+        logs.write("feedback", content)
+        await reply("💭 Thinking…")
+        try:
+            response_text = await planner_.feedback(content)
+            await reply(response_text)
+        except Exception as e:
+            await reply(f"Feedback failed: {e}")
+        return
+
     # standard log entry — match prefix keyword regardless of trailing punctuation/case
     tag = "log"
     content = text
@@ -734,6 +757,7 @@ HELP_TEXT = """<b>Planning</b>
 <b>Logging</b>
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric (e.g. <i>metric: steps 8000</i>)
 <code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
+<code>feedback: &lt;idea or question&gt;</code> — get Claude's take (also: "feedback request", "question")
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
 

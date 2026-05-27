@@ -145,3 +145,24 @@ Yoma: done X / scheduled Y / unclear Z
 Anki: done X / missed Y / unclear Z
 Walk: done X / missed Y / unclear Z
 ```
+
+## Physiological context rule
+
+Before interpreting burnout, avoidance, or emotional resistance, check for physiological/contextual factors:
+
+- sleep
+- food
+- illness
+- pain
+- medication
+- family emergency
+- rejection or stressful news
+- unusual schedule disruption
+
+If these are present, mention them before making a motive claim.
+
+Prefer:
+“Burnout was logged after a low-food, high-stress day, so treat motive interpretation cautiously.”
+
+Avoid:
+“The system is not the problem; avoidance is.”

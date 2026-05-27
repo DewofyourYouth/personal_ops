@@ -124,6 +124,33 @@ class Planner:
         )
         return response.content[0].text.strip()
 
+    async def feedback(self, text: str) -> str:
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=400,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You are a personal ops assistant giving feedback on an idea, question, or plan. "
+                        "Follow the tone in bot-personality.md: warm, direct, practical. "
+                        "Be concise — this is a Telegram message. "
+                        "Structure your response as: what's strong, what's weak or worth watching, one concrete next step or question. "
+                        "No hype. No generic advice. No long preamble."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            messages=[{"role": "user", "content": text}],
+        )
+        return response.content[0].text.strip()
+
     async def parse_event(self, text: str) -> dict | None:
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
