@@ -7,3 +7,4 @@ credentials.json
 token.json
 ops/.DS_Store
 .DS_Store
+ops/reminders.json
