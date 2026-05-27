@@ -29,21 +29,42 @@ def _load_context():
     return "\n\n".join(parts)
 
 
+def _parse_md_log(text: str) -> list[str]:
+    lines = []
+    tag = content = None
+    for line in text.splitlines():
+        m = re.match(r"^## (\d{2}:\d{2}) (#\w+)$", line)
+        if m:
+            if tag and content:
+                lines.append(f"[{m.group(1)}] {tag}: {content}")
+            tag, content = m.group(2), ""
+        elif tag is not None:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("- [ ]") and stripped != "## Agenda":
+                content = (content + " " + stripped).strip()
+    if tag and content:
+        lines.append(f"[?] {tag}: {content}")
+    return lines
+
+
 def _load_recent_logs(log_dir, days=3):
     entries = []
     for i in range(1, days + 1):
         d = date.today() - timedelta(days=i)
-        path = Path(log_dir) / f"{d}.jsonl"
-        if path.exists():
-            lines = []
-            for line in path.read_text().splitlines():
+        jsonl_path = Path(log_dir) / f"{d}.jsonl"
+        md_path = Path(log_dir) / f"{d}.md"
+        lines = []
+        if jsonl_path.exists():
+            for line in jsonl_path.read_text().splitlines():
                 try:
                     e = json.loads(line)
                     lines.append(f"[{e['ts']}] #{e['tag']}: {e['content']}")
                 except Exception:
                     pass
-            if lines:
-                entries.append(f"### {d}\n" + "\n".join(lines))
+        elif md_path.exists():
+            lines = _parse_md_log(md_path.read_text())
+        if lines:
+            entries.append(f"### {d}\n" + "\n".join(lines))
     return "\n\n".join(entries) if entries else "No recent logs."
 
 
@@ -72,7 +93,7 @@ def _load_completion_history(log_dir, days=14):
 
 
 async def propose(model, log_dir, calendar_events="", existing_summary=""):
-    client = anthropic.AsyncAnthropic()
+    client = anthropic.AsyncAnthropic(max_retries=4)
     context = _load_context()
     recent = _load_recent_logs(log_dir)
     history = _load_completion_history(log_dir)
@@ -124,7 +145,7 @@ async def propose(model, log_dir, calendar_events="", existing_summary=""):
 
 
 async def digest(model, log_dir, days=7):
-    client = anthropic.AsyncAnthropic()
+    client = anthropic.AsyncAnthropic(max_retries=4)
     context = _load_context()
     logs = _load_recent_logs(log_dir, days=days)
     history = _load_completion_history(log_dir, days=days)

@@ -467,13 +467,16 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         await reply(f"Added to agenda: {item_text}")
         return
 
-    # standard log entry
+    # standard log entry — match prefix keyword regardless of trailing punctuation/case
     tag = "log"
     content = text
+    first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
+    first_word = first_word_m.group(1) if first_word_m else ""
     for prefix, t in PREFIXES.items():
-        if lower.startswith(prefix):
+        keyword = prefix.rstrip(": ")
+        if first_word == keyword or lower.startswith(prefix):
             tag = t.lstrip("#")
-            content = text[len(prefix):].strip()
+            content = re.sub(r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE).strip()
             break
 
     entry = {
