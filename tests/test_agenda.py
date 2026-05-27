@@ -75,6 +75,22 @@ def test_edit_item_returns_none_for_missing_id(agenda):
     assert old is None
 
 
+def test_accept_items_deduplicates(agenda):
+    agenda.accept_items(["Do laundry", "Job search"])
+    agenda.accept_items(["Job search", "Walk"])  # "Job search" already exists
+    items = agenda.load()["items"]
+    texts = [i["text"] for i in items]
+    assert texts.count("Job search") == 1
+    assert "Do laundry" in texts
+    assert "Walk" in texts
+
+
+def test_accept_items_dedup_case_insensitive(agenda):
+    agenda.accept_items(["Anki review"])
+    agenda.accept_items(["anki review"])  # same, different case
+    assert len(agenda.load()["items"]) == 1
+
+
 def test_accept_custom_source(agenda):
     items = agenda.accept_items(["Manual task"], source="manual")
     assert items[0]["source"] == "manual"

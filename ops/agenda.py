@@ -20,11 +20,13 @@ class Agenda:
 
     def accept_items(self, texts: list, source: str = "llm") -> list:
         data = self.load()
+        existing = {item["text"].strip().lower() for item in data["items"]}
         start = len(data["items"])
-        new_items = [
-            {"id": start + i, "text": text, "status": "open", "source": source}
-            for i, text in enumerate(texts)
-        ]
+        new_items = []
+        for text in texts:
+            if text.strip().lower() not in existing:
+                new_items.append({"id": start + len(new_items), "text": text, "status": "open", "source": source})
+                existing.add(text.strip().lower())
         data["items"].extend(new_items)
         self.save(data)
         return new_items
