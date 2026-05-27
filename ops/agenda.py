@@ -29,13 +29,16 @@ class Agenda:
         self.save(data)
         return new_items
 
-    def edit_item(self, item_id: int, text: str):
+    def edit_item(self, item_id: int, text: str) -> str | None:
         data = self.load()
+        old_text = None
         for item in data["items"]:
             if item["id"] == item_id:
+                old_text = item["text"]
                 item["text"] = text
                 break
         self.save(data)
+        return old_text
 
     def mark_status(self, item_id: int, status: str):
         data = self.load()

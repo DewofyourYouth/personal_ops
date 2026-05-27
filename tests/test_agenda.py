@@ -64,8 +64,15 @@ def test_get_open_filters(agenda):
 
 def test_edit_item(agenda):
     agenda.accept_items(["Old text"])
-    agenda.edit_item(0, "New text")
+    old = agenda.edit_item(0, "New text")
     assert agenda.load()["items"][0]["text"] == "New text"
+    assert old == "Old text"
+
+
+def test_edit_item_returns_none_for_missing_id(agenda):
+    agenda.accept_items(["Something"])
+    old = agenda.edit_item(99, "irrelevant")
+    assert old is None
 
 
 def test_accept_custom_source(agenda):

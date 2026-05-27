@@ -384,7 +384,8 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         actual_id = open_items[n - 1]["id"]
         orig_match = re.match(r"^edit\s+\S+\s+(.*?)[\s.,!?;:]*$", text, re.IGNORECASE)
         new_text = orig_match.group(1) if orig_match else edit_match.group(2)
-        agenda_.edit_item(actual_id, new_text)
+        old_text = agenda_.edit_item(actual_id, new_text)
+        logs.write("edit", f"item {n}: '{old_text}' → '{new_text}'")
         await reply(f"✏️ Item {n} updated.")
         return
 
