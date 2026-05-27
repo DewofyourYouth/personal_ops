@@ -88,6 +88,22 @@ def test_edit_uses_position_not_id(agenda):
     assert agenda.get_open()[0]["text"] == "Edited new task 1"
 
 
+def test_get_status_returns_all_items(agenda):
+    agenda.accept_items(["Task A", "Task B", "Task C"])
+    agenda.mark_status(0, "done")
+    agenda.mark_status(1, "missed")
+    all_items = agenda.get_status()
+    assert len(all_items) == 3
+    statuses = {i["text"]: i["status"] for i in all_items}
+    assert statuses["Task A"] == "done"
+    assert statuses["Task B"] == "missed"
+    assert statuses["Task C"] == "open"
+
+
+def test_get_status_empty(agenda):
+    assert agenda.get_status() == []
+
+
 def test_mark_status_uses_actual_id(agenda):
     agenda.accept_items(["First"])
     agenda.mark_status(0, "done")
