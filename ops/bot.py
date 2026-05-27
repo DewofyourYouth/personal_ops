@@ -686,7 +686,8 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 HELP_TEXT = """<b>Planning</b>
 /plan — generate today's agenda (also runs daily at 06:00)
-/agenda — view open items with ✅ Done / ❌ Missed buttons
+/agenda — open items with ✅ Done / ❌ Missed buttons
+/status — all items with their current status (done / missed / open)
 
 <b>Calendar</b>
 /events — upcoming events for today
