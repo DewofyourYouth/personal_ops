@@ -7,6 +7,7 @@ import random
 import re
 import tempfile
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import openai
@@ -745,13 +746,51 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
 
 
+_DIGEST_TEMPLATE = Path(__file__).parent / "context" / "templates" / "digest-template.md"
+_DIGEST_DIR = Path(__file__).parent / "context" / "digests"
+
+
+def _digest_to_html(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"^#{1,3}\s*", "", line)
+        if line.strip() == "---":
+            lines.append("")
+            continue
+        # escape plain text segments, preserve bold/italic as HTML tags
+        result = ""
+        last = 0
+        for m in re.finditer(r"\*\*(.+?)\*\*|\*(.+?)\*", line):
+            result += html.escape(line[last:m.start()])
+            if m.group(1) is not None:
+                result += f"<b>{html.escape(m.group(1))}</b>"
+            else:
+                result += f"<i>{html.escape(m.group(2))}</i>"
+            last = m.end()
+        result += html.escape(line[last:])
+        lines.append(result)
+    return "\n".join(lines).strip()
+
+
+def _save_digest(text: str, label: str = "digest") -> None:
+    _DIGEST_DIR.mkdir(exist_ok=True)
+    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    template = _DIGEST_TEMPLATE.read_text() if _DIGEST_TEMPLATE.exists() else "---\ntitle:\ngenerated: \"{{DATETIME}}\"\ntype: digest\n---\n"
+    filled = template.replace("{{DATETIME}}", now.isoformat(timespec="seconds"))
+    date_str = now.date().isoformat()
+    filled = filled.replace("title:", f"title: {date_str} {label}")
+    path = _DIGEST_DIR / f"{date_str}-{label}.md"
+    path.write_text(filled + "\n" + text + "\n")
+
+
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     await update.message.reply_text("🔍 Generating digest…")
     try:
         text = await planner_.digest()
-        await update.message.reply_text(text)
+        _save_digest(text, label="digest")
+        await update.message.reply_text(_digest_to_html(text), parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"Digest failed: {e}")
 
@@ -759,7 +798,8 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     try:
         text = await planner_.digest()
-        await context.bot.send_message(chat_id=ALLOWED_USER, text=f"📋 <b>Weekly digest:</b>\n\n{html.escape(text)}", parse_mode="HTML")
+        _save_digest(text, label="weekly-digest")
+        await context.bot.send_message(chat_id=ALLOWED_USER, text=f"📋 <b>Weekly digest:</b>\n\n{_digest_to_html(text)}", parse_mode="HTML")
     except Exception:
         pass
 
@@ -874,7 +914,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✓ Dismiss", callback_data="remind_dismiss")]])
     for r in due:
         if r.get("auto_log"):
-            logs.write("checkin", "(prompted)")
+            logs.write("reminder", r["text"])
         await context.bot.send_message(
             chat_id=ALLOWED_USER,
             text=f"⏰ <b>{html.escape(r['text'])}</b>",

@@ -18,7 +18,7 @@ Protect the morning window. Shallow tasks, Anki, email, writing, and reading bel
 
 ## Long-term leverage over short-term optimization
 
-Haki, consulting, writing — these compound. A day-job is a bridge, not a destination. Decisions should favor building assets and reducing single-point-of-failure dependencies (one employer, one market).
+Haki, consulting, writing — these compound. A day job is a bridge, not a destination. Decisions should favor building assets and reducing single points of failure (e.g., one employer, one market).
 
 ## Streaks and cadences over intensity
 

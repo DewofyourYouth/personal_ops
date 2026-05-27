@@ -1,7 +1,7 @@
 from pathlib import Path
 
 CONTEXT_DIR = Path(__file__).parent / "context"
-CONTEXT_FILES = ["goals.md", "priorities.md", "constraints.md", "projects.md", "principles.md"]
+CONTEXT_FILES = ["goals.md", "priorities.md", "constraints.md", "projects.md", "principles.md", "bot-personality.md", "review-rules.md"]
 
 
 class Context:

@@ -44,7 +44,7 @@ class Logs:
 
     def read_recent(self, days: int = 3) -> str:
         sections = []
-        for i in range(1, days + 1):
+        for i in range(days, -1, -1):
             d = date.today() - timedelta(days=i)
             lines = self._read_day(d)
             if lines:

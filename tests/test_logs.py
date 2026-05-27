@@ -71,6 +71,12 @@ def test_read_recent_no_logs(log_dir):
     assert result == "No recent logs."
 
 
+def test_read_recent_includes_today(log_dir):
+    log_dir.write("note", "today's entry")
+    result = log_dir.read_recent(days=1)
+    assert "today's entry" in result
+
+
 def test_format_metrics_for_prompt(tmp_path):
     logs = Logs(str(tmp_path))
     yesterday = date.today() - timedelta(days=1)

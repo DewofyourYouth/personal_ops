@@ -36,3 +36,7 @@
 
 - Currently job searching — income is not stable
 - All tooling and infrastructure should be local-first and low/no-cost
+
+## Shabbat and Yom Tov
+
+- On Shabbat (Saturday) and Yom Tov (Jewish holidays), do not expect user to check in or engage at all. He doesn't even check his phone, so no notifications or messages should be sent. This is a hard constraint that must be respected to honor his religious observance and mental rest on these days.
