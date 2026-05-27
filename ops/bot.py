@@ -7,7 +7,6 @@ import random
 import re
 import tempfile
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import openai
@@ -26,10 +25,12 @@ from telegram.ext import (
     filters,
 )
 
-import agenda
-import gcal
-import planner
-import reminders as reminders_mod
+from agenda import Agenda
+from context import Context
+from gcal import GCal
+from logs import Logs
+from planner import Planner, day_type
+from reminders import Reminders
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
 ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
@@ -39,19 +40,29 @@ PLAN_MINUTE = int(os.environ.get("OPS_PLAN_MINUTE", "0"))
 
 cwd = os.getcwd()
 LOG_DIR = os.path.expanduser(f"{cwd}/ops/log")
-os.makedirs(LOG_DIR, exist_ok=True)
+
+# --- Service instances ---
+logs      = Logs(LOG_DIR)
+agenda_   = Agenda(LOG_DIR)
+reminders = Reminders()
+gcal_     = GCal()
+context_  = Context()
+planner_  = Planner(MODEL, logs, context_)
 
 PREFIXES = {
-    "insight:": "#insight",
+    "insight:":    "#insight",
     "hypothesis:": "#hypothesis",
-    "checkin": "#checkin",
-    "task:": "#task",
-    "note:": "#note",
-    "did:": "#win",
+    "checkin":     "#checkin",
+    "task:":       "#task",
+    "note:":       "#note",
+    "did:":        "#win",
 }
 
-CONTEXT_DIR = Path(__file__).parent / "context"
-CONTEXT_FILES = ["goals.md", "priorities.md", "constraints.md", "projects.md", "principles.md"]
+STATUS_ICONS = {
+    "open": "⌛",
+    "done": "✅",
+    "missed": "❌",
+}
 
 # Pending proposal state keyed by chat_id (single-user bot, in-memory is fine)
 _pending: dict = {}
@@ -127,7 +138,7 @@ def _proposal_keyboard(items: list[str], selected: set[int]) -> InlineKeyboardMa
 
 
 def _proposal_text(items: list[str], selected: set[int]) -> str:
-    lines = [f"📋 <b>Proposed agenda ({html.escape(planner.day_type())}):</b>\n"]
+    lines = [f"📋 <b>Proposed agenda ({html.escape(day_type())}):</b>\n"]
     for i, item in enumerate(items):
         mark = "✅" if i in selected else "⬜"
         lines.append(f"{mark} {i + 1}. {html.escape(item)}")
@@ -177,7 +188,7 @@ def _reminders_keyboard(all_reminders: list) -> InlineKeyboardMarkup:
 async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    all_reminders = reminders_mod.load()
+    all_reminders = reminders.load()
     if not all_reminders:
         await update.message.reply_text("No reminders set. Use 'remind me...' to add one.")
         return
@@ -191,8 +202,8 @@ async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await _safe_answer(query)
     reminder_id = query.data.split(":")[1]
-    reminders_mod.remove(reminder_id)
-    all_reminders = reminders_mod.load()
+    reminders.remove(reminder_id)
+    all_reminders = reminders.load()
     if not all_reminders:
         await query.edit_message_text("All reminders removed.")
         return
@@ -203,8 +214,8 @@ async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     try:
-        events = await asyncio.to_thread(gcal.get_today_events)
-        text = gcal.format_events(events)
+        events = await asyncio.to_thread(gcal_.get_today_events)
+        text = gcal_.format_events(events)
     except Exception as e:
         text = f"Could not fetch calendar: {e}"
     await update.message.reply_text(f"📅 <b>Today's events:</b>\n{html.escape(text)}", parse_mode="HTML")
@@ -221,27 +232,41 @@ def _agenda_message(open_items: list) -> tuple[str, InlineKeyboardMarkup]:
         ])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
+def _status_message(items: list) -> str:
+    lines = ["Agenda Status:\n"]
+    for i, item in enumerate(items, 1):
+        lines.append(f"{i}. {html.escape(STATUS_ICONS[item['status']])} {html.escape(item['text'])}")
+    return "\n".join(lines)
 
 async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    open_items = agenda.get_open(LOG_DIR)
+    open_items = agenda_.get_open()
     if not open_items:
         await update.message.reply_text("No open agenda items. Use /plan to generate one.")
         return
     text, keyboard = _agenda_message(open_items)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
+async def cmd_agenda_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    items = agenda_.get_status()
+    if not items:
+        await update.message.reply_text("No open agenda items. Use /plan to generate one.")
+        return
+    text = _status_message(items)
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action, item_id = query.data.split(":")[0], int(query.data.split(":")[1])
     status = "done" if action == "ag_done" else "missed"
-    agenda.mark_status(LOG_DIR, item_id, status)
+    agenda_.mark_status(item_id, status)
 
     await _safe_answer(query, _encourage() if status == "done" else "Marked missed.")
 
-    open_items = agenda.get_open(LOG_DIR)
+    open_items = agenda_.get_open()
     if not open_items:
         await query.edit_message_text("✅ All items resolved.")
         return
@@ -302,8 +327,8 @@ async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 def _commit_agenda(texts: list[str], source: str = "llm"):
-    items = agenda.accept_items(LOG_DIR, texts, source=source)
-    agenda.write_to_markdown(LOG_DIR, items)
+    items = agenda_.accept_items(texts, source=source)
+    agenda_.write_to_markdown(items)
 
 
 # --- Message handler ---
@@ -351,20 +376,28 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
     # edit N <text> — update agenda item text
     edit_match = re.match(r"^edit\s+(\d+)\s+(.+)$", lower)
     if edit_match:
-        item_id = int(edit_match.group(1)) - 1
-        # Extract new text from original (preserves case, avoids offset mismatch after normalization)
+        n = int(edit_match.group(1))
+        open_items = agenda_.get_open()
+        if n < 1 or n > len(open_items):
+            await reply(f"No open item #{n}.")
+            return
+        actual_id = open_items[n - 1]["id"]
         orig_match = re.match(r"^edit\s+\S+\s+(.*?)[\s.,!?;:]*$", text, re.IGNORECASE)
         new_text = orig_match.group(1) if orig_match else edit_match.group(2)
-        agenda.edit_item(LOG_DIR, item_id, new_text)
-        await reply(f"✏️ Item {item_id + 1} updated.")
+        agenda_.edit_item(actual_id, new_text)
+        await reply(f"✏️ Item {n} updated.")
         return
 
     # done N / missed N — mark by number
     done_match = re.match(r"^(done|missed)\s+(\d+)$", lower)
     if done_match:
         action, n = done_match.group(1), int(done_match.group(2))
-        item_id = n - 1
-        agenda.mark_status(LOG_DIR, item_id, action)
+        open_items = agenda_.get_open()
+        if n < 1 or n > len(open_items):
+            await reply(f"No open item #{n}.")
+            return
+        actual_id = open_items[n - 1]["id"]
+        agenda_.mark_status(actual_id, action)
         icon = "✅" if action == "done" else "❌"
         suffix = f" {_encourage()}" if action == "done" else ""
         await reply(f"{icon} Item {n} marked {action}.{suffix}")
@@ -374,7 +407,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
     name_match = re.match(r"^(done|missed)\s+(.+)$", lower)
     if name_match:
         action, query_text = name_match.group(1), name_match.group(2)
-        open_items = agenda.get_open(LOG_DIR)
+        open_items = agenda_.get_open()
         if open_items:
             item_texts = [i["text"].lower() for i in open_items]
             matches = difflib.get_close_matches(query_text, item_texts, n=1, cutoff=0.3)
@@ -383,7 +416,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 matches = [t for t in item_texts if query_text in t or t in query_text]
             if matches:
                 item = open_items[item_texts.index(matches[0])]
-                agenda.mark_status(LOG_DIR, item["id"], action)
+                agenda_.mark_status(item["id"], action)
                 icon = "✅" if action == "done" else "❌"
                 suffix = f" {_encourage()}" if action == "done" else ""
                 await reply(f"{icon} \"{item['text']}\" marked {action}.{suffix}")
@@ -404,7 +437,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         event_text = text[lower.index(event_text):].strip()
         await reply("📅 Parsing event…")
         try:
-            parsed = await planner.parse_event(event_text)
+            parsed = await planner_.parse_event(event_text)
             if not parsed:
                 await reply("Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am")
                 return
@@ -413,7 +446,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 f"{parsed['date']}T{parsed['start_time']}:00"
             ).replace(tzinfo=tz)
             event = await asyncio.to_thread(
-                gcal.create_event,
+                gcal_.create_event,
                 parsed["summary"],
                 start_dt,
                 parsed.get("duration_minutes", 60),
@@ -430,7 +463,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         reminder_text = re.sub(r"^remind(:|(\s+me\b))\s*", "", text, flags=re.IGNORECASE).strip()
         await reply("⏰ Parsing reminder…")
         try:
-            parsed = await planner.parse_reminder(reminder_text)
+            parsed = await planner_.parse_reminder(reminder_text)
             if not parsed:
                 await reply("Couldn't parse the reminder. Try: remind: eat lunch at 13:00 or remind: drink water every 60 minutes")
                 return
@@ -445,7 +478,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 when = "today" if d == _date.today().isoformat() else d
                 await reply(f"What time on {when} should I remind you?")
                 return
-            entry = reminders_mod.add(text=parsed["text"], reminder_type=parsed["type"], **extra)
+            entry = reminders.add(text=parsed["text"], reminder_type=parsed["type"], **extra)
             if entry["type"] == "once":
                 d = entry.get("date", _date.today().isoformat())
                 when = "today" if d == _date.today().isoformat() else d
@@ -465,6 +498,18 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         item_text = text[4:].strip()
         _commit_agenda([item_text], source="user")
         await reply(f"Added to agenda: {item_text}")
+        return
+
+    # metric: <key> <value> — structured metric entry
+    metric_m = re.match(r"^metric[,:.\s]\s*([\w\-]+)\s+(\S+)", text, re.IGNORECASE)
+    if metric_m:
+        key = metric_m.group(1).lower().replace("-", "_")
+        raw_val = metric_m.group(2)
+        num_m = re.match(r"^([\d.]+)", raw_val)
+        value = float(num_m.group(1)) if num_m else raw_val
+        unit = raw_val[len(num_m.group(1)):] if num_m else ""
+        logs.write_metric(key, value, unit)
+        await reply(f"📊 Metric logged: {key} = {raw_val}")
         return
 
     # standard log entry — match prefix keyword regardless of trailing punctuation/case
@@ -516,8 +561,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.strip().lower() == "/cancel":
             await update.message.reply_text("Edit cancelled.")
             return
-        path = CONTEXT_DIR / fname
-        path.write_text(text)
+        context_.write(fname, text)
         title = fname.replace(".md", "").title()
         await update.message.reply_text(f"✅ {title} updated.")
         return
@@ -530,7 +574,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Couldn't parse that as a time. Reminder cancelled.")
             return
         from datetime import date as _date
-        entry = reminders_mod.add(text=partial["text"], reminder_type=partial["type"],
+        entry = reminders.add(text=partial["text"], reminder_type=partial["type"],
                                    **{k: v for k, v in partial.items() if k not in ("text", "type")},
                                    time=t)
         d = entry.get("date", _date.today().isoformat())
@@ -572,25 +616,13 @@ async def morning_plan(context: ContextTypes.DEFAULT_TYPE):
 async def _send_proposal(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     calendar_events = ""
     try:
-        events = await asyncio.to_thread(gcal.get_today_events)
-        calendar_events = gcal.format_events(events)
+        events = await asyncio.to_thread(gcal_.get_today_events)
+        calendar_events = gcal_.format_events(events)
     except Exception:
         pass  # calendar is optional — plan without it if unavailable
 
-    existing = agenda.load(LOG_DIR)["items"]
-    existing_summary = ""
-    if existing:
-        done = [i["text"] for i in existing if i["status"] in ("done", "missed")]
-        open_ = [i["text"] for i in existing if i["status"] == "open"]
-        parts = []
-        if done:
-            parts.append("Already completed/missed:\n" + "\n".join(f"- {t}" for t in done))
-        if open_:
-            parts.append("Still open:\n" + "\n".join(f"- {t}" for t in open_))
-        existing_summary = "\n\n".join(parts)
-
     try:
-        items = await planner.propose(MODEL, LOG_DIR, calendar_events, existing_summary)
+        items = await agenda_.generate(planner_, calendar_events)
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"Agenda generation failed: {e}")
         return
@@ -624,7 +656,7 @@ async def remind_upcoming(context: ContextTypes.DEFAULT_TYPE):
     if not _in_active_window():
         return
     try:
-        events = await asyncio.to_thread(gcal.get_upcoming_events, within_minutes=15)
+        events = await asyncio.to_thread(gcal_.get_upcoming_events, within_minutes=15)
     except Exception:
         return
     reminded = _load_reminded()
@@ -677,12 +709,14 @@ HELP_TEXT = """<b>Planning</b>
 
 <b>Review</b>
 /digest — AI review of the last 7 days (also runs automatically every Sunday at 20:00)
+/metrics — tracked metrics with trend (last 14 days)
 /logs — view today's log entries
 
 <b>Context</b>
 /context — view and edit your goals, priorities, constraints, projects, principles
 
 <b>Logging</b>
+<code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric (e.g. <i>metric: steps 8000</i>)
 <code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
@@ -701,7 +735,7 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("🔍 Generating digest…")
     try:
-        text = await planner.digest(MODEL, LOG_DIR)
+        text = await planner_.digest()
         await update.message.reply_text(text)
     except Exception as e:
         await update.message.reply_text(f"Digest failed: {e}")
@@ -709,10 +743,43 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = await planner.digest(MODEL, LOG_DIR)
+        text = await planner_.digest()
         await context.bot.send_message(chat_id=ALLOWED_USER, text=f"📋 <b>Weekly digest:</b>\n\n{html.escape(text)}", parse_mode="HTML")
     except Exception:
         pass
+
+
+async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    data = logs.load_metrics(days=14)
+    if not data:
+        await update.message.reply_text("No metrics logged yet. Use: metric: steps 8000")
+        return
+    lines = ["📊 <b>Metrics (last 14 days):</b>\n"]
+    for key, entries in sorted(data.items()):
+        numeric = [v for _, v in entries if isinstance(v, (int, float))]
+        last_date, last_val = entries[-1]
+        unit = ""
+        # try to recover unit from last entry
+        for e in reversed(entries):
+            if isinstance(e[1], (int, float)):
+                break
+        trend = ""
+        if len(numeric) >= 3:
+            if numeric[-1] > numeric[-3]:
+                trend = " ↑"
+            elif numeric[-1] < numeric[-3]:
+                trend = " ↓"
+            else:
+                trend = " →"
+        avg = f" | avg {sum(numeric)/len(numeric):.1f}" if len(numeric) > 1 else ""
+        recent = ", ".join(str(v) for _, v in entries[-5:])
+        lines.append(f"<b>{key}</b>: {recent}{avg}{trend}")
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n…"
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -745,7 +812,7 @@ async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     rows = [
         [InlineKeyboardButton(f.replace(".md", "").title(), callback_data=f"ctx_view:{f}")]
-        for f in CONTEXT_FILES
+        for f in context_.files()
     ]
     await update.message.reply_text("📁 <b>Context files:</b>", parse_mode="HTML",
                                     reply_markup=InlineKeyboardMarkup(rows))
@@ -758,8 +825,7 @@ async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("ctx_view:"):
         fname = data.split(":", 1)[1]
-        path = CONTEXT_DIR / fname
-        content = path.read_text().strip() if path.exists() else "(empty)"
+        content = context_.read(fname) or "(empty)"
         title = fname.replace(".md", "").title()
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✏️ Edit", callback_data=f"ctx_edit:{fname}"),
@@ -782,14 +848,14 @@ async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_
     elif data == "ctx_back":
         rows = [
             [InlineKeyboardButton(f.replace(".md", "").title(), callback_data=f"ctx_view:{f}")]
-            for f in CONTEXT_FILES
+            for f in context_.files()
         ]
         await query.edit_message_text("📁 <b>Context files:</b>", parse_mode="HTML",
                                       reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
-    due = reminders_mod.due_now(reminders_mod.load())
+    due = reminders.due_now()
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✓ Dismiss", callback_data="remind_dismiss")]])
     for r in due:
         await context.bot.send_message(
@@ -812,7 +878,9 @@ def main():
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("metrics", cmd_metrics))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("status", cmd_agenda_status))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss$"))
