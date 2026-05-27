@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -74,6 +75,19 @@ _ENCOURAGEMENTS = [
 
 def _encourage() -> str:
     return random.choice(_ENCOURAGEMENTS)
+
+
+async def _safe_answer(query, text: str = "") -> None:
+    try:
+        await query.answer(text)
+    except BadRequest:
+        pass  # query expired (bot restarted, old button tapped)
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if isinstance(context.error, (NetworkError, BadRequest)):
+        return  # transient — swallow silently
+    raise context.error
 
 
 def _reminded_path():
@@ -175,7 +189,7 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await _safe_answer(query)
     reminder_id = query.data.split(":")[1]
     reminders_mod.remove(reminder_id)
     all_reminders = reminders_mod.load()
@@ -225,7 +239,7 @@ async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_T
     status = "done" if action == "ag_done" else "missed"
     agenda.mark_status(LOG_DIR, item_id, status)
 
-    await query.answer(_encourage() if status == "done" else "Marked missed.")
+    await _safe_answer(query, _encourage() if status == "done" else "Marked missed.")
 
     open_items = agenda.get_open(LOG_DIR)
     if not open_items:
@@ -239,7 +253,7 @@ async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await _safe_answer(query)
 
     chat_id = update.effective_chat.id
     if chat_id not in _pending:
@@ -279,7 +293,7 @@ async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT
     elif data.startswith("pt_e:"):
         idx = int(data.split(":")[1])
         state["editing"] = idx
-        await query.answer(f"Send new text for item {idx + 1}:")
+        await _safe_answer(query, f"Send new text for item {idx + 1}:")
         await query.message.reply_text(f"✏️ Send new text for item {idx + 1}:")
 
     elif data == "pt_no":
@@ -325,7 +339,11 @@ def _parse_time(text: str) -> str | None:
     return None
 
 
+_UNICODE_JUNK = re.compile("[​-‏‪-‮⁠-⁤﻿]+")
+
+
 async def _process_text(text: str, reply, chat_id: int = 0) -> None:
+    text = _UNICODE_JUNK.sub("", text).strip()
     update_chat_id = chat_id
     now = datetime.now().strftime("%H:%M")
     lower = _normalize(text.lower()).strip(".,!?;: ")
@@ -390,7 +408,6 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
             if not parsed:
                 await reply("Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am")
                 return
-            from zoneinfo import ZoneInfo
             tz = ZoneInfo("Asia/Jerusalem")
             start_dt = datetime.fromisoformat(
                 f"{parsed['date']}T{parsed['start_time']}:00"
@@ -616,7 +633,6 @@ async def remind_upcoming(context: ContextTypes.DEFAULT_TYPE):
         start = event["start"].get("dateTime", "")
         summary = event.get("summary", "(no title)")
         if start:
-            from zoneinfo import ZoneInfo
             t = datetime.fromisoformat(start).astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%H:%M")
             msg = f"⏰ Reminder: <b>{html.escape(summary)}</b> at {t}"
         else:
@@ -626,8 +642,11 @@ async def remind_upcoming(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    await _safe_answer(update.callback_query)
+    try:
+        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
 
 
 HELP_TEXT = """<b>Planning</b>
@@ -709,7 +728,7 @@ async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await _safe_answer(query)
     data = query.data
 
     if data.startswith("ctx_view:"):
@@ -774,6 +793,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(_error_handler)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     app.job_queue.run_daily(
