@@ -123,6 +123,46 @@ async def propose(model, log_dir, calendar_events="", existing_summary=""):
     ]
 
 
+async def digest(model, log_dir, days=7):
+    client = anthropic.AsyncAnthropic()
+    context = _load_context()
+    logs = _load_recent_logs(log_dir, days=days)
+    history = _load_completion_history(log_dir, days=days)
+
+    user_content = f"Review the last {days} days.\n\n"
+    if history:
+        user_content += f"{history}\n\n"
+    user_content += f"Log entries:\n{logs}"
+
+    response = await client.messages.create(
+        model=model,
+        max_tokens=700,
+        system=[
+            {
+                "type": "text",
+                "text": (
+                    "You are a personal ops assistant doing a periodic review. "
+                    "Analyze the user's recent logs and agenda completion data. "
+                    "Return a digest in exactly this format — no extra text:\n\n"
+                    "✅ Wins: (2-3 bullet points of things going well or completed)\n"
+                    "⚠️ Patterns to watch: (2-3 recurring issues, missed items, or friction points)\n"
+                    "💡 Insight: (1 sentence — the most useful non-obvious observation)\n"
+                    "🔧 Suggested adjustment: (1 concrete change to goals, priorities, or habits)\n\n"
+                    "Be specific and direct. Reference actual log content. No generic advice."
+                ),
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": f"## User context\n\n{context}",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return response.content[0].text.strip()
+
+
 async def parse_event(text):
     client = anthropic.AsyncAnthropic()
     response = await client.messages.create(

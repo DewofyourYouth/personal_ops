@@ -672,11 +672,14 @@ HELP_TEXT = """<b>Planning</b>
 <code>add: &lt;text&gt;</code> — add your own agenda item
 <code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
 
+<b>Review</b>
+/digest — AI review of the last 7 days (also runs automatically every Sunday at 20:00)
+/logs — view today's log entries
+
 <b>Context</b>
 /context — view and edit your goals, priorities, constraints, projects, principles
 
 <b>Logging</b>
-/logs — view today's log entries
 <code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
@@ -688,6 +691,25 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+
+
+async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    await update.message.reply_text("🔍 Generating digest…")
+    try:
+        text = await planner.digest(MODEL, LOG_DIR)
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"Digest failed: {e}")
+
+
+async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = await planner.digest(MODEL, LOG_DIR)
+        await context.bot.send_message(chat_id=ALLOWED_USER, text=f"📋 <b>Weekly digest:</b>\n\n{html.escape(text)}", parse_mode="HTML")
+    except Exception:
+        pass
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -787,6 +809,7 @@ def main():
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss$"))
@@ -803,6 +826,12 @@ def main():
     )
     app.job_queue.run_repeating(remind_upcoming, interval=600, first=60, name="reminders")
     app.job_queue.run_repeating(check_reminders, interval=60, first=10, name="recurring_reminders")
+    app.job_queue.run_daily(
+        weekly_digest,
+        time=time(hour=20, minute=0),
+        days=(6,),  # Sunday only
+        name="weekly_digest",
+    )
 
     app.run_polling()
 
