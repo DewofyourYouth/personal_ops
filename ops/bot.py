@@ -58,6 +58,13 @@ PREFIXES = {
     "did:":        "#win",
 }
 
+# Matches "checkin", "checking in", "check in", "update", "status update", etc.
+_CHECKIN_RE = re.compile(
+    r"^(?:check(?:ing|in)?(?:\s+in)?|update|status(?:\s+update)?)"
+    r"(?:[,:.\s\-]+(.+))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 STATUS_ICONS = {
     "open": "⌛",
     "done": "✅",
@@ -516,14 +523,20 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
     # standard log entry — match prefix keyword regardless of trailing punctuation/case
     tag = "log"
     content = text
-    first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
-    first_word = first_word_m.group(1) if first_word_m else ""
-    for prefix, t in PREFIXES.items():
-        keyword = prefix.rstrip(": ")
-        if first_word == keyword or lower.startswith(prefix):
-            tag = t.lstrip("#")
-            content = re.sub(r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE).strip()
-            break
+
+    checkin_m = _CHECKIN_RE.match(text)
+    if checkin_m:
+        tag = "checkin"
+        content = (checkin_m.group(1) or "").strip()
+    else:
+        first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
+        first_word = first_word_m.group(1) if first_word_m else ""
+        for prefix, t in PREFIXES.items():
+            keyword = prefix.rstrip(": ")
+            if first_word == keyword or lower.startswith(prefix):
+                tag = t.lstrip("#")
+                content = re.sub(r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE).strip()
+                break
 
     entry = {
         "ts": datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
@@ -860,6 +873,8 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     due = reminders.due_now()
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✓ Dismiss", callback_data="remind_dismiss")]])
     for r in due:
+        if r.get("auto_log"):
+            logs.write("checkin", "(prompted)")
         await context.bot.send_message(
             chat_id=ALLOWED_USER,
             text=f"⏰ <b>{html.escape(r['text'])}</b>",
