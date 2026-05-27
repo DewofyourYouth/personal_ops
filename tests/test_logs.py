@@ -77,6 +77,75 @@ def test_read_recent_includes_today(log_dir):
     assert "today's entry" in result
 
 
+def test_compute_stats_completion(tmp_path):
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    agenda = {"items": [
+        {"id": 0, "text": "Do something", "status": "done", "source": "llm"},
+        {"id": 1, "text": "Do another", "status": "missed", "source": "llm"},
+        {"id": 2, "text": "Open item", "status": "open", "source": "llm"},
+    ]}
+    (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
+    stats = logs.compute_stats(days=1)
+    s = stats[str(today)]
+    assert s["completion"] == (1, 2)  # open items excluded
+
+
+def test_compute_stats_anchors(tmp_path):
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    agenda = {"items": [
+        {"id": 0, "text": "Complete Yoma chavrusa (10:00)", "status": "done", "source": "llm"},
+        {"id": 1, "text": "Anki review", "status": "missed", "source": "llm"},
+        {"id": 2, "text": "Job applications", "status": "done", "source": "llm"},
+    ]}
+    (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
+    stats = logs.compute_stats(days=1)
+    s = stats[str(today)]
+    assert s["anchors"] == (1, 2)  # chavrusa+done, anki+missed; job apps not an anchor
+
+
+def test_compute_stats_wins(tmp_path):
+    logs = Logs(str(tmp_path))
+    logs.write("win", "shipped a feature")
+    logs.write("win", "took a walk")
+    logs.write("note", "just a note")
+    stats = logs.compute_stats(days=1)
+    assert stats[str(date.today())]["wins"] == 2
+
+
+def test_compute_stats_checkin_response(tmp_path):
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo("Asia/Jerusalem")
+    now = datetime.now(TZ).replace(second=0, microsecond=0)
+    jsonl = tmp_path / f"{today}.jsonl"
+    reminder = {"ts": now.isoformat(timespec="seconds"), "tag": "reminder", "content": "check in"}
+    checkin  = {"ts": (now.replace(minute=(now.minute + 5) % 60)).isoformat(timespec="seconds"), "tag": "checkin", "content": "working"}
+    jsonl.write_text(json.dumps(reminder) + "\n" + json.dumps(checkin) + "\n")
+    stats = logs.compute_stats(days=1)
+    s = stats[str(today)]
+    assert s["reminders"] == 1
+    assert s["responded"] == 1
+
+
+def test_format_stats_for_prompt(tmp_path):
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    agenda = {"items": [
+        {"id": 0, "text": "Job search", "status": "done", "source": "llm"},
+        {"id": 1, "text": "Anki", "status": "done", "source": "llm"},
+    ]}
+    (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
+    logs.write("win", "applied to 3 jobs")
+    text = logs.format_stats_for_prompt(days=1)
+    assert "Completion" in text
+    assert "Wins" in text
+    assert "Rolling" in text
+
+
 def test_format_metrics_for_prompt(tmp_path):
     logs = Logs(str(tmp_path))
     yesterday = date.today() - timedelta(days=1)

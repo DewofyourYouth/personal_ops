@@ -79,7 +79,11 @@ class Planner:
         history = self._completion_history(days=days)
         metrics_text = self.logs.format_metrics_for_prompt(days=days)
 
+        stats_text = self.logs.format_stats_for_prompt(days=days)
+
         user_content = f"Review the last {days} days.\n\n"
+        if stats_text:
+            user_content += f"{stats_text}\n\n"
         if history:
             user_content += f"{history}\n\n"
         if metrics_text:
