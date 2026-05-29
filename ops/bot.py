@@ -57,6 +57,7 @@ PREFIXES = {
     "task:":       "#task",
     "note:":       "#note",
     "did:":        "#win",
+    "habit:":      "#habit",
 }
 
 # Matches "feedback:", "feedback request", "question:", "I have a question", etc.
@@ -746,8 +747,14 @@ HELP_TEXT = """<b>Planning</b>
 <code>add: &lt;text&gt;</code> — add your own agenda item
 <code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
 
+<b>Habits</b>
+/habits — today's habit checklist (from habits.md)
+/habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
+<code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
+
 <b>Review</b>
-/digest — AI review of the last 7 days (also runs automatically every Sunday at 20:00)
+/daily — end-of-day digest with quote, wins, and suggestions (also runs nightly at 22:30)
+/digest — weekly AI review of the last 7 days (also runs every Sunday at 20:00)
 /metrics — tracked metrics with trend (last 14 days)
 /logs — view today's log entries
 
@@ -770,8 +777,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
 
 
-_DIGEST_TEMPLATE = Path(__file__).parent / "context" / "templates" / "digest-template.md"
-_DIGEST_DIR = Path(__file__).parent / "context" / "digests"
+_DIGEST_TEMPLATE = context_.dir / "templates" / "digest-template.md"
+_DIGEST_DIR = context_.dir / "digests"
 
 
 def _digest_to_html(text: str) -> str:
@@ -817,6 +824,40 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_digest_to_html(text), parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"Digest failed: {e}")
+
+
+async def cmd_daily_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    from datetime import date as _date, timedelta as _td
+    arg = " ".join(context.args).strip().lower() if context.args else ""
+    if arg in ("yesterday", "y"):
+        target = _date.today() - _td(days=1)
+    else:
+        today = _date.today()
+        target = today if logs.read_day_as_text(today) != "No log entries." else today - _td(days=1)
+
+    label = "today" if target == _date.today() else str(target)
+    await update.message.reply_text(f"🔍 Generating daily digest for {label}…")
+    try:
+        text = await planner_.daily_digest(target_date=target)
+        _save_digest(text, label="daily")
+        await update.message.reply_text(_digest_to_html(text), parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"Daily digest failed: {e}")
+
+
+async def scheduled_daily_digest(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = await planner_.daily_digest()
+        _save_digest(text, label="daily")
+        await context.bot.send_message(
+            chat_id=ALLOWED_USER,
+            text=f"🌙 <b>Daily digest:</b>\n\n{_digest_to_html(text)}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
@@ -886,6 +927,74 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+def _habit_matches(logged: str, canonical: str) -> bool:
+    """True if any significant word (≥3 chars) from logged appears in canonical or vice versa."""
+    logged_words = {w for w in re.split(r"\W+", logged.lower()) if len(w) >= 3}
+    canonical_words = {w for w in re.split(r"\W+", canonical.lower()) if len(w) >= 3}
+    return bool(logged_words & canonical_words)
+
+
+def _habits_message() -> tuple[str, InlineKeyboardMarkup]:
+    from datetime import date as _date
+    today_weekday = _date.today().weekday()
+    sections = context_.parse_habits()
+    logged_today = [e["content"].strip() for e in logs.read_today() if e.get("tag") == "habit"]
+
+    lines = ["📋 <b>Habits</b>\n"]
+    rows = []
+    for section, habits in sections.items():
+        visible = [h for h in habits if h["days"] is None or today_weekday in h["days"]]
+        if not visible:
+            continue
+        lines.append(f"<b>{html.escape(section)}</b>")
+        for h in visible:
+            name = context_.habit_display_name(h["text"])
+            done = any(_habit_matches(logged, h["raw"]) for logged in logged_today)
+            lines.append(f"{'✅' if done else '⬜'} {html.escape(name)}")
+            if not done:
+                key = name[:52]  # callback_data max 64 bytes; "hb_done:" = 8
+                rows.append([InlineKeyboardButton(f"✅ {name}", callback_data=f"hb_done:{key}")])
+        lines.append("")
+
+    return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
+
+
+async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    sections = context_.parse_habits()
+    if not sections:
+        await update.message.reply_text("No habits defined. Edit habits.md in your vault.")
+        return
+    text, keyboard = _habits_message()
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await _safe_answer(query)
+    habit_name = query.data.split(":", 1)[1]
+    logs.write("habit", habit_name)
+    text, keyboard = _habits_message()
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def cmd_habit_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    from datetime import date as _date, timedelta as _td
+    from habit_tracker import generate_habit_log
+    arg = " ".join(context.args).strip().lower() if context.args else ""
+    target = _date.today() - _td(days=1) if arg in ("yesterday", "y") else _date.today()
+    template = context_.dir / "templates" / "habit-template.md"
+    output_dir = context_.dir / "habits"
+    try:
+        path = generate_habit_log(logs, template, output_dir, target)
+        await update.message.reply_text(f"✅ Habit log saved: {path.name}\nOpen in Obsidian to add notes.")
+    except Exception as e:
+        await update.message.reply_text(f"Failed: {e}")
+
+
 async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -953,6 +1062,8 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("habits", cmd_habits))
+    app.add_handler(CommandHandler("habitlog", cmd_habit_log))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("agenda", cmd_agenda))
     app.add_handler(CommandHandler("events", cmd_events))
@@ -961,12 +1072,14 @@ def main():
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("metrics", cmd_metrics))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("daily", cmd_daily_digest))
     app.add_handler(CommandHandler("status", cmd_agenda_status))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss$"))
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
+    app.add_handler(CallbackQueryHandler(handle_habit_callback, pattern="^hb_done:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(_error_handler)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -978,6 +1091,11 @@ def main():
     )
     app.job_queue.run_repeating(remind_upcoming, interval=600, first=60, name="reminders")
     app.job_queue.run_repeating(check_reminders, interval=60, first=10, name="recurring_reminders")
+    app.job_queue.run_daily(
+        scheduled_daily_digest,
+        time=time(hour=22, minute=30),
+        name="daily_digest",
+    )
     app.job_queue.run_daily(
         weekly_digest,
         time=time(hour=20, minute=0),

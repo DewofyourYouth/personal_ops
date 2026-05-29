@@ -46,15 +46,9 @@ class Planner:
                     "type": "text",
                     "text": (
                         "You are a personal ops assistant. "
-                        "Propose a focused, realistic agenda for today based on the user's goals, "
-                        "constraints, calendar, and recent activity. "
-                        "Schedule around calendar events — don't suggest deep work blocks that overlap with them. "
-                        "Each item must be a single, independently completable action — never bundle two distinct activities into one item. "
-                        "If today's agenda already has open items, include them in your proposal. Do not re-propose items already marked done or missed. "
-                        "Use completion history to calibrate: if the user consistently misses an item type, reduce its frequency or reframe it as smaller. "
-                        "If they consistently complete something, keep it. Adapt to their real capacity, not their ideal. "
-                        "Return 3–7 specific, actionable items as a plain numbered list (e.g. '1. Do X'). "
-                        "Nothing else — no preamble, no commentary."
+                        "Propose a focused, realistic agenda for today based on the user's goals, constraints, calendar, and recent activity. "
+                        "Follow the rules in agenda-rules.md exactly. "
+                        "Return a plain numbered list (e.g. '1. Do X'). Nothing else."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -110,7 +104,60 @@ class Planner:
                         "- If coverage is fewer than 5 days, say so and treat all patterns as tentative. Do not state patterns as established facts.\n"
                         "- If a log entry explicitly states what happened (e.g. 'We learned Yoma every day this week'), treat that as authoritative — it overrides inferences from agenda completion data.\n"
                         "- Early log entries may contain bot-test noise (short fragments, repeated command words). Do not read these as real activity signals.\n"
-                        "- A missed agenda item caused by an external constraint (e.g. chavrusa canceled, appointment ran over) is not a behavioral pattern. Classify it correctly."
+                        "- A missed agenda item caused by an external constraint (e.g. chavrusa canceled, appointment ran over) is not a behavioral pattern. Classify it correctly.\n"
+                        "- Habits (defined in habits.md) are NOT tracked via the agenda. Do not infer whether habits were completed or missed from agenda data. If a habit appears in the agenda history, ignore its completion status — it proves nothing about whether the habit was actually done.\n"
+                        "- Habit completion IS tracked via explicit `habit:` log entries. The stats include a Habit log table showing which habits were logged and on how many days. Use this as the authoritative source for habit adherence. Absence from the habit log on a given day means the habit was not logged — not necessarily that it wasn't done."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return response.content[0].text.strip()
+
+    async def daily_digest(self, target_date: date | None = None) -> str:
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        history = self._completion_history(days=14)
+        stats_text = self.logs.format_stats_for_prompt(days=7)
+
+        d = target_date or date.today()
+        user_content = f"Date: {d} ({day_type()}).\n\n"
+        user_content += f"Log for {d}:\n{self.logs.read_day_as_text(d)}\n\n"
+        if stats_text:
+            user_content += f"{stats_text}\n\n"
+        if history:
+            user_content += f"{history}\n\n"
+        user_content += "Generate today's end-of-day digest."
+
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=600,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You are a personal ops assistant generating an end-of-day digest. "
+                        "Review the user's day — their logs, habit tracking, agenda completion, and recent history.\n\n"
+                        "Return the digest in exactly this format — no extra text:\n\n"
+                        "💬 \"[quote]\" — [Author], [Source with specific reference]\n\n"
+                        "✅ Wins\n"
+                        "- [2–3 specific things that went well today]\n\n"
+                        "⬆️ Improve\n"
+                        "- [1–2 things that could have gone better today]\n\n"
+                        "👁 Keep An Eye On\n"
+                        "- [1–2 patterns or risks worth watching over the coming days]\n\n"
+                        "💡 Suggestions\n"
+                        "- [1–2 concrete, small adjustments for tomorrow or this week]\n\n"
+                        "For the opening quote: choose a short, genuinely relevant passage from either a Stoic thinker "
+                        "(Marcus Aurelius, Epictetus, Seneca) or the Talmud. "
+                        "For Talmud: include tractate and daf or a named sage. "
+                        "The quote must connect to the actual key insight from this specific day — not be generic. "
+                        "Be specific and direct throughout. Reference actual log content. No hype. No shame. No generic advice."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },

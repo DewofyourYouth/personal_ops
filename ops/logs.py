@@ -42,6 +42,10 @@ class Logs:
                 pass
         return entries
 
+    def read_day_as_text(self, d: date) -> str:
+        lines = self._read_day(d)
+        return "\n".join(lines) if lines else "No log entries."
+
     def read_recent(self, days: int = 3) -> str:
         sections = []
         for i in range(days, -1, -1):
@@ -85,6 +89,7 @@ class Logs:
                 "completion": None,   # (done, total)
                 "anchors": None,      # (done, total)
                 "wins": 0,
+                "habits": [],         # habit names logged this day
                 "reminders": 0,
                 "checkins": 0,
                 "responded": 0,       # reminders responded to within 15 min
@@ -116,6 +121,7 @@ class Logs:
                     except Exception:
                         pass
                 s["wins"] = sum(1 for e in entries if e.get("tag") == "win")
+                s["habits"] = [e["content"].strip().lower() for e in entries if e.get("tag") == "habit"]
                 reminder_times = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "reminder"]
                 checkin_times  = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "checkin"]
                 s["reminders"] = len(reminder_times)
@@ -169,6 +175,20 @@ class Logs:
             summary.append(f"checkin response {total_resp}/{total_rem}")
         if summary:
             lines.append("\n**Rolling (" + str(days) + " days):** " + ", ".join(summary))
+
+        # Habit frequency table
+        from collections import Counter
+        habit_counts: Counter = Counter()
+        days_with_habit_logging = sum(1 for s in stats.values() if s["habits"])
+        for s in stats.values():
+            habit_counts.update(set(s["habits"]))  # count days, not occurrences
+        if habit_counts:
+            lines.append("\n## Habit log\n")
+            lines.append(f"_(logged via `habit:` prefix; {days_with_habit_logging}/{days} days had any habit entries)_\n")
+            lines.append("| Habit | Days logged |")
+            lines.append("|-------|-------------|")
+            for habit, count in sorted(habit_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"| {habit} | {count}/{days} |")
 
         return "\n".join(lines)
 

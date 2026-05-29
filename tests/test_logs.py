@@ -123,7 +123,7 @@ def test_compute_stats_checkin_response(tmp_path):
     now = datetime.now(TZ).replace(second=0, microsecond=0)
     jsonl = tmp_path / f"{today}.jsonl"
     reminder = {"ts": now.isoformat(timespec="seconds"), "tag": "reminder", "content": "check in"}
-    checkin  = {"ts": (now.replace(minute=(now.minute + 5) % 60)).isoformat(timespec="seconds"), "tag": "checkin", "content": "working"}
+    checkin  = {"ts": (now + timedelta(minutes=5)).isoformat(timespec="seconds"), "tag": "checkin", "content": "working"}
     jsonl.write_text(json.dumps(reminder) + "\n" + json.dumps(checkin) + "\n")
     stats = logs.compute_stats(days=1)
     s = stats[str(today)]
