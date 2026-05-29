@@ -173,6 +173,84 @@ def generate_jobs_report() -> Path:
     return out
 
 
+def status_summary() -> str:
+    from collections import Counter
+    buckets = load_applications()
+    total = sum(len(v) for v in buckets.values())
+    if total == 0:
+        return "No applications on record."
+
+    counts = {s: len(buckets[s]) for s in ApplicationStatus}
+    today = datetime.date.today()
+
+    lines = [f"📊 <b>Job Search — {total} applications</b>\n"]
+
+    icons = {
+        ApplicationStatus.APPLIED:      "📤",
+        ApplicationStatus.PHONE_SCREEN: "📞",
+        ApplicationStatus.INTERVIEW:    "🔄",
+        ApplicationStatus.OFFER:        "🎉",
+        ApplicationStatus.REJECTED:     "❌",
+        ApplicationStatus.WITHDREW:     "↩️",
+        ApplicationStatus.UNKNOWN:      "❓",
+    }
+    order = [ApplicationStatus.INTERVIEW, ApplicationStatus.PHONE_SCREEN,
+             ApplicationStatus.OFFER, ApplicationStatus.APPLIED,
+             ApplicationStatus.REJECTED, ApplicationStatus.WITHDREW]
+    for s in order:
+        if counts[s]:
+            lines.append(f"{icons[s]} {s.value.replace('_', ' ').title()}: {counts[s]}")
+
+    # Recent 5
+    all_apps = [a for apps in buckets.values() for a in apps]
+    recent = sorted([a for a in all_apps if a.applied_date],
+                    key=lambda a: a.applied_date, reverse=True)[:5]
+    if recent:
+        lines.append("\n<b>Recent:</b>")
+        for a in recent:
+            lines.append(f"{icons[a.status]} {a.company_name} — {a.job_title} ({a.date_str()})")
+
+    # Follow-up candidates
+    needs_followup = [a for a in buckets[ApplicationStatus.APPLIED]
+                      if a.applied_date and (today - a.applied_date).days >= 7]
+    if needs_followup:
+        lines.append(f"\n⏰ <b>{len(needs_followup)} applied 7+ days ago</b> — worth following up")
+
+    return "\n".join(lines)
+
+
+def add_application(company: str, title: str, url: str = "",
+                    source: str = "", notes: str = "") -> Application:
+    """Append a new application row to the CSV and return the Application object."""
+    today = datetime.date.today()
+    row = {
+        "Company": company.strip(),
+        "Job Title": title.strip(),
+        "URL": url.strip(),
+        "Applied Date": today.isoformat(),
+        "Status": ApplicationStatus.APPLIED,
+        "Notes": notes.strip(),
+        "Source": source.strip(),
+    }
+    # Append to CSV
+    write_header = not APPLICATIONS_CSV.exists()
+    with open(APPLICATIONS_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["Company", "Job Title", "URL",
+                                               "Applied Date", "Status", "Notes", "Source"])
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    return Application(
+        company_name=row["Company"],
+        job_title=row["Job Title"],
+        url=row["URL"],
+        applied_date=today,
+        notes=row["Notes"],
+        source=row["Source"],
+        status=ApplicationStatus.APPLIED,
+    )
+
+
 if __name__ == "__main__":
     out = generate_jobs_report()
     print(f"Written to {out}")

@@ -10,6 +10,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import anthropic
 import openai
 from dotenv import load_dotenv
 
@@ -84,6 +85,7 @@ STATUS_ICONS = {
 _pending: dict = {}
 _awaiting_time: dict = {}    # chat_id -> partial reminder dict waiting for a time reply
 _awaiting_context: dict = {} # chat_id -> filename waiting for new content
+_awaiting_job: dict = {}    # chat_id -> {"step": str, "data": dict}
 
 _ENCOURAGEMENTS = [
     "Look at you, a functioning adult!",
@@ -510,6 +512,30 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
             await reply(f"Failed to set reminder: {e}")
         return
 
+    # job tracker: <description> — parse and add via Claude (works with voice notes too)
+    if lower.startswith("job tracker"):
+        description = re.sub(r"^job tracker[:\s]*", "", text, flags=re.IGNORECASE).strip()
+        if not description:
+            # Start interactive flow
+            _awaiting_job[update_chat_id] = {"step": "company", "data": {}}
+            await reply("Company name?")
+            return
+        await reply("📋 Parsing job details…")
+        parsed = await _parse_job_from_text(description)
+        if not parsed:
+            await reply("Couldn't parse that. Try: 'job tracker: Applied to Acme for Backend Engineer via LinkedIn'")
+            return
+        from jobs import add_application
+        app = add_application(**{k: parsed.get(k, "") for k in ("company", "title", "url", "source", "notes")})
+        await reply(f"✅ Added: <b>{html.escape(app.company_name)}</b> — {html.escape(app.job_title)}", )
+        return
+
+    # add a job — start interactive flow
+    if re.match(r"^add\s+a?\s*job\b", lower):
+        _awaiting_job[update_chat_id] = {"step": "company", "data": {}}
+        await reply("Company name?")
+        return
+
     # add: — user adds their own agenda item
     if lower.startswith("add:"):
         item_text = text[4:].strip()
@@ -603,6 +629,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context_.write(fname, text)
         title = fname.replace(".md", "").title()
         await update.message.reply_text(f"✅ {title} updated.")
+        return
+
+    # intercept job entry flow
+    if chat_id in _awaiting_job:
+        if text.strip().lower() == "/cancel":
+            del _awaiting_job[chat_id]
+            await update.message.reply_text("Job entry cancelled.")
+            return
+        next_prompt = _job_flow_next(chat_id, text.strip())
+        if next_prompt:
+            await update.message.reply_text(next_prompt)
+        else:
+            from jobs import add_application
+            data = _awaiting_job.pop(chat_id)["data"]
+            app = add_application(**data)
+            await update.message.reply_text(
+                f"✅ Added: <b>{html.escape(app.company_name)}</b> — {html.escape(app.job_title)}",
+                parse_mode="HTML",
+            )
         return
 
     # intercept time reply for pending reminder
@@ -751,6 +796,12 @@ HELP_TEXT = """<b>Planning</b>
 /habits — today's habit checklist (from habits.md)
 /habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
 <code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
+
+<b>Job Search</b>
+/jobs — job application status summary
+<code>job tracker: &lt;description&gt;</code> — add application from text or voice note
+  e.g. <i>job tracker: Applied to Acme for Backend Engineer via LinkedIn</i>
+<code>add a job</code> — interactive step-by-step entry
 
 <b>Review</b>
 /daily — end-of-day digest with quote, wins, and suggestions (also runs nightly at 22:30)
@@ -979,6 +1030,66 @@ async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
+async def cmd_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    from jobs import status_summary
+    await update.message.reply_text(status_summary(), parse_mode="HTML")
+
+
+async def _parse_job_from_text(text: str) -> dict | None:
+    """Use Claude to extract job fields from a natural language description."""
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        tools=[{
+            "name": "add_job_application",
+            "description": "Extract job application fields from a natural language description",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "company":  {"type": "string"},
+                    "title":    {"type": "string", "description": "Job title"},
+                    "url":      {"type": "string", "description": "Job posting URL if mentioned"},
+                    "source":   {"type": "string", "description": "Where found, e.g. LinkedIn, direct"},
+                    "notes":    {"type": "string", "description": "Any extra notes"},
+                },
+                "required": ["company", "title"],
+            },
+        }],
+        tool_choice={"type": "tool", "name": "add_job_application"},
+        messages=[{"role": "user", "content": f"Extract job application details: {text}"}],
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            return block.input
+    return None
+
+
+def _job_flow_next(chat_id: int, value: str) -> str | None:
+    """Advance the job entry flow. Returns next prompt or None when complete."""
+    state = _awaiting_job[chat_id]
+    step = state["step"]
+
+    if step == "company":
+        state["data"]["company"] = value
+        state["step"] = "title"
+        return "Job title?"
+    elif step == "title":
+        state["data"]["title"] = value
+        state["step"] = "url"
+        return "URL? (or 'skip')"
+    elif step == "url":
+        state["data"]["url"] = "" if value.lower() in ("skip", "-", "") else value
+        state["step"] = "source"
+        return "Source? (LinkedIn, direct, etc. — or 'skip')"
+    elif step == "source":
+        state["data"]["source"] = "" if value.lower() in ("skip", "-", "") else value
+        return None  # done
+    return None
+
+
 async def cmd_habit_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -1073,6 +1184,7 @@ def main():
     app.add_handler(CommandHandler("metrics", cmd_metrics))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("daily", cmd_daily_digest))
+    app.add_handler(CommandHandler("jobs", cmd_jobs))
     app.add_handler(CommandHandler("status", cmd_agenda_status))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
