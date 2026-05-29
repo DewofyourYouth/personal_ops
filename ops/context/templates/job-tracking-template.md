@@ -4,7 +4,9 @@
 
 ### Applied
 
-### Interview 
+### Phone Screen
+
+### Interview
 
 ### Rejected
 
@@ -14,30 +16,36 @@
 
 ## Applied Previously
 
-| Company | Application Date | Notes |
-| ------- | ---------------- | ----- |
-|         |                  |       |
+| Company | Job Title | Application Date | Source | Notes |
+| ------- | --------- | ---------------- | ------ | ----- |
+|         |           |                  |        |       |
+
+## Phone Screen
+
+| Company | Job Title | Date | Notes |
+| ------- | --------- | ---- | ----- |
+|         |           |      |       |
 
 ## Interviews Waiting For Response
 
-| Company | Interview Date | Notes |
-| ------- | ---------------- | ----- |
-|         |                  |       |
+| Company | Job Title | Interview Date | Notes |
+| ------- | --------- | -------------- | ----- |
+|         |           |                |       |
 
 ## Rejected
 
-| Company | Rejection Date | Reason | Notes |
-| ------- | -------------- | ------ | ----- |
-|         |                |        |       |
+| Company | Job Title | Rejection Date | Notes |
+| ------- | --------- | -------------- | ----- |
+|         |           |                |       |
 
 ## Withdrew
 
-| Company | Withdrawal Date | Reason | Notes |
-| ------- | --------------- | ------ | ----- |
-|         |                 |        |       |
+| Company | Job Title | Withdrawal Date | Notes |
+| ------- | --------- | --------------- | ----- |
+|         |           |                 |       |
 
-## Offer 
+## Offer
 
-| Company | Date Offered | Amount | Notes |
-| ------- | ------------ | ------ | ----- |
-|         |              |        |       |
+| Company | Job Title | Date Offered | Notes |
+| ------- | --------- | ------------ | ----- |
+|         |           |              |       |

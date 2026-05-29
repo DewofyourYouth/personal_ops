@@ -99,12 +99,12 @@ def render_markdown(buckets: dict[str, list[Application]]) -> str:
     def is_today(a: Application) -> bool:
         return a.applied_date == today
 
-    today_applied    = [a for a in buckets[ApplicationStatus.APPLIED]      if is_today(a)]
-    today_interview  = [a for a in buckets[ApplicationStatus.INTERVIEW]     if is_today(a)]
-    today_interview += [a for a in buckets[ApplicationStatus.PHONE_SCREEN]  if is_today(a)]
-    today_rejected   = [a for a in buckets[ApplicationStatus.REJECTED]      if is_today(a)]
-    today_offer      = [a for a in buckets[ApplicationStatus.OFFER]         if is_today(a)]
-    today_withdrew   = [a for a in buckets[ApplicationStatus.WITHDREW]      if is_today(a)]
+    today_applied      = [a for a in buckets[ApplicationStatus.APPLIED]      if is_today(a)]
+    today_phone_screen = [a for a in buckets[ApplicationStatus.PHONE_SCREEN] if is_today(a)]
+    today_interview    = [a for a in buckets[ApplicationStatus.INTERVIEW]    if is_today(a)]
+    today_rejected     = [a for a in buckets[ApplicationStatus.REJECTED]     if is_today(a)]
+    today_offer        = [a for a in buckets[ApplicationStatus.OFFER]        if is_today(a)]
+    today_withdrew     = [a for a in buckets[ApplicationStatus.WITHDREW]     if is_today(a)]
 
     def by_date(apps: list[Application]) -> list[Application]:
         return sorted(apps, key=lambda a: a.applied_date or datetime.date.min, reverse=True)
@@ -112,11 +112,12 @@ def render_markdown(buckets: dict[str, list[Application]]) -> str:
     lines: list[str] = [
         f"# Job Tracker for {today.isoformat()}\n",
         "## Today\n",
-        "### Applied\n",   _bullet_list(today_applied),
-        "### Interview\n", _bullet_list(today_interview),
-        "### Rejected\n",  _bullet_list(today_rejected),
-        "### Offer\n",     _bullet_list(today_offer),
-        "### Withdrew\n",  _bullet_list(today_withdrew),
+        "### Applied\n",       _bullet_list(today_applied),
+        "### Phone Screen\n",  _bullet_list(today_phone_screen),
+        "### Interview\n",     _bullet_list(today_interview),
+        "### Rejected\n",      _bullet_list(today_rejected),
+        "### Offer\n",         _bullet_list(today_offer),
+        "### Withdrew\n",      _bullet_list(today_withdrew),
         "## Applied Previously\n",
         _row("Company", "Job Title", "Application Date", "Source", "Notes"),
         _row("-------", "---------", "----------------", "------", "-----"),
@@ -126,11 +127,20 @@ def render_markdown(buckets: dict[str, list[Application]]) -> str:
 
     lines += [
         "",
+        "## Phone Screen\n",
+        _row("Company", "Job Title", "Date", "Notes"),
+        _row("-------", "---------", "----", "-----"),
+    ]
+    for a in by_date(buckets[ApplicationStatus.PHONE_SCREEN]):
+        lines.append(_row(a.display_name(), a.job_title, a.date_str(), a.notes))
+
+    lines += [
+        "",
         "## Interviews Waiting For Response\n",
         _row("Company", "Job Title", "Interview Date", "Notes"),
         _row("-------", "---------", "--------------", "-----"),
     ]
-    for a in by_date(buckets[ApplicationStatus.INTERVIEW] + buckets[ApplicationStatus.PHONE_SCREEN]):
+    for a in by_date(buckets[ApplicationStatus.INTERVIEW]):
         lines.append(_row(a.display_name(), a.job_title, a.date_str(), a.notes))
 
     lines += [
