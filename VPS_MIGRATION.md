@@ -42,6 +42,7 @@
 **Transfer data:**
 - [ ] `rsync ops/log/ops.db` to VPS — all log + metric history
 - [ ] `rsync ops/log/scheduler.db` to VPS — APScheduler job store
+- [ ] Update `docker-compose.yml` context volume mount from `./ops/context` to the absolute path of the personal-ops-context repo on VPS
 
 **Deploy:**
 - [ ] `docker compose up -d` on VPS

@@ -1741,6 +1741,7 @@ def main():
     app = (
         Application.builder()
         .token(TOKEN)
+        # Default 5s timeouts are too short for container startup — increased to 20s
         .connect_timeout(20)
         .read_timeout(20)
         .post_init(_post_init)

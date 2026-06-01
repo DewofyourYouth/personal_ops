@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# SQLite is the primary store. CSV is legacy / external sync only.
+_LOG_DIR = os.path.join(os.getcwd(), "ops/log")
+
 APPLICATIONS_CSV = Path(
     os.environ.get(
         "JOB_TRACKER_CSV",
@@ -68,19 +71,20 @@ def _parse_date(raw: str) -> datetime.date | None:
 
 
 def load_applications() -> dict[str, list[Application]]:
+    from db import Database
+    db = Database(os.path.join(_LOG_DIR, "ops.db"))
     buckets: dict[str, list[Application]] = {s: [] for s in ApplicationStatus}
-    with open(APPLICATIONS_CSV, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            app = Application(
-                company_name=row.get("Company", "").strip(),
-                job_title=row.get("Job Title", "").strip(),
-                url=row.get("URL", "").strip(),
-                applied_date=_parse_date(row.get("Applied Date", "")),
-                notes=row.get("Notes", "").strip(),
-                source=row.get("Source", "").strip(),
-                status=_parse_status(row.get("Status", "")),
-            )
-            buckets[app.status].append(app)
+    for row in db.get_jobs():
+        app = Application(
+            company_name=row["company"],
+            job_title=row["title"],
+            url=row["url"] or "",
+            applied_date=_parse_date(row["applied_date"]),
+            notes=row["notes"] or "",
+            source=row["source"] or "",
+            status=_parse_status(row["status"]),
+        )
+        buckets[app.status].append(app)
     return buckets
 
 
@@ -431,14 +435,11 @@ def add_application(company: str, title: str = "", url: str = "",
         "Notes": notes.strip(),
         "Source": source.strip(),
     }
-    # Append to CSV
-    write_header = not APPLICATIONS_CSV.exists()
-    with open(APPLICATIONS_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["Company", "Job Title", "URL",
-                                               "Applied Date", "Status", "Notes", "Source"])
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
+    # Primary: write to SQLite
+    from db import Database
+    db = Database(os.path.join(_LOG_DIR, "ops.db"))
+    db.upsert_job(row["Company"], row["Job Title"], row["URL"],
+                  row["Applied Date"], str(parsed_status), row["Notes"], row["Source"])
     return Application(
         company_name=row["Company"],
         job_title=row["Job Title"],
