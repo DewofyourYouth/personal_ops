@@ -52,6 +52,12 @@ class Reminders:
                 if current_time == time(h, m):
                     due.append(r)
 
+            elif r["type"] == "weekly":
+                # day: 0=Mon … 6=Sun, time: HH:MM
+                h, m = map(int, r["time"].split(":"))
+                if now.weekday() == r["day"] and current_time == time(h, m):
+                    due.append(r)
+
             elif r["type"] == "interval":
                 interval = r["interval_minutes"]
                 start_h, start_m = map(int, r.get("window_start", "08:00").split(":"))

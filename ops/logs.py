@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from db import Database
+
 TZ = ZoneInfo("Asia/Jerusalem")
 
 
@@ -12,16 +14,22 @@ class Logs:
     def __init__(self, log_dir: str):
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
+        self.db = Database(os.path.join(log_dir, "ops.db"))
 
     # --- Writing ---
 
     def write(self, tag: str, content: str, extra: dict | None = None):
-        entry = {
-            "ts": datetime.now(TZ).isoformat(timespec="seconds"),
-            "tag": tag,
-            "content": content,
-            **(extra or {}),
-        }
+        ts = datetime.now(TZ).isoformat(timespec="seconds")
+        date_str = date.today().isoformat()
+        entry = {"ts": ts, "tag": tag, "content": content, **(extra or {})}
+
+        # Primary: write to SQLite
+        if tag == "metric" and extra:
+            self.db.insert_metric(ts, date_str, extra.get("key", ""), str(extra.get("value", "")), extra.get("unit", ""))
+        else:
+            self.db.insert_entry(ts, date_str, tag, content)
+
+        # Secondary: keep writing JSONL for debugging
         with open(self._jsonl_path(date.today()), "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -31,20 +39,30 @@ class Logs:
     # --- Reading ---
 
     def read_today(self) -> list[dict]:
-        path = self._jsonl_path(date.today())
-        if not os.path.exists(path):
-            return []
-        entries = []
-        for line in open(path):
-            try:
-                entries.append(json.loads(line))
-            except Exception:
-                pass
-        return entries
+        rows = self.db.entries_for_date(date.today())
+        return [dict(r) for r in rows]
 
     def read_day_as_text(self, d: date) -> str:
         lines = self._read_day(d)
         return "\n".join(lines) if lines else "No log entries."
+
+    def read_agenda_as_text(self, d: date) -> str:
+        """Return the day's agenda items with their completion status, or empty string if none."""
+        path = Path(self.log_dir) / f"{d}-agenda.json"
+        if not path.exists():
+            return ""
+        try:
+            items = json.loads(path.read_text()).get("items", [])
+            if not items:
+                return ""
+            lines = []
+            for item in items:
+                status = item.get("status", "open")
+                icon = {"done": "✅", "missed": "❌"}.get(status, "⬜")
+                lines.append(f"{icon} {item['text']}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def read_recent(self, days: int = 3) -> str:
         sections = []
@@ -55,23 +73,32 @@ class Logs:
                 sections.append(f"### {d}\n" + "\n".join(lines))
         return "\n\n".join(sections) if sections else "No recent logs."
 
+    # Metrics where multiple readings per day exist and the highest value is correct
+    _MAX_PER_DAY_METRICS = {"steps"}
+
     def load_metrics(self, days: int = 14) -> dict[str, list]:
         from collections import defaultdict
         result: dict = defaultdict(list)
-        for i in range(days, -1, -1):
-            d = date.today() - timedelta(days=i)
-            path = self._jsonl_path(d)
-            if not path.exists():
-                continue
-            for line in path.read_text().splitlines():
-                try:
-                    e = json.loads(line)
-                    if e.get("tag") == "metric":
-                        unit = e.get("unit", "")
-                        display = f"{e['value']}{unit}" if unit else e["value"]
-                        result[e["key"]].append((str(d), display))
-                except Exception:
-                    pass
+        start = date.today() - timedelta(days=days)
+
+        # For most metrics: all readings
+        rows = self.db.metrics_for_range(start, date.today())
+        seen_max = set()
+        for r in rows:
+            if r["key"] in self._MAX_PER_DAY_METRICS:
+                seen_max.add(r["key"])
+                continue  # handled separately below
+            display = f"{r['value']}{r['unit']}" if r["unit"] else r["value"]
+            result[r["key"]].append((r["date"], display))
+
+        # For max-per-day metrics: one entry per day, highest value wins
+        for key in seen_max:
+            max_rows = self.db.metrics_max_per_day(start, date.today(), key)
+            for r in max_rows:
+                display = f"{r['value']}{r['unit']}" if r["unit"] else str(r["value"])
+                result[key].append((r["date"], display))
+            result[key].sort(key=lambda x: x[0])
+
         return dict(result)
 
     # --- Stats ---
@@ -111,26 +138,31 @@ class Logs:
                 except Exception:
                     pass
 
-            # Log entry stats
-            jsonl = self._jsonl_path(d)
-            if jsonl.exists():
+            # Log entry stats — read from SQLite, fall back to JSONL for pre-migration dates
+            rows = self.db.entries_for_date(d)
+            if rows:
+                entries = [dict(r) for r in rows]
+            else:
                 entries = []
-                for line in jsonl.read_text().splitlines():
-                    try:
-                        entries.append(json.loads(line))
-                    except Exception:
-                        pass
-                s["wins"] = sum(1 for e in entries if e.get("tag") == "win")
-                s["habits"] = [e["content"].strip().lower() for e in entries if e.get("tag") == "habit"]
-                reminder_times = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "reminder"]
-                checkin_times  = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "checkin"]
-                s["reminders"] = len(reminder_times)
-                s["checkins"]  = len(checkin_times)
-                if reminder_times:
-                    s["responded"] = sum(
-                        1 for rt in reminder_times
-                        if any(timedelta(0) <= ct - rt <= timedelta(minutes=15) for ct in checkin_times)
-                    )
+                jsonl = self._jsonl_path(d)
+                if jsonl.exists():
+                    for line in jsonl.read_text().splitlines():
+                        try:
+                            entries.append(json.loads(line))
+                        except Exception:
+                            pass
+            s["wins"] = sum(1 for e in entries if e.get("tag") == "win")
+            s["habits"] = [e["content"].strip().lower() for e in entries if e.get("tag") == "habit"]
+            s["skips"] = [e["content"].strip() for e in entries if e.get("tag") == "skip"]
+            reminder_times = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "reminder"]
+            checkin_times  = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "checkin"]
+            s["reminders"] = len(reminder_times)
+            s["checkins"]  = len(checkin_times)
+            if reminder_times:
+                s["responded"] = sum(
+                    1 for rt in reminder_times
+                    if any(timedelta(0) <= ct - rt <= timedelta(minutes=15) for ct in checkin_times)
+                )
 
             stats[str(d)] = s
         return stats
@@ -142,26 +174,20 @@ class Logs:
             return ""
 
         lines = ["## Daily stats\n"]
-        lines.append("| Date | Completion | Anchors | Wins | Checkin response |")
-        lines.append("|------|------------|---------|------|-----------------|")
+        lines.append("| Date | Completion | Anchors | Wins |")
+        lines.append("|------|------------|---------|------|")
 
         for date_str, s in stats.items():
             comp = f"{s['completion'][0]}/{s['completion'][1]} ({100*s['completion'][0]//s['completion'][1]}%)" if s["completion"] else "—"
             anch = f"{s['anchors'][0]}/{s['anchors'][1]} ({100*s['anchors'][0]//s['anchors'][1]}%)" if s["anchors"] else "—"
             wins = str(s["wins"]) if s["wins"] else "—"
-            if s["reminders"] == 0:
-                cr = "—"
-            else:
-                cr = f"{s['responded']}/{s['reminders']}"
-            lines.append(f"| {date_str} | {comp} | {anch} | {wins} | {cr} |")
+            skip_note = f" ⚠️ skip: {'; '.join(s.get('skips', []))}" if s.get("skips") else ""
+            lines.append(f"| {date_str} | {comp} | {anch} | {wins} |{skip_note}")
 
         # Rolling averages over days with completion data
         comp_days = [s["completion"] for s in stats.values() if s["completion"]]
         anch_days = [s["anchors"]    for s in stats.values() if s["anchors"]]
         total_wins = sum(s["wins"] for s in stats.values())
-        total_rem  = sum(s["reminders"] for s in stats.values())
-        total_resp = sum(s["responded"] for s in stats.values())
-
         summary = []
         if comp_days:
             avg = sum(d / t for d, t in comp_days) / len(comp_days)
@@ -171,8 +197,6 @@ class Logs:
             summary.append(f"avg anchor rate {avg:.0%}")
         if total_wins:
             summary.append(f"{total_wins} wins logged")
-        if total_rem:
-            summary.append(f"checkin response {total_resp}/{total_rem}")
         if summary:
             lines.append("\n**Rolling (" + str(days) + " days):** " + ", ".join(summary))
 
@@ -183,24 +207,206 @@ class Logs:
         for s in stats.values():
             habit_counts.update(set(s["habits"]))  # count days, not occurrences
         if habit_counts:
+            earliest_habit = self.earliest_habit_date()
+            habit_days = (date.today() - earliest_habit).days + 1 if earliest_habit else days
+            habit_window = min(days, habit_days)
+            # Shabbat (Saturday) is explicitly excluded from habit tracking
+            shabbat_in_window = sum(
+                1 for i in range(habit_window)
+                if (date.today() - timedelta(days=i)).weekday() == 5
+            )
+            trackable_days = habit_window - shabbat_in_window
             lines.append("\n## Habit log\n")
-            lines.append(f"_(logged via `habit:` prefix; {days_with_habit_logging}/{days} days had any habit entries)_\n")
+            lines.append(
+                f"_(logged via `habit:` prefix; {days_with_habit_logging}/{trackable_days} non-Shabbat days had any habit entries"
+                + (f" — habit tracking started {earliest_habit})" if earliest_habit and habit_days < days else ")")
+                + "_\n"
+            )
             lines.append("| Habit | Days logged |")
             lines.append("|-------|-------------|")
             for habit, count in sorted(habit_counts.items(), key=lambda x: -x[1]):
-                lines.append(f"| {habit} | {count}/{days} |")
+                lines.append(f"| {habit} | {count}/{trackable_days} |")
 
         return "\n".join(lines)
 
     def format_metrics_for_prompt(self, days: int = 14) -> str:
+        """Pre-compute stats for health metrics; show recent entries for others.
+
+        Health metrics (steps, weight) get 7-day and 30-day averages plus trend
+        direction — the LLM gets numbers, not raw data to average itself.
+        Other metrics (mood, energy, custom) show the last 7 readings as-is.
+        """
+        lines = []
+
+        # --- Health metrics: pre-computed summaries ---
+        steps_summary = self._steps_summary()
+        if steps_summary:
+            lines.append(f"Steps: {steps_summary}")
+
+        weight_summary = self._weight_summary()
+        if weight_summary:
+            lines.append(f"Weight: {weight_summary}")
+
+        # --- Other metrics: recent entries ---
         data = self.load_metrics(days=days)
-        if not data:
-            return ""
-        lines = ["Tracked metrics:"]
-        for key, entries in sorted(data.items()):
-            recent = ", ".join(f"{d}: {v}" for d, v in entries[-7:])
+        other_keys = [k for k in sorted(data.keys()) if k not in ("steps", "weight")]
+        for key in other_keys:
+            recent = ", ".join(f"{d}: {v}" for d, v in data[key][-7:])
             lines.append(f"  {key}: {recent}")
-        return "\n".join(lines)
+
+        return ("Tracked metrics:\n" + "\n".join(lines)) if lines else ""
+
+    def _steps_summary(self) -> str:
+        today = date.today()
+        start_7  = today - timedelta(days=6)
+        start_30 = today - timedelta(days=29)
+
+        def _active_avg(rows) -> float | None:
+            vals = []
+            for r in rows:
+                try:
+                    d = date.fromisoformat(r["date"])
+                    if d.weekday() not in (4, 5):  # exclude Fri/Sat
+                        vals.append(float(r["value"]))
+                except (ValueError, TypeError):
+                    pass
+            return round(sum(vals) / len(vals)) if vals else None
+
+        rows_7  = self.db.metrics_max_per_day(start_7,  today, "steps")
+        rows_30 = self.db.metrics_max_per_day(start_30, today, "steps")
+
+        avg_7  = _active_avg(rows_7)
+        avg_30 = _active_avg(rows_30)
+
+        if avg_7 is None:
+            return ""
+
+        recent = ", ".join(
+            f"{r['date']}: {r['value']}"
+            for r in rows_7
+            if date.fromisoformat(r["date"]).weekday() not in (4, 5)
+        )
+
+        trend = ""
+        if avg_7 and avg_30:
+            diff = avg_7 - avg_30
+            if diff > 300:
+                trend = " ↑ vs 30-day baseline"
+            elif diff < -300:
+                trend = " ↓ vs 30-day baseline"
+            else:
+                trend = " → flat vs 30-day baseline"
+
+        parts = []
+        if recent:
+            parts.append(f"last 7 days (excl. Fri/Sat): {recent}")
+        if avg_7:
+            parts.append(f"7-day avg: {avg_7:,}")
+        if avg_30:
+            parts.append(f"30-day avg: {avg_30:,}{trend}")
+        return " | ".join(parts)
+
+    def _weight_summary(self) -> str:
+        today = date.today()
+        start_7  = today - timedelta(days=6)
+        start_30 = today - timedelta(days=29)
+
+        def _latest_per_day(rows) -> list[tuple[str, float]]:
+            result = []
+            for r in rows:
+                try:
+                    result.append((r["date"], float(r["value"])))
+                except (ValueError, TypeError):
+                    pass
+            return result
+
+        rows_7  = self.db.metrics_max_per_day(start_7,  today, "weight")
+        rows_30 = self.db.metrics_max_per_day(start_30, today, "weight")
+
+        entries_7  = _latest_per_day(rows_7)
+        entries_30 = _latest_per_day(rows_30)
+
+        if not entries_7:
+            return ""
+
+        avg_7  = round(sum(v for _, v in entries_7)  / len(entries_7),  1) if entries_7  else None
+        avg_30 = round(sum(v for _, v in entries_30) / len(entries_30), 1) if entries_30 else None
+
+        recent_vals = " → ".join(f"{v}" for _, v in entries_7[-5:])
+
+        trend = ""
+        if avg_7 and avg_30:
+            diff = avg_7 - avg_30
+            if diff < -0.3:
+                trend = f" ↓ vs 30-day avg ({avg_30} kg)"
+            elif diff > 0.3:
+                trend = f" ↑ vs 30-day avg ({avg_30} kg)"
+            else:
+                trend = f" → flat vs 30-day avg ({avg_30} kg)"
+
+        parts = [f"recent: {recent_vals} kg"]
+        if avg_7:
+            parts.append(f"7-day avg: {avg_7} kg{trend}")
+        return " | ".join(parts)
+
+    def earliest_log_date(self) -> date | None:
+        return self.db.earliest_entry_date()
+
+    def earliest_habit_date(self) -> date | None:
+        return self.db.earliest_entry_date_with_tag("habit")
+
+    def read_day_difficulty(self, d: date) -> str:
+        """Return 'hard', 'okay', or 'good' based on mood/energy logged for the day."""
+        # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
+        # Legacy label/emoji fallbacks for old data.
+        mood_scores   = {"5": 5, "4": 4, "3": 3, "2": 2, "1": 1,
+                         "great": 5, "good": 4, "okay": 3, "low": 2, "bad": 1,
+                         "😄": 5, "😊": 4, "😐": 3, "😕": 2, "😞": 1}
+        energy_scores = {"3": 3, "2": 2, "1": 1,
+                         "high": 3, "okay": 2, "drained": 1,
+                         "⚡": 3, "🔋": 2, "🪫": 1}
+
+        moods, energies = [], []
+        rows = self.db.metrics_for_range(d, d)
+        for r in rows:
+            key, val = r["key"], str(r["value"])
+            if key == "mood" and val in mood_scores:
+                moods.append(mood_scores[val])
+            elif key == "energy" and val in energy_scores:
+                energies.append(energy_scores[val])
+
+        # Fallback to JSONL for pre-migration dates
+        if not moods and not energies:
+            path = self._jsonl_path(d)
+            if not path.exists():
+                return "okay"
+            for line in path.read_text().splitlines():
+                try:
+                    e = json.loads(line)
+                    if e.get("tag") != "metric":
+                        continue
+                    key, val = e.get("key", ""), str(e.get("value", ""))
+                    if key == "mood" and val in mood_scores:
+                        moods.append(mood_scores[val])
+                    elif key == "energy" and val in energy_scores:
+                        energies.append(energy_scores[val])
+                except Exception:
+                    pass
+
+        if not moods and not energies:
+            return "okay"
+
+        # Mood: 1-5, Energy: 1-3. Hard = drained energy or low/bad mood pulling avg down.
+        has_drained  = any(e == 1 for e in energies)
+        has_bad_mood = any(m <= 2 for m in moods)
+        mood_avg     = sum(moods) / len(moods) if moods else 3
+        energy_avg   = sum(energies) / len(energies) if energies else 2
+
+        if has_drained or (has_bad_mood and mood_avg < 2.5):
+            return "hard"
+        if mood_avg >= 4 and energy_avg >= 2.5:
+            return "good"
+        return "okay"
 
     # --- Internal ---
 
@@ -208,6 +414,11 @@ class Logs:
         return Path(self.log_dir) / f"{d}.jsonl"
 
     def _read_day(self, d: date) -> list[str]:
+        # Read from SQLite (primary). Fall back to JSONL then MD for pre-migration dates.
+        rows = self.db.entries_for_date(d)
+        if rows:
+            return [f"[{r['ts']}] #{r['tag']}: {r['content']}" for r in rows]
+        # Fallback: JSONL (pre-migration data)
         jsonl = self._jsonl_path(d)
         md = Path(self.log_dir) / f"{d}.md"
         if jsonl.exists():

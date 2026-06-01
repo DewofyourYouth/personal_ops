@@ -1,22 +1,30 @@
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import anthropic
 
 from context import Context
 from logs import Logs
+from baseline_tracker import Baseline
 
 
-def day_type() -> str:
-    day = date.today().weekday()
+def _day_type_for(d: date) -> str:
+    day = d.weekday()
     if day in (0, 2, 4):
         return "Haki development day (Mon/Wed/Fri)"
     elif day in (1, 3):
         return "Job search day (Tue/Thu)"
-    else:
-        return "Weekend / Shabbat"
+    elif day == 6:
+        return "Sunday (marketability / independent income day)"
+    else:  # Saturday
+        return "Shabbat"
+
+
+def day_type() -> str:
+    return _day_type_for(date.today())
 
 
 class Planner:
@@ -24,6 +32,7 @@ class Planner:
         self.model = model
         self.logs = logs
         self.context = context or Context()
+        self.baseline = Baseline(logs.log_dir)
 
     async def propose(self, calendar_events: str = "", existing_summary: str = "") -> list[str]:
         client = anthropic.AsyncAnthropic(max_retries=4)
@@ -75,14 +84,39 @@ class Planner:
 
         stats_text = self.logs.format_stats_for_prompt(days=days)
 
-        user_content = f"Review the last {days} days.\n\n"
+        earliest = self.logs.earliest_log_date()
+        earliest_habit = self.logs.earliest_habit_date()
+        if earliest:
+            days_of_data = (date.today() - earliest).days + 1
+            user_content = (
+                f"Review the last {days} days.\n"
+                f"Note: the bot has only been running since {earliest} ({days_of_data} day{'s' if days_of_data != 1 else ''} of data). "
+                f"There is no data before that date — absence of logs before {earliest} is not a behavioral pattern, "
+                f"it simply means the system did not exist yet. Do not comment on or penalize low coverage for the full {days}-day window.\n"
+            )
+        else:
+            user_content = f"Review the last {days} days.\n"
+        if earliest_habit:
+            habit_days = (date.today() - earliest_habit).days + 1
+            user_content += (
+                f"Note: habit tracking started {earliest_habit} ({habit_days} day{'s' if habit_days != 1 else ''} ago). "
+                f"Low habit log counts are expected — do not flag them as a pattern.\n"
+            )
+        user_content += "\n"
         if stats_text:
             user_content += f"{stats_text}\n\n"
         if history:
             user_content += f"{history}\n\n"
         if metrics_text:
             user_content += f"{metrics_text}\n\n"
-        user_content += f"Log entries:\n{self.logs.read_recent(days=days)}"
+        baseline_text = self.baseline.format_for_prompt()
+        if baseline_text:
+            user_content += f"{baseline_text}\n\n"
+        daily_summaries = self._read_daily_digests(days=days)
+        if daily_summaries:
+            user_content += f"Daily summaries (this week):\n{daily_summaries}"
+        else:
+            user_content += f"Log entries:\n{self.logs.read_recent(days=days)}"
 
         response = await client.messages.create(
             model=self.model,
@@ -105,8 +139,12 @@ class Planner:
                         "- If a log entry explicitly states what happened (e.g. 'We learned Yoma every day this week'), treat that as authoritative — it overrides inferences from agenda completion data.\n"
                         "- Early log entries may contain bot-test noise (short fragments, repeated command words). Do not read these as real activity signals.\n"
                         "- A missed agenda item caused by an external constraint (e.g. chavrusa canceled, appointment ran over) is not a behavioral pattern. Classify it correctly.\n"
+                        "- Log entries tagged #wrong are explicit user-flagged prompt failures — the bot proposed or did something it shouldn't have. Surface these in the digest and suggest which context file (agenda-rules.md, review-rules.md, etc.) should be updated to prevent recurrence.\n"
                         "- Habits (defined in habits.md) are NOT tracked via the agenda. Do not infer whether habits were completed or missed from agenda data. If a habit appears in the agenda history, ignore its completion status — it proves nothing about whether the habit was actually done.\n"
-                        "- Habit completion IS tracked via explicit `habit:` log entries. The stats include a Habit log table showing which habits were logged and on how many days. Use this as the authoritative source for habit adherence. Absence from the habit log on a given day means the habit was not logged — not necessarily that it wasn't done."
+                        "- Habit completion IS tracked via explicit `habit:` log entries. The stats include a Habit log table showing which habits were logged and on how many days. Use this as the authoritative source for habit adherence. Absence from the habit log on a given day means the habit was not logged — not necessarily that it wasn't done.\n"
+                        "- Shabbat (Saturday) is intentionally offline — habits are never tracked on Shabbat. The maximum possible habit logging frequency is 6 days per week, not 7. Never flag Shabbat as a missed day or treat a 6/6 week as anything other than perfect.\n"
+                        "- Step counts on Friday and Saturday are structurally low due to Shabbat — do not use raw step averages. The metrics include a pre-computed average excluding Fri/Sat; use that figure when referencing step activity.\n"
+                        "- Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused and remove those days from the denominator for affected habits — they are not misses."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -122,12 +160,46 @@ class Planner:
 
     async def daily_digest(self, target_date: date | None = None) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
-        history = self._completion_history(days=14)
+        # 7 days: this week only — the daily digest reviews today, not a fortnight
+        history = self._completion_history(days=7)
         stats_text = self.logs.format_stats_for_prompt(days=7)
 
         d = target_date or date.today()
-        user_content = f"Date: {d} ({day_type()}).\n\n"
-        user_content += f"Log for {d}:\n{self.logs.read_day_as_text(d)}\n\n"
+        tomorrow = d + timedelta(days=1)
+        earliest = self.logs.earliest_log_date()
+        now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        user_content = f"Date: {d} ({day_type()}). Current time: {now_il.strftime('%H:%M')} Israel time.\n"
+        user_content += f"Tomorrow: {tomorrow.strftime('%A')} {tomorrow} ({_day_type_for(tomorrow)}).\n"
+        earliest_habit = self.logs.earliest_habit_date()
+        if earliest:
+            days_of_data = (d - earliest).days + 1
+            user_content += (
+                f"Note: the bot has only been running since {earliest} ({days_of_data} day{'s' if days_of_data != 1 else ''} of data). "
+                f"Absence of logs or stats before {earliest} means the system did not exist — not a behavioral gap.\n"
+            )
+        if earliest_habit:
+            habit_days = (d - earliest_habit).days + 1
+            user_content += (
+                f"Note: habit tracking started {earliest_habit} ({habit_days} day{'s' if habit_days != 1 else ''} ago). "
+                f"Low habit log counts before that date are not a pattern — the system didn't exist.\n"
+            )
+        day_difficulty = self.logs.read_day_difficulty(d)
+        if day_difficulty == "hard":
+            user_content += (
+                "Day assessment: HARD DAY. Mood and/or energy readings were significantly low. "
+                "External disruptions are logged. Adjust the digest accordingly:\n"
+                "- Wins section: lead with acknowledgment of what held together despite the difficulty\n"
+                "- Improve section: keep it to one line max, or omit entirely if everything that slipped had a clear external cause\n"
+                "- Suggestions: recovery only — sleep, tomorrow's one small thing, nothing more\n"
+                "The user does not need to be held accountable today. They need to feel seen.\n"
+            )
+        elif day_difficulty == "good":
+            user_content += "Day assessment: GOOD DAY. Energy and mood were positive — hold to a higher standard and push constructively.\n"
+
+        agenda_text = self.logs.read_agenda_as_text(d)
+        if agenda_text:
+            user_content += f"\nAgenda for {d} (what was planned and its status):\n{agenda_text}\n"
+        user_content += f"\nLog for {d}:\n{self.logs.read_day_as_text(d)}\n\n"
         if stats_text:
             user_content += f"{stats_text}\n\n"
         if history:
@@ -143,6 +215,25 @@ class Planner:
                     "text": (
                         "You are a personal ops assistant generating an end-of-day digest. "
                         "Review the user's day — their logs, habit tracking, agenda completion, and recent history.\n\n"
+                        "The current time is provided. If it is before midnight, the day is not yet over — "
+                        "do not penalise incomplete agenda items that there is still time to do. "
+                        "Calibrate expectations to what is realistically completable given the hour.\n\n"
+                        "Weekly stats and history are provided as CONTEXT AND BASELINE ONLY. "
+                        "Do not critique, score, or suggest improvements based on weekly trends in a daily digest — that is for the weekly review. "
+                        "Focus entirely on today. Use the week to calibrate what's normal, not as a source of feedback.\n\n"
+                        "The agenda for the day (if provided) shows exactly what was planned and whether it was done or missed. "
+                        "The Improve section must only reference things that were actually on the agenda and missed, or things explicitly logged as problems. "
+                        "Do not flag the absence of something that was never on today's agenda — that is not a miss, it simply was not planned for today. "
+                        "Each day type has different responsibilities: Haki work belongs on Mon/Wed/Fri, job search on Tue/Thu, "
+                        "marketability/income on Sunday. Do not critique the absence of one day type's work on a different day type.\n\n"
+                        "Shabbat (Saturday) is intentionally offline — habits are never tracked on Shabbat. "
+                        "The maximum possible habit logging frequency is 6 days per week, not 7. "
+                        "Never flag Shabbat as a missed logging day.\n\n"
+                        "Step counts on Friday and Saturday are structurally low due to Shabbat. "
+                        "Use the pre-computed Fri/Sat-excluded average from the metrics section — not a raw average — when referencing step activity.\n\n"
+                        "Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint "
+                        "that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused "
+                        "and remove those days from the denominator for affected habits — they are not misses.\n\n"
                         "Return the digest in exactly this format — no extra text:\n\n"
                         "💬 \"[quote]\" — [Author], [Source with specific reference]\n\n"
                         "✅ Wins\n"
@@ -156,8 +247,11 @@ class Planner:
                         "For the opening quote: choose a short, genuinely relevant passage from either a Stoic thinker "
                         "(Marcus Aurelius, Epictetus, Seneca) or the Talmud. "
                         "For Talmud: include tractate and daf or a named sage. "
-                        "The quote must connect to the actual key insight from this specific day — not be generic. "
-                        "Be specific and direct throughout. Reference actual log content. No hype. No shame. No generic advice."
+                        "The quote must connect to the actual key insight from this specific day — not be generic.\n\n"
+                        "Tone: you are a trusted friend and thinking partner, not a critic or a parent. "
+                        "Be direct and honest but never naggy. Never track or comment on whether the user interacted with the bot system itself (reminders answered, checkins sent, etc.) — that is noise, not signal. "
+                        "The Improve section should name one real thing, stated once, without moralising. "
+                        "No hype. No shame. No lecturing. No generic advice."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -238,8 +332,10 @@ class Planner:
                     "type": "object",
                     "properties": {
                         "text":             {"type": "string", "description": "The reminder message"},
-                        "type":             {"type": "string", "enum": ["once", "daily", "interval"],
-                                             "description": "'once' for a one-time reminder (default), 'daily' if user says 'every day', 'interval' for repeating every N minutes"},
+                        "type":             {"type": "string", "enum": ["once", "daily", "weekly", "interval"],
+                                             "description": "'once' for a one-time reminder (default), 'daily' if user says 'every day', 'weekly' if user says 'every [weekday]', 'interval' for repeating every N minutes"},
+                        "day_of_week":      {"type": "string", "enum": ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"],
+                                             "description": "Required for 'weekly' type — the day to fire on"},
                         "date":             {"type": "string", "description": "YYYY-MM-DD — required for 'once'. Resolve relative dates ('tomorrow', 'in a week', 'June 23rd') against today."},
                         "time":             {"type": "string", "description": "HH:MM (24h) — required for 'once' and 'daily'"},
                         "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for 'interval'"},
@@ -256,6 +352,152 @@ class Planner:
             if block.type == "tool_use":
                 return block.input
         return None
+
+    async def parse_food_macros(self, text: str) -> dict | None:
+        """Extract food name, weight, and per-100g macros from natural language.
+
+        Returns a dict with computed totals if per-100g data + weight are present,
+        otherwise returns None (caller logs the text as-is).
+        """
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            tools=[{
+                "name": "log_food",
+                "description": (
+                    "Extract structured nutrition data from a natural language food description. "
+                    "Only call this tool if the description contains per-100g nutritional values AND a total weight. "
+                    "Do not call it for simple descriptions like 'a banana' or 'handful of nuts'."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "food_name":          {"type": "string", "description": "Name of the food"},
+                        "weight_g":           {"type": "number", "description": "Total weight consumed in grams"},
+                        "calories_per_100g":  {"type": "number", "description": "Calories per 100g"},
+                        "protein_per_100g":   {"type": "number", "description": "Protein grams per 100g"},
+                        "fat_per_100g":       {"type": "number", "description": "Fat grams per 100g — omit if not mentioned"},
+                        "carbs_per_100g":     {"type": "number", "description": "Carbs grams per 100g — omit if not mentioned"},
+                    },
+                    "required": ["food_name", "weight_g"],
+                },
+            }],
+            tool_choice={"type": "auto"},
+            messages=[{"role": "user", "content": text}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                d = block.input
+                w = d["weight_g"]
+                result = {"food": d["food_name"], "weight_g": w}
+                if "calories_per_100g" in d:
+                    result["kcal"] = round(d["calories_per_100g"] * w / 100)
+                if "protein_per_100g" in d:
+                    result["protein_g"] = round(d["protein_per_100g"] * w / 100, 1)
+                if "fat_per_100g" in d:
+                    result["fat_g"] = round(d["fat_per_100g"] * w / 100, 1)
+                if "carbs_per_100g" in d:
+                    result["carbs_g"] = round(d["carbs_per_100g"] * w / 100, 1)
+                return result
+        return None
+
+    async def evaluate_hypothesis(self, text: str) -> dict:
+        """Evaluate a hypothesis and return structured tracking actions + narrative.
+
+        Returns a dict with:
+          - narrative: str — the response to show the user
+          - metrics: list of {"key": str, "description": str}
+          - habits: list of str — habit names to watch
+          - follow_up_days: int — days until check-in
+          - reminders: list of {"text": str, "date": str (YYYY-MM-DD), "time": str (HH:MM)}
+        """
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        today = date.today().isoformat()
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=800,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You are a thinking partner helping the user stress-test a hypothesis. "
+                        "Analyze the hypothesis and call the setup_hypothesis_tracking tool to structure your response.\n\n"
+                        "The narrative should:\n"
+                        "1. Restate the hypothesis sharply in one sentence\n"
+                        "2. Name what would confirm or falsify it\n"
+                        "3. Briefly explain what tracking you're setting up and why\n\n"
+                        "The tracking should be bot-native — metrics to log, habits to watch, "
+                        "a follow-up reminder in 2-3 weeks. Keep it minimal: 1-2 metrics max, "
+                        "only habits that are genuinely relevant. "
+                        "Metric keys should be short snake_case strings (e.g. shami_cards, retention_score). "
+                        "Be direct. No generic advice. No preamble."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            tools=[{
+                "name": "setup_hypothesis_tracking",
+                "description": "Structure the hypothesis evaluation with narrative and tracking actions",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "narrative": {
+                            "type": "string",
+                            "description": "The response to show the user — restatement, confirm/falsify conditions, brief tracking rationale"
+                        },
+                        "metrics": {
+                            "type": "array",
+                            "description": "Metric keys to track. 1-2 max.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "key": {"type": "string", "description": "Short snake_case key, e.g. shami_cards"},
+                                    "description": {"type": "string", "description": "What to log and when"}
+                                },
+                                "required": ["key", "description"]
+                            }
+                        },
+                        "habits": {
+                            "type": "array",
+                            "description": "Existing or new habit names to watch as signals",
+                            "items": {"type": "string"}
+                        },
+                        "follow_up_days": {
+                            "type": "integer",
+                            "description": "Days until a follow-up check-in reminder (typically 14-21)"
+                        },
+                        "follow_up_note": {
+                            "type": "string",
+                            "description": "What to check at the follow-up — 1 sentence"
+                        }
+                    },
+                    "required": ["narrative", "metrics", "follow_up_days", "follow_up_note"]
+                }
+            }],
+            tool_choice={"type": "tool", "name": "setup_hypothesis_tracking"},
+            messages=[{"role": "user", "content": f"Today is {today}. Hypothesis: {text}"}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                d = block.input
+                follow_up_date = (date.today() + timedelta(days=d["follow_up_days"])).isoformat()
+                return {
+                    "narrative": d["narrative"],
+                    "metrics": d.get("metrics", []),
+                    "habits": d.get("habits", []),
+                    "follow_up_days": d["follow_up_days"],
+                    "follow_up_date": follow_up_date,
+                    "follow_up_note": d["follow_up_note"],
+                }
+
+        return {"narrative": "Couldn't evaluate hypothesis.", "metrics": [], "habits": [], "follow_up_days": 14, "follow_up_date": "", "follow_up_note": ""}
 
     def _completion_history(self, days: int = 14) -> str:
         from collections import defaultdict
@@ -281,3 +523,23 @@ class Planner:
             if c["total"] >= 2
         ]
         return ("Completion history:\n" + "\n".join(lines)) if lines else ""
+
+    def _read_daily_digests(self, days: int = 7) -> str:
+        # Read saved *-daily.md files from the past `days` days.
+        # These are the nightly end-of-day digests — structured narratives that replace
+        # raw log dumps in the weekly digest prompt.
+        digest_dir = self.context.dir / "digests"
+        sections = []
+        for i in range(days, -1, -1):
+            d = date.today() - timedelta(days=i)
+            path = digest_dir / f"{d}-daily.md"
+            if not path.exists():
+                continue
+            text = path.read_text().strip()
+            # Strip YAML frontmatter
+            if text.startswith("---"):
+                parts = text.split("---", 2)
+                text = parts[2].strip() if len(parts) >= 3 else text
+            if text:
+                sections.append(f"### {d}\n{text}")
+        return "\n\n".join(sections)
