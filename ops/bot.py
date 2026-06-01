@@ -1741,6 +1741,8 @@ def main():
     app = (
         Application.builder()
         .token(TOKEN)
+        .connect_timeout(20)
+        .read_timeout(20)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()

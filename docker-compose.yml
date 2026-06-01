@@ -1,0 +1,19 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OPS_CONTEXT_DIR: /app/ops/context
+    volumes:
+      # Persistent data — SQLite DBs, JSONL logs, scheduler state
+      - ./ops/log:/app/ops/log
+      # Context files — inside the repo on Mac; override with absolute path on VPS.
+      - ./ops/context:/app/ops/context:ro
+      # Google Calendar OAuth credentials
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    working_dir: /app
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1

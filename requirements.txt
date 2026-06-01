@@ -1,6 +1,8 @@
 anthropic>=0.104.0
+apscheduler==3.11.2
 google-api-python-client>=2.0.0
 google-auth-oauthlib>=1.0.0
 openai>=2.0.0
 python-dotenv>=1.0.0
 python-telegram-bot[job-queue]==22.7
+sqlalchemy==2.0.50
