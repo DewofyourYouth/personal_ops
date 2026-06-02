@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import re
+import sys
 import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -1930,6 +1931,16 @@ async def _post_shutdown(application):
 # --- Entry point ---
 
 def main():
+    # Log to stdout so `docker logs` / journald capture it. Honour LOG_LEVEL
+    # (default INFO); quiet the chatty httpx request log to WARNING.
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger(__name__).info("Starting personal_ops bot")
+
     app = (
         Application.builder()
         .token(TOKEN)

@@ -5,6 +5,8 @@ services:
     env_file: .env
     environment:
       OPS_CONTEXT_DIR: /app/ops/context
+      # Don't buffer stdout/stderr so logs reach `docker logs` in real time.
+      PYTHONUNBUFFERED: "1"
       # Run the container in Israel time so naive date.today()/datetime.now() calls
       # (used in relative-date parsing for reminders, events, digests) are correct.
       # Without this the container runs UTC and "tomorrow" is wrong late evening Israel time.
