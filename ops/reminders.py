@@ -1,33 +1,39 @@
-import json
+import os
 import uuid
 from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from db import Database
+
 TZ = ZoneInfo("Asia/Jerusalem")
+_LOG_DIR = os.path.join(os.getcwd(), "ops/log")
+
+
+def _row_to_dict(row) -> dict:
+    d = dict(row)
+    d["auto_log"] = bool(d.get("auto_log", 0))
+    # Remove None/empty fields to keep the interface clean
+    return {k: v for k, v in d.items() if v is not None and v != ""}
 
 
 class Reminders:
-    def __init__(self, file_path: Path | None = None):
-        self.file_path = file_path or Path(__file__).parent / "reminders.json"
+    def __init__(self, file_path=None):
+        self.db = Database(os.path.join(_LOG_DIR, "ops.db"))
 
     def load(self) -> list:
-        if not self.file_path.exists():
-            return []
-        return json.loads(self.file_path.read_text())
+        return [_row_to_dict(r) for r in self.db.get_reminders()]
 
     def save(self, reminders: list):
-        self.file_path.write_text(json.dumps(reminders, indent=2))
+        self.db.save_reminders(reminders)
 
     def add(self, text: str, reminder_type: str, **kwargs) -> dict:
-        reminders = self.load()
         entry = {"id": str(uuid.uuid4()), "text": text, "type": reminder_type, **kwargs}
-        reminders.append(entry)
-        self.save(reminders)
+        self.db.add_reminder(entry)
         return entry
 
     def remove(self, reminder_id: str):
-        self.save([r for r in self.load() if r["id"] != reminder_id])
+        self.db.remove_reminder(reminder_id)
 
     def due_now(self) -> list:
         reminders = self.load()
@@ -42,8 +48,13 @@ class Reminders:
             fired = False
 
             if r["type"] == "once":
+                # If date is missing, don't fire — safer than defaulting to today
+                reminder_date = r.get("date", "")
+                if not reminder_date:
+                    remaining.append(r)
+                    continue
                 h, m = map(int, r["time"].split(":"))
-                if current_time == time(h, m) and r.get("date", today) == today:
+                if current_time == time(h, m) and reminder_date == today:
                     due.append(r)
                     fired = True
 
@@ -53,7 +64,6 @@ class Reminders:
                     due.append(r)
 
             elif r["type"] == "weekly":
-                # day: 0=Mon … 6=Sun, time: HH:MM
                 h, m = map(int, r["time"].split(":"))
                 if now.weekday() == r["day"] and current_time == time(h, m):
                     due.append(r)

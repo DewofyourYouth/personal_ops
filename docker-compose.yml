@@ -5,11 +5,15 @@ services:
     env_file: .env
     environment:
       OPS_CONTEXT_DIR: /app/ops/context
+      # Run the container in Israel time so naive date.today()/datetime.now() calls
+      # (used in relative-date parsing for reminders, events, digests) are correct.
+      # Without this the container runs UTC and "tomorrow" is wrong late evening Israel time.
+      TZ: Asia/Jerusalem
     volumes:
       # Persistent data — SQLite DBs, JSONL logs, scheduler state
       - ./ops/log:/app/ops/log
       # Context files — inside the repo on Mac; override with absolute path on VPS.
-      - ./ops/context:/app/ops/context:ro
+      - ./ops/context:/app/ops/context
       # Google Calendar OAuth credentials
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json

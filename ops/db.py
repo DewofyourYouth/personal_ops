@@ -45,6 +45,21 @@ CREATE INDEX IF NOT EXISTS idx_metrics_date ON metrics(date);
 CREATE INDEX IF NOT EXISTS idx_metrics_key  ON metrics(key);
 """
 
+_CREATE_REMINDERS = """
+CREATE TABLE IF NOT EXISTS reminders (
+    id               TEXT PRIMARY KEY,
+    text             TEXT NOT NULL,
+    type             TEXT NOT NULL,
+    date             TEXT DEFAULT '',
+    time             TEXT DEFAULT '',
+    day              INTEGER DEFAULT NULL,
+    interval_minutes INTEGER DEFAULT NULL,
+    window_start     TEXT DEFAULT '08:00',
+    window_end       TEXT DEFAULT '22:00',
+    auto_log         INTEGER DEFAULT 0
+);
+"""
+
 _CREATE_JOB_APPLICATIONS = """
 CREATE TABLE IF NOT EXISTS job_applications (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +93,7 @@ class Database:
         conn = self._conn()
         conn.executescript(_CREATE_ENTRIES)
         conn.executescript(_CREATE_METRICS)
+        conn.executescript(_CREATE_REMINDERS)
         conn.executescript(_CREATE_JOB_APPLICATIONS)
         conn.commit()
 
@@ -87,6 +103,13 @@ class Database:
             (ts, date_str, tag, content),
         )
         self._conn().commit()
+
+    def entries_by_tag(self, tag: str) -> list[sqlite3.Row]:
+        """All entries with a given tag, chronological — for reviewing evolution over time."""
+        return self._conn().execute(
+            "SELECT * FROM entries WHERE tag = ? ORDER BY ts",
+            (tag,),
+        ).fetchall()
 
     def insert_metric(self, ts: str, date_str: str, key: str, value: str, unit: str = ""):
         self._conn().execute(
@@ -129,6 +152,60 @@ class Database:
             """,
             (start.isoformat(), end.isoformat(), key),
         ).fetchall()
+
+    # --- Reminders ---
+
+    def get_reminders(self) -> list[sqlite3.Row]:
+        return self._conn().execute("SELECT * FROM reminders ORDER BY rowid").fetchall()
+
+    def add_reminder(self, r: dict) -> str:
+        self._conn().execute(
+            """INSERT OR REPLACE INTO reminders
+               (id, text, type, date, time, day, interval_minutes, window_start, window_end, auto_log)
+               VALUES (:id, :text, :type, :date, :time, :day, :interval_minutes, :window_start, :window_end, :auto_log)""",
+            {
+                "id":               r["id"],
+                "text":             r["text"],
+                "type":             r["type"],
+                "date":             r.get("date", ""),
+                "time":             r.get("time", ""),
+                "day":              r.get("day"),
+                "interval_minutes": r.get("interval_minutes"),
+                "window_start":     r.get("window_start", "08:00"),
+                "window_end":       r.get("window_end", "22:00"),
+                "auto_log":         int(r.get("auto_log", False)),
+            },
+        )
+        self._conn().commit()
+        return r["id"]
+
+    def remove_reminder(self, reminder_id: str):
+        self._conn().execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        self._conn().commit()
+
+    def save_reminders(self, reminders: list[dict]):
+        """Replace all reminders atomically — used by due_now after firing once-reminders."""
+        conn = self._conn()
+        conn.execute("DELETE FROM reminders")
+        for r in reminders:
+            conn.execute(
+                """INSERT INTO reminders
+                   (id, text, type, date, time, day, interval_minutes, window_start, window_end, auto_log)
+                   VALUES (:id, :text, :type, :date, :time, :day, :interval_minutes, :window_start, :window_end, :auto_log)""",
+                {
+                    "id":               r["id"],
+                    "text":             r["text"],
+                    "type":             r["type"],
+                    "date":             r.get("date", ""),
+                    "time":             r.get("time", ""),
+                    "day":              r.get("day"),
+                    "interval_minutes": r.get("interval_minutes"),
+                    "window_start":     r.get("window_start", "08:00"),
+                    "window_end":       r.get("window_end", "22:00"),
+                    "auto_log":         int(r.get("auto_log", False)),
+                },
+            )
+        conn.commit()
 
     # --- Job applications ---
 

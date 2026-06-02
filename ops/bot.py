@@ -6,7 +6,7 @@ import os
 import random
 import re
 import tempfile
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -41,7 +41,11 @@ from baseline_tracker import Baseline
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
 ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
-MODEL = os.environ.get("OPS_MODEL", "claude-haiku-4-5-20251001")
+# Reflective outputs (digests, agenda proposals, hypothesis eval, feedback) run on Sonnet —
+# Haiku ignores nuanced tone restraint (no coda, no moralizing, no directives) and falls back
+# on a generic "church lady" register. Cheap structured parsing (reminders/events/food) stays
+# on Haiku, hardcoded in those methods.
+MODEL = os.environ.get("OPS_MODEL", "claude-sonnet-4-6")
 PLAN_HOUR = int(os.environ.get("OPS_PLAN_HOUR", "8"))
 PLAN_MINUTE = int(os.environ.get("OPS_PLAN_MINUTE", "0"))
 
@@ -85,6 +89,8 @@ PREFIXES = {
     "skip:":       "#skip",
     "excuse:":     "#skip",
     "excused:":    "#skip",
+    "values:":     "#values",
+    "value:":      "#values",
 }
 
 # Matches "feedback:", "feedback request", "question:", "I have a question", etc.
@@ -114,6 +120,7 @@ _awaiting_context: dict = {}     # chat_id -> filename waiting for new content
 _awaiting_job: dict = {}         # chat_id -> {"step": str, "data": dict}
 _awaiting_candles: dict = {}     # chat_id -> True
 _awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
+_awaiting_reminder_edit: dict = {}  # chat_id -> reminder id being edited
 
 _ENCOURAGEMENTS = [
     "Look at you, a functioning adult!",
@@ -203,7 +210,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _reminder_label(r: dict) -> str:
     text = r["text"]
-    short = text if len(text) <= 20 else text[:17] + "…"
+    short = text if len(text) <= 45 else text[:44] + "…"
     if r["type"] == "once":
         return f"⏰ {short} — {r.get('date', 'today')} {r.get('time', '?')}"
     elif r["type"] == "daily":
@@ -216,21 +223,64 @@ def _reminder_label(r: dict) -> str:
         return f"⏰ {short} — every {r['interval_minutes']}m"
 
 
-def _reminder_sort_key(r: dict) -> tuple:
-    if r["type"] == "once":
-        return (0, r.get("date", "9999-99-99"), r.get("time", "99:99"))
-    elif r["type"] == "daily":
-        return (1, "", r.get("time", "99:99"))
-    else:
-        return (2, "", r.get("window_start", "99:99"))
+def _next_occurrence(r: dict) -> datetime:
+    """Return the next datetime this reminder will fire, for sorting purposes."""
+    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    today = now.date()
+    far_future = datetime(9999, 12, 31, tzinfo=ZoneInfo("Asia/Jerusalem"))
+
+    try:
+        if r["type"] == "once":
+            d = date.fromisoformat(r.get("date", "9999-12-31"))
+            h, m = map(int, r.get("time", "23:59").split(":"))
+            return datetime(d.year, d.month, d.day, h, m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+
+        elif r["type"] == "daily":
+            h, m = map(int, r.get("time", "23:59").split(":"))
+            candidate = datetime(today.year, today.month, today.day, h, m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+            if candidate <= now:
+                from datetime import timedelta as _td
+                candidate += _td(days=1)
+            return candidate
+
+        elif r["type"] == "weekly":
+            h, m = map(int, r.get("time", "23:59").split(":"))
+            target_day = r.get("day", 0)
+            days_ahead = (target_day - now.weekday()) % 7 or 7
+            from datetime import timedelta as _td
+            next_date = today + _td(days=days_ahead)
+            candidate = datetime(next_date.year, next_date.month, next_date.day, h, m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+            if candidate <= now:
+                next_date += _td(days=7)
+                candidate = datetime(next_date.year, next_date.month, next_date.day, h, m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+            return candidate
+
+        elif r["type"] == "interval":
+            interval = r.get("interval_minutes", 60)
+            start_h, start_m = map(int, r.get("window_start", "08:00").split(":"))
+            window_start = datetime(today.year, today.month, today.day, start_h, start_m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+            current_minutes = now.hour * 60 + now.minute
+            start_minutes = start_h * 60 + start_m
+            elapsed = current_minutes - start_minutes
+            if elapsed < 0:
+                return window_start
+            next_tick = start_minutes + (elapsed // interval + 1) * interval
+            next_h, next_m = divmod(next_tick, 60)
+            return datetime(today.year, today.month, today.day, next_h, next_m, tzinfo=ZoneInfo("Asia/Jerusalem"))
+    except Exception:
+        pass
+    return far_future
 
 
 def _reminders_keyboard(all_reminders: list) -> InlineKeyboardMarkup:
     rows = []
-    for r in sorted(all_reminders, key=_reminder_sort_key):
+    for r in sorted(all_reminders, key=_next_occurrence):
+        # Full-width label row so the whole reminder + time is visible, with the
+        # edit/delete actions on their own row beneath it.
+        rows.append([InlineKeyboardButton(_reminder_label(r), callback_data="noop")])
         rows.append([
-            InlineKeyboardButton(_reminder_label(r), callback_data="noop"),
-            InlineKeyboardButton("🗑", callback_data=f"rm_del:{r['id']}"),
+            InlineKeyboardButton("✏️ Edit", callback_data=f"rm_edit:{r['id']}"),
+            InlineKeyboardButton("🗑 Delete", callback_data=f"rm_del:{r['id']}"),
         ])
     return InlineKeyboardMarkup(rows)
 
@@ -258,6 +308,48 @@ async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("All reminders removed.")
         return
     await query.edit_message_reply_markup(reply_markup=_reminders_keyboard(all_reminders))
+
+
+async def handle_reminder_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await _safe_answer(query)
+    reminder_id = query.data.split(":")[1]
+    r = next((x for x in reminders.load() if x["id"] == reminder_id), None)
+    if not r:
+        await query.edit_message_text("That reminder no longer exists.")
+        return
+    _awaiting_reminder_edit[query.message.chat_id] = reminder_id
+    cur = r.get("time", "—")
+    await query.edit_message_text(
+        f"✏️ Editing: <i>{html.escape(r['text'])}</i> (currently {cur}).\n\n"
+        "Send a change: a new time (<code>18:00</code>), a shift "
+        "(<code>30 minutes earlier</code>, <code>an hour later</code>), or new text.",
+        parse_mode="HTML",
+    )
+
+
+def _apply_reminder_edit(r: dict, instruction: str) -> str:
+    """Mutate reminder r per a free-text instruction. Returns a human summary of what changed."""
+    instr = instruction.strip().lower()
+    # Relative shift: "30 minutes earlier", "an hour later", "15 min earlier"
+    shift = re.search(r"(\d+|an?|a)\s*(hour|hr|minute|min)s?\s*(earlier|later|before|after|sooner)", instr)
+    if shift and r.get("time"):
+        qty = 1 if shift.group(1) in ("a", "an") else int(shift.group(1))
+        mins = qty * (60 if shift.group(2).startswith(("hour", "hr")) else 1)
+        if shift.group(3) in ("earlier", "before", "sooner"):
+            mins = -mins
+        h, m = map(int, r["time"].split(":"))
+        total = (h * 60 + m + mins) % (24 * 60)
+        r["time"] = f"{total // 60:02d}:{total % 60:02d}"
+        return f"time → {r['time']}"
+    # Absolute new time
+    t = _parse_time(instruction)
+    if t:
+        r["time"] = t
+        return f"time → {t}"
+    # Otherwise treat as new text
+    r["text"] = instruction.strip()
+    return f"text → {r['text']}"
 
 
 async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -681,14 +773,10 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         except Exception:
             pass
 
-    entry = {
-        "ts": datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
-        "tag": tag,
-        "content": content,
-    }
-    log_file = os.path.join(LOG_DIR, f"{datetime.now().date()}.jsonl")
-    with open(log_file, "a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
+    # backup. Writing the file directly here bypassed the DB — the bug that made
+    # prefix entries (values, insight, note, …) invisible to /values and other readers.
+    logs.write(tag, content)
 
     if tag == "checkin":
         await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
@@ -757,6 +845,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✏️ Edit", callback_data="voice_edit"),
         ]])
         await update.message.reply_text(f'🎙 "{text.strip()}"', reply_markup=keyboard)
+        return
+
+    # intercept reminder edit reply
+    if chat_id in _awaiting_reminder_edit:
+        rid = _awaiting_reminder_edit.pop(chat_id)
+        if text.strip().lower() == "/cancel":
+            await update.message.reply_text("Edit cancelled.")
+            return
+        all_r = reminders.load()
+        r = next((x for x in all_r if x["id"] == rid), None)
+        if not r:
+            await update.message.reply_text("That reminder no longer exists.")
+            return
+        summary = _apply_reminder_edit(r, text)
+        reminders.save(all_r)
+        await update.message.reply_text(f"✏️ Updated: <i>{html.escape(r['text'])}</i> — {summary}", parse_mode="HTML")
         return
 
     # intercept context file edit
@@ -1058,6 +1162,7 @@ HELP_TEXT = """<b>Planning</b>
 <code>food: &lt;what you ate&gt;</code> — log a meal (/food shows today's food log)
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric (e.g. <i>metric: steps 8000</i>)
 <code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
+<code>values: &lt;impression&gt;</code> — log a value/impression about the project (/values shows the evolution)
 <code>feedback: &lt;idea or question&gt;</code> — get Claude's take (also: "feedback request", "question")
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>
@@ -1235,6 +1340,34 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    rows = logs.db.entries_by_tag("values")
+    if not rows:
+        await update.message.reply_text(
+            "No values logged yet. Use <code>values: ...</code> to capture an impression or value "
+            "as the project evolves.",
+            parse_mode="HTML",
+        )
+        return
+    # Chronological, grouped by date, so the evolution reads top-to-bottom
+    lines = ["🧭 <b>Values log</b> — how your thinking has evolved:\n"]
+    last_date = None
+    for r in rows:
+        if r["date"] != last_date:
+            lines.append(f"\n<b>{r['date']}</b>")
+            last_date = r["date"]
+        t = r["ts"][11:16]
+        lines.append(f"<code>{t}</code> {html.escape(r['content'])}")
+    text = "\n".join(lines)
+    # If too long, show the most recent portion (keep the latest evolution visible)
+    if len(text) > 4000:
+        text = "🧭 <b>Values log</b> (most recent):\n" + "\n".join(lines[-40:])
+        text = text[:4000]
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 MOOD_OPTIONS    = [("😄","great"), ("😊","good"), ("😐","okay"), ("😕","low"), ("😞","bad")]
 ENERGY_OPTIONS  = [("⚡","high"),  ("🔋","okay"), ("🪫","drained")]
 
@@ -1242,14 +1375,14 @@ ENERGY_OPTIONS  = [("⚡","high"),  ("🔋","okay"), ("🪫","drained")]
 def _mood_energy_keyboard(locked_mood: str = "", locked_energy: str = "") -> InlineKeyboardMarkup:
     mood_row = [
         InlineKeyboardButton(
-            f"✅ {e}" if locked_mood == v else f"{e}",
+            f"✅ {e} {v}" if locked_mood == v else f"{e} {v}",
             callback_data="noop" if locked_mood == v else f"me_mood:{e}:{v}",
         )
         for e, v in MOOD_OPTIONS
     ]
     energy_row = [
         InlineKeyboardButton(
-            f"✅ {e}" if locked_energy == v else f"{e}",
+            f"✅ {e} {v}" if locked_energy == v else f"{e} {v}",
             callback_data="noop" if locked_energy == v else f"me_energy:{e}:{v}",
         )
         for e, v in ENERGY_OPTIONS
@@ -1287,11 +1420,37 @@ async def handle_mood_energy_callback(update: Update, context: ContextTypes.DEFA
         pass
 
 
-def _habit_matches(logged: str, canonical: str) -> bool:
-    """True if any significant word (≥3 chars) from logged appears in canonical or vice versa."""
-    logged_words = {w for w in re.split(r"\W+", logged.lower()) if len(w) >= 3}
-    canonical_words = {w for w in re.split(r"\W+", canonical.lower()) if len(w) >= 3}
-    return bool(logged_words & canonical_words)
+# Generic filler/measure/verb words that appear across many habits and must NOT count
+# as a match on their own — otherwise "at least a liter of water" matches "at least 100
+# grams of protein" via the shared word "least".
+_HABIT_STOPWORDS = {
+    "the", "and", "for", "with", "least", "day", "daily", "minimum", "min",
+    "eat", "ate", "take", "took", "drink", "drank", "get", "got", "log", "logged",
+    "grams", "gram", "liter", "litre", "100", "1000", "7000", "includes", "include",
+    "morning", "every", "least", "about", "some", "more", "than", "per", "week",
+}
+
+
+def _resolve_logged_to_habit(logged: str, all_habits: list) -> dict | None:
+    """Map ONE logged entry to AT MOST ONE habit.
+
+    Exact name match wins outright (this is what a button click produces — it must mark
+    exactly its own habit, never a fuzzy neighbour). Otherwise fall back to the single
+    strongest fuzzy match (most shared distinctive words), or None if nothing matches.
+    This guarantees one log can never light up two habits.
+    """
+    logged_l = logged.strip().lower()
+    for h in all_habits:
+        if logged_l == context_.habit_display_name(h["text"]).strip().lower():
+            return h
+    best, best_score = None, 0
+    for h in all_habits:
+        words = {w for w in re.split(r"\W+", logged_l) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
+        canon = {w for w in re.split(r"\W+", h["raw"].lower()) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
+        score = len(words & canon)
+        if score > best_score:
+            best, best_score = h, score
+    return best if best_score >= 1 else None
 
 
 def _habits_message() -> tuple[str, InlineKeyboardMarkup]:
@@ -1299,6 +1458,16 @@ def _habits_message() -> tuple[str, InlineKeyboardMarkup]:
     today_weekday = _date.today().weekday()
     sections = context_.parse_habits()
     logged_today = [e["content"].strip() for e in logs.read_today() if e.get("tag") == "habit"]
+
+    # Flat list of all habits visible today, then resolve each log to exactly one of them
+    all_visible = []
+    for habits in sections.values():
+        all_visible.extend(h for h in habits if h["days"] is None or today_weekday in h["days"])
+    done_keys = set()
+    for logged in logged_today:
+        h = _resolve_logged_to_habit(logged, all_visible)
+        if h:
+            done_keys.add(h["raw"])
 
     lines = ["📋 <b>Habits</b>\n"]
     rows = []
@@ -1309,7 +1478,7 @@ def _habits_message() -> tuple[str, InlineKeyboardMarkup]:
         lines.append(f"<b>{html.escape(section)}</b>")
         for h in visible:
             name = context_.habit_display_name(h["text"])
-            done = any(_habit_matches(logged, h["raw"]) for logged in logged_today)
+            done = h["raw"] in done_keys
             lines.append(f"{'✅' if done else '⬜'} {html.escape(name)}")
             if not done:
                 key = name[:52]  # callback_data max 64 bytes; "hb_done:" = 8
@@ -1625,7 +1794,12 @@ async def cmd_habit_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     output_dir = context_.dir / "habits"
     try:
         path = generate_habit_log(logs, template, output_dir, target)
-        await update.message.reply_text(f"✅ Habit log saved: {path.name}\nOpen in Obsidian to add notes.")
+        # Wrap the filename in <code> so Telegram doesn't auto-link the .md (a real TLD)
+        # into a broken web URL. Code spans are also long-press-to-copy.
+        await update.message.reply_text(
+            f"✅ Habit log saved: <code>{html.escape(path.name)}</code>\nOpen in Obsidian to add notes.",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
 
@@ -1732,7 +1906,10 @@ async def _post_init(application):
 
 
 async def _post_shutdown(application):
-    _scheduler.shutdown(wait=False)
+    # Guard: if startup failed before the scheduler started, shutdown() raises and
+    # masks the real error, turning a transient hiccup into a crash loop.
+    if _scheduler.running:
+        _scheduler.shutdown(wait=False)
 
 
 # --- Entry point ---
@@ -1741,9 +1918,12 @@ def main():
     app = (
         Application.builder()
         .token(TOKEN)
-        # Default 5s timeouts are too short for container startup — increased to 20s
-        .connect_timeout(20)
-        .read_timeout(20)
+        # Default 5s timeouts are too short for container/VPS startup under slow network.
+        # Generous timeouts so a transient Telegram-API slowdown doesn't crash bootstrap.
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
@@ -1765,12 +1945,25 @@ def main():
     app.add_handler(CommandHandler("jobs", cmd_jobs))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("backlog", cmd_backlog))
+    app.add_handler(CommandHandler("values", cmd_values))
+    # Short aliases
+    app.add_handler(CommandHandler("a", cmd_agenda))
+    app.add_handler(CommandHandler("p", cmd_plan))
+    app.add_handler(CommandHandler("d", cmd_daily_digest))
+    app.add_handler(CommandHandler("j", cmd_jobs))
+    app.add_handler(CommandHandler("m", cmd_metrics))
+    app.add_handler(CommandHandler("l", cmd_logs))
+    app.add_handler(CommandHandler("r", cmd_reminders))
+    app.add_handler(CommandHandler("b", cmd_backlog))
+    app.add_handler(CommandHandler("h", cmd_habits))
+    app.add_handler(CommandHandler("v", cmd_values))
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CommandHandler("status", cmd_agenda_status))
     app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
+    app.add_handler(CallbackQueryHandler(handle_reminder_edit, pattern="^rm_edit:"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
     app.add_handler(CallbackQueryHandler(handle_habit_callback, pattern="^hb_done:"))
     app.add_handler(CallbackQueryHandler(handle_job_callback, pattern="^job_"))

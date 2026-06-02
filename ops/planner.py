@@ -234,24 +234,51 @@ class Planner:
                         "Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint "
                         "that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused "
                         "and remove those days from the denominator for affected habits — they are not misses.\n\n"
-                        "Return the digest in exactly this format — no extra text:\n\n"
-                        "💬 \"[quote]\" — [Author], [Source with specific reference]\n\n"
+                        "## How to write this digest\n\n"
+                        "COUNT FIRST, INTERPRET SECOND. Lead with what actually happened — concrete, factual. "
+                        "Interpretation is rationed: at most ONE tentative observation in the whole digest, and it "
+                        "must be flagged as tentative ('maybe', 'worth watching'), never stated as a verdict. "
+                        "Do NOT narrate or diagnose the user's psychology. Do not say things like 'this is shutdown not "
+                        "laziness' or 'this is data not failure' — that is presumptuous therapizing. State the fact and stop.\n\n"
+                        "NEVER co-opt the user's own words, values, or philosophy as flavor text. If the user has logged "
+                        "a principle or metaphor (e.g. about how they want to live or how the system should behave), it is "
+                        "theirs — do not quote it back at them or sprinkle it into the digest. That is grating and invasive.\n\n"
+                        "NEVER moralize against what the user chose to do. If they spent the day on something — including "
+                        "working on this very system — that is their call, not a lapse to correct. Do not tell them what they "
+                        "should or shouldn't have worked on.\n\n"
+                        "RESPECT THE CLOCK, AND RESPECT ITEM TIMING. The current time is provided. Many anchors have a "
+                        "SCHEDULED TIME defined in the user context (habits.md) — e.g. Daf Yomi is 21:00, Yerushalmi 06:15, "
+                        "Yoma 10:00–11:00. An item is NOT missed if its scheduled time has not yet passed relative to the "
+                        "current time. Daf Yomi is never 'slipped' before 21:00. "
+                        "Other items have NO fixed time and can be done any time before the day genuinely ends — the daily "
+                        "walk, water, protein. NEVER call a flexible/anytime item missed while the day is still ongoing; "
+                        "it can still happen. "
+                        "Bottom line: on an unfinished day, do NOT enumerate misses at all, unless an item had a fixed "
+                        "scheduled time that has already passed. A thing not-yet-done is not a failure.\n\n"
+                        "Never comment on whether the user interacted with the bot itself (reminders answered, checkins sent). "
+                        "That is noise, not signal.\n\n"
+                        "Keep it SHORT. A tired person is reading this. Terse over thorough. Skip any section that has nothing "
+                        "genuine to say — an empty Improve section is fine and often correct, especially on a hard or "
+                        "unfinished day.\n\n"
+                        "## Format\n\n"
+                        "💬 \"[short relevant quote]\" — [Author, specific source]\n"
+                        "(Stoic — Marcus Aurelius/Epictetus/Seneca — or Talmud with tractate+daf or named sage. "
+                        "Must connect to the actual day. Must NOT be the user's own logged words.)\n\n"
                         "✅ Wins\n"
-                        "- [2–3 specific things that went well today]\n\n"
-                        "⬆️ Improve\n"
-                        "- [1–2 things that could have gone better today]\n\n"
-                        "👁 Keep An Eye On\n"
-                        "- [1–2 patterns or risks worth watching over the coming days]\n\n"
-                        "💡 Suggestions\n"
-                        "- [1–2 concrete, small adjustments for tomorrow or this week]\n\n"
-                        "For the opening quote: choose a short, genuinely relevant passage from either a Stoic thinker "
-                        "(Marcus Aurelius, Epictetus, Seneca) or the Talmud. "
-                        "For Talmud: include tractate and daf or a named sage. "
-                        "The quote must connect to the actual key insight from this specific day — not be generic.\n\n"
-                        "Tone: you are a trusted friend and thinking partner, not a critic or a parent. "
-                        "Be direct and honest but never naggy. Never track or comment on whether the user interacted with the bot system itself (reminders answered, checkins sent, etc.) — that is noise, not signal. "
-                        "The Improve section should name one real thing, stated once, without moralising. "
-                        "No hype. No shame. No lecturing. No generic advice."
+                        "- [2-3 specific things that genuinely happened]\n\n"
+                        "⬆️ Improve  (OPTIONAL — include only if there is a real, finished miss with no external cause; "
+                        "omit the whole section otherwise)\n"
+                        "- [at most 1 thing, stated once, no moralizing]\n\n"
+                        "💡 Suggestion  (OPTIONAL — at most 1, small and concrete, omit freely)\n"
+                        "- [one small option, phrased as an option, NOT a command]\n\n"
+                        "HARD STOP after the last section. Do NOT append any closing paragraph, coda, reassurance, "
+                        "or summary line (no 'you held the core', no 'that counts', no 'sleep well'). The sections end "
+                        "the digest. Trailing commentary is the therapizing voice sneaking back in — it is forbidden.\n\n"
+                        "The Suggestion is an OPTION, never an instruction. Do not issue commands about what to do with "
+                        "the evening ('rest', 'sleep', 'don't compensate'). State a small possible next step and stop. "
+                        "The user decides; you don't direct.\n\n"
+                        "Tone: a trusted friend who respects your autonomy and your fatigue. Direct, brief, warm. "
+                        "No hype. No shame. No lecturing. No therapizing. No generic advice. No coda."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -267,6 +294,24 @@ class Planner:
 
     async def feedback(self, text: str) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
+
+        # Include the user's actual logged data (metrics with trends, recent stats) so
+        # feedback on "is my weight plan on track?" can use real numbers, not just the
+        # stated system from the context files.
+        data_block = ""
+        metrics_text = self.logs.format_metrics_for_prompt(days=30)
+        if metrics_text:
+            data_block += f"{metrics_text}\n\n"
+        stats_text = self.logs.format_stats_for_prompt(days=7)
+        if stats_text:
+            data_block += f"{stats_text}\n\n"
+
+        user_content = text
+        if data_block:
+            user_content = (
+                f"{text}\n\n---\nYour actual logged data (use it — don't claim you can't see it):\n\n{data_block}"
+            )
+
         response = await client.messages.create(
             model=self.model,
             max_tokens=400,
@@ -278,6 +323,7 @@ class Planner:
                         "Follow the tone in bot-personality.md: warm, direct, practical. "
                         "Be concise — this is a Telegram message. "
                         "Structure your response as: what's strong, what's weak or worth watching, one concrete next step or question. "
+                        "If the user's logged data is provided below their question, use it directly — do not say you lack visibility into data that is present. "
                         "No hype. No generic advice. No long preamble."
                     ),
                     "cache_control": {"type": "ephemeral"},
@@ -288,7 +334,7 @@ class Planner:
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
-            messages=[{"role": "user", "content": text}],
+            messages=[{"role": "user", "content": user_content}],
         )
         return response.content[0].text.strip()
 
@@ -331,13 +377,20 @@ class Planner:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "text":             {"type": "string", "description": "The reminder message"},
+                        "text":             {"type": "string", "description": "The reminder message. If the user mentions an event/appointment time, KEEP that time in the message (e.g. 'Meeting with Rabbi Haber at 19:55') so they see it when reminded."},
                         "type":             {"type": "string", "enum": ["once", "daily", "weekly", "interval"],
                                              "description": "'once' for a one-time reminder (default), 'daily' if user says 'every day', 'weekly' if user says 'every [weekday]', 'interval' for repeating every N minutes"},
                         "day_of_week":      {"type": "string", "enum": ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"],
                                              "description": "Required for 'weekly' type — the day to fire on"},
                         "date":             {"type": "string", "description": "YYYY-MM-DD — required for 'once'. Resolve relative dates ('tomorrow', 'in a week', 'June 23rd') against today."},
-                        "time":             {"type": "string", "description": "HH:MM (24h) — required for 'once' and 'daily'"},
+                        "time":             {"type": "string", "description": (
+                                             "HH:MM in 24-hour format — the time the REMINDER SHOULD FIRE (not necessarily the event time). "
+                                             "Convert 12h to 24h: 7:55 p.m. = 19:55, 8:00 a.m. = 08:00, 12:00 p.m. = 12:00, 12:00 a.m. = 00:00.\n"
+                                             "Lead-time handling: if the user wants to be reminded BEFORE an event, compute the fire time. "
+                                             "Examples: 'remind me 2 hours before my 7:55pm meeting' -> fire time 17:55. "
+                                             "'remind me at 6 about the 7:55 meeting' -> fire time 18:00. "
+                                             "'remind me 30 min before my 9am call' -> fire time 08:30. "
+                                             "If no lead time or separate reminder time is given, fire time = event time.")},
                         "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for 'interval'"},
                         "window_start":     {"type": "string", "description": "HH:MM — only set if user specifies a start time. System default: 08:00."},
                         "window_end":       {"type": "string", "description": "HH:MM — only set if user specifies an end time. System default: 22:00."},
