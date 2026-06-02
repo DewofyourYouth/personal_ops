@@ -46,7 +46,7 @@ elegant it is.
   companions of death. The soft and yielding are companions of life. Thus an army that cannot
   yield will be defeated; a tree that cannot bend will be broken."
 
-A guiding principle for *how* everything below is delivered: the app must be **firm but yeilding —
+A guiding principle for *how* everything below is delivered: the app must be **firm but yielding —
 like bamboo, not cedar.** Rooted and unmistakably present, but yielding under pressure rather
 than rigid against it.
 

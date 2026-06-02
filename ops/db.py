@@ -84,8 +84,14 @@ class Database:
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            conn = sqlite3.connect(self.path, check_same_thread=False)
+            # WAL + a generous busy timeout so concurrent writers (bot handlers,
+            # scheduled jobs, incoming metrics) wait for the lock instead of
+            # failing with "database is locked" and silently dropping the write.
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
         return self._local.conn
 
@@ -152,6 +158,14 @@ class Database:
             """,
             (start.isoformat(), end.isoformat(), key),
         ).fetchall()
+
+    def existing_metric_keys(self) -> set[tuple[str, str]]:
+        """Set of (ts, key) already in metrics — used to dedup JSONL recovery."""
+        return {(r["ts"], r["key"]) for r in self._conn().execute("SELECT ts, key FROM metrics")}
+
+    def existing_entry_keys(self) -> set[tuple[str, str]]:
+        """Set of (ts, tag) already in entries — used to dedup JSONL recovery."""
+        return {(r["ts"], r["tag"]) for r in self._conn().execute("SELECT ts, tag FROM entries")}
 
     # --- Reminders ---
 

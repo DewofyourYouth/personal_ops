@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from datetime import date, datetime, timedelta
@@ -8,6 +9,7 @@ from zoneinfo import ZoneInfo
 from db import Database
 
 TZ = ZoneInfo("Asia/Jerusalem")
+logger = logging.getLogger(__name__)
 
 
 class Logs:
@@ -19,22 +21,73 @@ class Logs:
     # --- Writing ---
 
     def write(self, tag: str, content: str, extra: dict | None = None):
-        ts = datetime.now(TZ).isoformat(timespec="seconds")
-        date_str = date.today().isoformat()
+        now = datetime.now(TZ)
+        ts = now.isoformat(timespec="seconds")
+        date_str = now.date().isoformat()  # bucket by local (Jerusalem) day, matching ts
         entry = {"ts": ts, "tag": tag, "content": content, **(extra or {})}
 
-        # Primary: write to SQLite
-        if tag == "metric" and extra:
-            self.db.insert_metric(ts, date_str, extra.get("key", ""), str(extra.get("value", "")), extra.get("unit", ""))
-        else:
-            self.db.insert_entry(ts, date_str, tag, content)
+        # Durable capture FIRST: append to JSONL before touching SQLite, so a DB
+        # failure (e.g. "database is locked") can never silently lose the reading.
+        # JSONL is the recovery log; sync_jsonl_to_db() can replay anything the DB missed.
+        try:
+            with open(self._jsonl_path(now.date()), "a") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.exception("Failed to append entry to JSONL: %s", entry)
 
-        # Secondary: keep writing JSONL for debugging
-        with open(self._jsonl_path(date.today()), "a") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # Primary store. Surface DB failures loudly (log + re-raise) instead of
+        # dropping them; the caller can then tell the user it didn't save.
+        try:
+            if tag == "metric" and extra:
+                self.db.insert_metric(ts, date_str, extra.get("key", ""), str(extra.get("value", "")), extra.get("unit", ""))
+            else:
+                self.db.insert_entry(ts, date_str, tag, content)
+        except Exception:
+            logger.exception("DB write FAILED (kept in JSONL for recovery): %s", entry)
+            raise
 
     def write_metric(self, key: str, value, unit: str = ""):
         self.write("metric", f"{key} {value}{unit}", extra={"key": key, "value": value, "unit": unit})
+
+    def sync_jsonl_to_db(self) -> int:
+        """Replay JSONL entries that never made it into SQLite (e.g. a write
+        dropped by a transient DB lock). JSONL is written first, so it is the
+        recovery source of truth. Returns the number of rows inserted.
+        """
+        have_metrics = self.db.existing_metric_keys()
+        have_entries = self.db.existing_entry_keys()
+        inserted = 0
+        for fp in sorted(Path(self.log_dir).glob("*.jsonl")):
+            for line in fp.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    logger.warning("Skipping unparseable JSONL line in %s", fp.name)
+                    continue
+                ts, tag = e.get("ts"), e.get("tag")
+                if not ts or not tag:
+                    continue
+                date_str = ts[:10]
+                if tag == "metric" and e.get("key"):
+                    k = (ts, e["key"])
+                    if k in have_metrics:
+                        continue
+                    self.db.insert_metric(ts, date_str, e["key"], str(e.get("value", "")), e.get("unit", ""))
+                    have_metrics.add(k)
+                    inserted += 1
+                elif tag != "metric":
+                    k = (ts, tag)
+                    if k in have_entries:
+                        continue
+                    self.db.insert_entry(ts, date_str, tag, str(e.get("content", "")))
+                    have_entries.add(k)
+                    inserted += 1
+        if inserted:
+            logger.info("sync_jsonl_to_db recovered %d row(s)", inserted)
+        return inserted
 
     # --- Reading ---
 

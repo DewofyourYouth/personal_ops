@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import html
 import json
+import logging
 import os
 import random
 import re
@@ -713,7 +714,13 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         num_m = re.match(r"^([\d.]+)", raw_val)
         value = float(num_m.group(1)) if num_m else raw_val
         unit = raw_val[len(num_m.group(1)):] if num_m else ""
-        logs.write_metric(key, value, unit)
+        try:
+            logs.write_metric(key, value, unit)
+        except Exception as e:
+            # Don't fail silently: the reading is safe in JSONL (recoverable via
+            # sync_jsonl_to_db), but tell the user it didn't reach the database.
+            await reply(f"⚠️ Metric NOT saved to DB: {key} = {raw_val}\n{e}\n(Kept in the log; run a sync to recover.)")
+            return
         await reply(f"📊 Metric logged: {key} = {raw_val}")
         return
 
@@ -1106,7 +1113,7 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logs.write("checkin", "reminder dismissed")
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text="👋",
+            text="👋 How are you feeling right now?",
             reply_markup=_mood_energy_keyboard(),
         )
 
@@ -1896,6 +1903,14 @@ async def check_reminders():
 async def _post_init(application):
     global _bot
     _bot = application.bot
+    # Self-heal: replay any JSONL readings the DB missed (e.g. dropped by a
+    # transient lock before the WAL/busy-timeout fix). Idempotent.
+    try:
+        recovered = logs.sync_jsonl_to_db()
+        if recovered:
+            logging.getLogger(__name__).info("Recovered %d log row(s) from JSONL on startup", recovered)
+    except Exception:
+        logging.getLogger(__name__).exception("JSONL→DB sync on startup failed")
     tz = ZoneInfo("Asia/Jerusalem")
     _scheduler.add_job(morning_plan, "cron", hour=PLAN_HOUR, minute=PLAN_MINUTE, id="morning_plan", replace_existing=True)
     _scheduler.add_job(remind_upcoming, "interval", seconds=600, id="remind_upcoming", replace_existing=True)
