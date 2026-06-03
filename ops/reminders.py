@@ -18,8 +18,16 @@ def _row_to_dict(row) -> dict:
 
 
 class Reminders:
-    def __init__(self, file_path=None):
-        self.db = Database(os.path.join(_LOG_DIR, "ops.db"))
+    def __init__(self, file_path=None, db_path=None):
+        # Resolve the DB path. Tests pass an isolated `file_path` (e.g. a tmp
+        # dir); keep the SQLite DB beside it so they never touch the real
+        # ops.db. Prod calls Reminders() with no args → the real DB.
+        if db_path is None:
+            if file_path is not None:
+                db_path = os.path.join(os.path.dirname(str(file_path)), "ops.db")
+            else:
+                db_path = os.path.join(_LOG_DIR, "ops.db")
+        self.db = Database(db_path)
 
     def load(self) -> list:
         return [_row_to_dict(r) for r in self.db.get_reminders()]
