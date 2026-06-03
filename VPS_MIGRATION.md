@@ -81,12 +81,35 @@ Currently private GitHub repo — personal context must stay private.
 
 ---
 
-## Future: Public dashboard
+## Dashboard / API (FastAPI)
 
-- Small FastAPI app on same VPS
-- Target: `dashboard.dewofyouryouth.com`
-- Purpose: demo for job interviews and potential clients
-- Data to expose: habit streak graphs, productivity patterns, weekly digest summaries, job search stats — all anonymized (no company names, no personal details)
+- Small FastAPI app on same VPS, its own container, sharing `ops/log/ops.db` with the bot.
+- Target: `dashboard.dewofyouryouth.com` (behind reverse proxy + TLS).
+- Concurrent writes (bot + API on one `ops.db`) are safe via the WAL + `busy_timeout`
+  change shipped 2026-06-03.
+
+**Datastore: stay on SQLite (decided 2026-06-03).** Single user, one box, ~dozens of
+writes/day — SQLite's sweet spot, and backup is "rsync one file." Revisit Postgres only
+when a real trigger hits: the dashboard/API moves to a **separate host** from the DB
+(SQLite can't go over the network), it becomes **multi-user/productized**, or it's wanted
+as an explicit ops-learning piece. The swap is contained — `db.py` is the only SQL layer;
+routing it through SQLAlchemy Core later would make SQLite→Postgres a connection-string change.
+
+**First route — metrics ingestion (`POST /metrics`):** the reason to stand the app up now.
+iPhone Shortcut POSTs weight/steps straight to the DB via `logs.write_metric`, bypassing
+Telegram entirely. Fixes the silent-loss bug where Shortcut→Bot-API messages are the bot
+talking to itself and never seen by `getUpdates`. Token auth (`INGEST_TOKEN`).
+Full design: [INGESTION_ENDPOINT_SPEC.md](INGESTION_ENDPOINT_SPEC.md).
+
+- [ ] `api/main.py` — FastAPI app with `POST /metrics`, token auth, reuses `Logs`
+- [ ] Add `fastapi` + `uvicorn` to `requirements.txt`
+- [ ] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, off unless `INGEST_TOKEN` set)
+- [ ] Point an iPhone Shortcut at it; verify a reading lands in `ops.db`
+- [ ] On VPS: reverse proxy + TLS at the dashboard domain
+
+**Dashboard read routes (later):** habit streak graphs, productivity patterns, weekly
+digest summaries, job search stats — all anonymized (no company names, no personal details).
+Purpose: demo for job interviews and potential clients.
 
 ---
 
