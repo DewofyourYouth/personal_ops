@@ -23,12 +23,13 @@ def test_write_and_read_today(log_dir):
 
 
 def test_write_metric(log_dir):
+    # Metrics live in the SQLite `metrics` table (not `entries`/read_today since
+    # the migration); read them back through the public load_metrics API.
     log_dir.write_metric("weight", 75.5, "kg")
-    entries = log_dir.read_today()
-    assert entries[0]["tag"] == "metric"
-    assert entries[0]["key"] == "weight"
-    assert entries[0]["value"] == 75.5
-    assert entries[0]["unit"] == "kg"
+    metrics = log_dir.load_metrics(days=1)
+    assert "weight" in metrics
+    date_str, display = metrics["weight"][0]
+    assert display == "75.5kg"
 
 
 def test_read_recent_skips_metrics(tmp_path):
@@ -45,16 +46,11 @@ def test_read_recent_skips_metrics(tmp_path):
     assert "weight" not in recent
 
 
-def test_load_metrics(tmp_path):
-    logs = Logs(str(tmp_path))
-    yesterday = date.today() - timedelta(days=1)
-    jsonl = tmp_path / f"{yesterday}.jsonl"
-    jsonl.write_text(
-        json.dumps({"ts": "2026-05-26T10:00:00+03:00", "tag": "metric", "key": "steps", "value": 8000, "unit": "", "content": "steps 8000"}) + "\n"
-    )
-    metrics = logs.load_metrics(days=2)
+def test_load_metrics(log_dir):
+    log_dir.write_metric("steps", 8000)
+    metrics = log_dir.load_metrics(days=2)
     assert "steps" in metrics
-    assert metrics["steps"][0][1] == 8000
+    assert int(metrics["steps"][0][1]) == 8000
 
 
 def test_parse_md_fallback(tmp_path):
@@ -146,13 +142,8 @@ def test_format_stats_for_prompt(tmp_path):
     assert "Rolling" in text
 
 
-def test_format_metrics_for_prompt(tmp_path):
-    logs = Logs(str(tmp_path))
-    yesterday = date.today() - timedelta(days=1)
-    jsonl = tmp_path / f"{yesterday}.jsonl"
-    jsonl.write_text(
-        json.dumps({"ts": "2026-05-26T10:00:00+03:00", "tag": "metric", "key": "mood", "value": 8, "unit": "", "content": "mood 8"}) + "\n"
-    )
-    text = logs.format_metrics_for_prompt(days=2)
+def test_format_metrics_for_prompt(log_dir):
+    log_dir.write_metric("mood", 8)
+    text = log_dir.format_metrics_for_prompt(days=2)
     assert "mood" in text
     assert "Tracked metrics:" in text
