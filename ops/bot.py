@@ -1548,15 +1548,9 @@ async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"✅ Saved: <b>{html.escape(app.company_name)}</b> — {html.escape(app.job_title or '(no title)')}",
             parse_mode="HTML",
         )
-        # push to job_tracker git repo in background
-        import subprocess, threading
-        def _git_push():
-            from jobs import APPLICATIONS_CSV
-            repo = str(APPLICATIONS_CSV.parent.parent)
-            subprocess.run(["git", "-C", repo, "add", "data/applications.csv"], capture_output=True)
-            subprocess.run(["git", "-C", repo, "commit", "-m", f"add: {app.company_name}"], capture_output=True)
-            subprocess.run(["git", "-C", repo, "push"], capture_output=True)
-        threading.Thread(target=_git_push, daemon=True).start()
+        # Note: previously pushed to a local job_tracker git repo here. Removed —
+        # job tracking is being retired from personal_ops (handed off to a dedicated
+        # agent), and the hardcoded ~/development/job_tracker path fails on the VPS.
 
     elif action == "job_edit_title":
         _awaiting_job[chat_id]["step"] = "edit_title"

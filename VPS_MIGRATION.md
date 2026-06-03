@@ -95,24 +95,27 @@ when a real trigger hits: the dashboard/API moves to a **separate host** from th
 as an explicit ops-learning piece. The swap is contained — `db.py` is the only SQL layer;
 routing it through SQLAlchemy Core later would make SQLite→Postgres a connection-string change.
 
-**Write routes — the reason to stand the app up now.** iPhone Shortcuts POST straight to
-the DB, bypassing Telegram entirely (fixes the silent-loss bug where Shortcut→Bot-API
+**Write route — the reason to stand the app up now.** iPhone Shortcut POSTs metrics straight
+to the DB, bypassing Telegram entirely (fixes the silent-loss bug where Shortcut→Bot-API
 messages are the bot talking to itself and never seen by `getUpdates`). Token auth
 (`INGEST_TOKEN`). Full design: [DASHBOARD_API_SPEC.md](DASHBOARD_API_SPEC.md).
 - `POST /metrics` — weight/steps via `logs.write_metric`.
-- `POST /jobs` — add/advance job applications via `jobs.add_application` (upsert on
-  company+title). Doubles as the defined job_tracker interface (replaces the temporary
-  CSV coupling — see job-tracker-interface note).
 
-- [ ] `api/main.py` — FastAPI app with `POST /metrics` + `POST /jobs`, token auth, reuses `Logs` + `jobs.add_application`
+- [ ] `api/main.py` — FastAPI app with `POST /metrics`, token auth, reuses `Logs`
 - [ ] Add `fastapi` + `uvicorn` to `requirements.txt`
 - [ ] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, off unless `INGEST_TOKEN` set)
 - [ ] Point an iPhone Shortcut at it; verify a reading lands in `ops.db`
 - [ ] On VPS: reverse proxy + TLS at the dashboard domain
 
+**Jobs retired from personal_ops (decided 2026-06-03).** Job tracking is being handed off to
+a dedicated job-application agent (HyperAgent/Hermit). No `POST /jobs`, and the job funnel
+will not appear in digests/advisory. Removal is **staged**: decision + endpoint plan dropped
+now; the bot's git-push-to-job_tracker coupling removed; full jobs code + `job_applications`
+table removal happens once the agent is live. Data exported to
+`ops/log/job_applications_export_*.json` (also still in the job_tracker repo).
+
 **Dashboard read routes (later):** habit streak graphs, productivity patterns, weekly
-digest summaries, job search stats — all anonymized (no company names, no personal details).
-Purpose: demo for job interviews and potential clients.
+digest summaries — all anonymized (no personal details). Purpose: demo for interviews/clients.
 
 ---
 

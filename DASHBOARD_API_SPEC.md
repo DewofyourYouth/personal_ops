@@ -12,16 +12,17 @@ those readings never reach the bot and vanish silently (confirmed 2026-06-02: `s
 and `weight 94.3` lost). No hardening inside the bot helps, because no update arrives.
 
 Fix: the phone POSTs straight to **our own API**, which writes directly to `ops.db`.
-Two write resources to start:
+One write resource to start:
 
 1. **`POST /metrics`** — weight, steps (and any keyed metric).
-2. **`POST /jobs`** — job applications + status changes ("career ops from the phone").
 
-`POST /jobs` also serves as the **defined job_tracker ↔ personal_ops interface** the VPS
-migration requires — replacing the temporary CSV coupling with an explicit contract.
+> **Jobs dropped (decided 2026-06-03).** An earlier draft added `POST /jobs` as the
+> job_tracker interface. Job tracking is being **retired from personal_ops** — handed off
+> to a dedicated job-application agent (HyperAgent/Hermit). No jobs endpoint, and the agenda
+> advisory/digests will not see the job funnel. See [VPS_MIGRATION.md](VPS_MIGRATION.md).
 
 ```
-iPhone Shortcut ──HTTPS POST──▶ FastAPI app ──▶ logs.write_metric / jobs.add_application ──▶ ops.db (+ JSONL)
+iPhone Shortcut ──HTTPS POST──▶ FastAPI app ──▶ logs.write_metric ──▶ ops.db (+ JSONL)
                                     │
               (bot keeps running in its own container, same ops.db)
 ```
@@ -30,9 +31,8 @@ iPhone Shortcut ──HTTPS POST──▶ FastAPI app ──▶ logs.write_metri
 
 - New service `api/` (FastAPI + uvicorn), its own container in `docker-compose.yml`,
   mounting the **same** `./ops/log` volume so it shares `ops.db` with the bot.
-- Routes call existing functions — `logs.write_metric(...)` and `jobs.add_application(...)`
-  — never raw SQL. So they inherit current behavior (metrics get JSONL-first durability;
-  jobs get the company+title upsert) for free.
+- Routes call existing functions — e.g. `logs.write_metric(...)` — never raw SQL, so they
+  inherit current behavior (JSONL-first durability) for free.
 - Two processes writing one `ops.db` is safe via the WAL + `busy_timeout=30000` change
   shipped 2026-06-03.
 
@@ -62,44 +62,6 @@ Implementation: `logs.write_metric(key, value, unit)`.
 
 ---
 
-## `POST /jobs`
-
-Add a job application, or advance an existing one's status — one endpoint, because
-`jobs.add_application()` **upserts on `company + title`**: same pair updates
-`url/applied_date/status/notes`; a new pair inserts.
-
-```jsonc
-{
-  "company": "Acme",            // required
-  "title": "Backend Engineer",  // required (also part of the upsert key)
-  "status": "phone_screen",     // enum below; default "applied"
-  "url": "https://…",           // optional
-  "source": "LinkedIn",         // optional
-  "notes": "recruiter reached out",  // optional
-  "applied_date": "2026-06-02"  // optional ISO date; default today
-}
-```
-
-`status` ∈ `applied | phone_screen | interview | offer | rejected | withdrew | unknown`
-(unrecognized values map to `unknown`, matching `_parse_status`).
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| 200 | `{"job":{"id":42,"company":"Acme","title":"Backend Engineer","status":"phone_screen",…},"created":false}` | upserted |
-| 401 | `{"detail":"unauthorized"}` | bad/missing token |
-| 422 | (FastAPI validation) | missing company/title, bad status |
-| 500 | `{"detail":"db write failed"}` | write failed |
-
-Implementation: `jobs.add_application(company, title, url, source, notes, status, applied_date)`.
-`created` = whether a new row was inserted vs. an existing company+title updated.
-
-Typical phone flows:
-- **New application** — POST company+title+source (status defaults to `applied`).
-- **Status change** — POST the same company+title with the new `status` (e.g. `interview`),
-  optionally a note. No id needed; the pair is the key.
-
----
-
 ## Security / deployment
 
 - **VPS**: app binds localhost; reverse proxy (Caddy/nginx) terminates **TLS** at the
@@ -120,21 +82,19 @@ the only SQL layer, so a later swap is contained. See [VPS_MIGRATION.md](VPS_MIG
 
 ## Build order
 
-1. `api/main.py` — FastAPI app, `POST /metrics` + `POST /jobs`, Bearer-token dependency,
-   reusing `Logs` and `jobs.add_application`. Add `fastapi` + `uvicorn` to `requirements.txt`.
+1. `api/main.py` — FastAPI app, `POST /metrics`, Bearer-token dependency, reusing `Logs`.
+   Add `fastapi` + `uvicorn` to `requirements.txt`.
 2. Compose `api` service (off unless `INGEST_TOKEN` set), localhost port.
-3. Verify locally with `curl` → 200 + rows in `ops.db` (one metric, one job).
-4. Point Shortcuts at it (one for steps/weight, one for job status); confirm end-to-end.
+3. Verify locally with `curl` → 200 + a metric row in `ops.db`.
+4. Point a Shortcut at it (steps/weight); confirm end-to-end.
 5. On VPS: reverse proxy + TLS. Then add dashboard **read** routes to the same app.
 
 ## Dashboard read routes (later)
 
 `GET` endpoints feeding the public, anonymized dashboard: habit streak graphs, productivity
-patterns, weekly digest summaries, job-search stats. No company names or personal details.
+patterns, weekly digest summaries. No personal details. (No job-search stats — jobs retired.)
 
 ## Open questions
 
 1. Local transport to the Mac before VPS — LAN IP, Tailscale, or wait for the VPS?
 2. Metrics: auto-push from Apple Health on a schedule, or fire the Shortcut manually?
-3. Jobs: is company+title a strong enough key, or could two roles at the same company
-   collide (then add `PATCH /jobs/{id}` for status, keyed by id)?

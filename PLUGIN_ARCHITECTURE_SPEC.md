@@ -3,7 +3,7 @@
 Status: **proposed**. Supersedes the idea-capture in `PLUGIN_ARCHITECTURE.md`.
 Authored 2026-06-03.
 
-Goal: make a tracking domain (health, food, habits, jobs, sleep, reading, …) a **single
+Goal: make a tracking domain (health, food, habits, sleep, reading, …) a **single
 self-contained module** that registers its own commands, parsing, scheduled jobs, digest
 contribution, context files, and API routes — so adding one as needs change touches the
 module's own folder, not the core. Incremental: the core grows a registry, modules move in
@@ -59,7 +59,7 @@ class Module(Protocol):
     context_files: list[str]                                  # files to load into LLM context
 
     # --- HTTP (dashboard API) ---
-    def api_router(self) -> "APIRouter | None": ...           # module's /metrics, /jobs, GET reads
+    def api_router(self) -> "APIRouter | None": ...           # module's POST ingest + GET reads
 ```
 
 Supporting types:
@@ -127,11 +127,11 @@ later (see open questions).
 ```python
 # modules/__init__.py  — the one place that lists active modules
 from modules.habits import HabitsModule
-from modules.jobs import JobsModule
-ACTIVE = [HabitsModule(), JobsModule(), HealthModule(), FoodModule()]
+from modules.health import HealthModule
+ACTIVE = [HabitsModule(), HealthModule(), FoodModule()]
 ```
 
-Or env-driven (`OPS_MODULES=habits,jobs,health`) so personal vs. shared/public deployments
+Or env-driven (`OPS_MODULES=habits,health,food`) so personal vs. shared/public deployments
 differ without code changes. A module absent from the list contributes nothing — no command,
 no job, no route.
 
@@ -158,8 +158,8 @@ typed registry lookup (`core.module("food").recent_calories(days)`), but default
    into `modules/habits/`. Move its command, `hb_done:` callback, any job, and digest pull.
    Delete those lines from `bot.py`. Verify parity.
 3. **Extract opportunistically.** Each time a domain needs work (or a new one is added),
-   move/author it as a module. `jobs` is a natural next one — it already owns its table and
-   gets the `POST /jobs` route, so `api_router()` lands there.
+   move/author it as a module. **health/metrics** is a natural next one — it owns the
+   `metrics` table and gets the `POST /metrics` route, so `api_router()` lands there.
 4. **Stop when it stops hurting.** Core-only concerns (auth gate, `_awaiting_*` flows,
    unicode cleanup, the default log path) can stay in core indefinitely.
 
@@ -205,7 +205,7 @@ class ReadingModule:
 ## Relationship to other specs
 
 - [DASHBOARD_API_SPEC.md](DASHBOARD_API_SPEC.md): each module's `api_router()` is how
-  `/metrics`, `/jobs`, and later read routes attach to the FastAPI app per-module.
+  `/metrics` and later read routes attach to the FastAPI app per-module.
 - [VPS_MIGRATION.md](VPS_MIGRATION.md): revisit "after VPS stable + API v1 exists." The
   public-repo goal benefits directly — modules become the unit others enable/customize.
 - Agenda paradigm work stays a core concern (it shapes how *all* modules surface advice),
