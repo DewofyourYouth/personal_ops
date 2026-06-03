@@ -153,7 +153,17 @@ async def _safe_answer(query, text: str = "") -> None:
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, (NetworkError, BadRequest)):
         return  # transient — swallow silently
-    raise context.error
+    # Never fail silently on a real error: log it AND tell the user their
+    # message wasn't handled, so a dropped entry can't disappear unnoticed.
+    logging.getLogger(__name__).exception("Unhandled error processing update", exc_info=context.error)
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ Something went wrong handling that — it was NOT saved. Please resend.\n({type(context.error).__name__}: {context.error})",
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to notify user about error")
 
 
 def _reminded_path():
@@ -1906,12 +1916,23 @@ async def _post_init(application):
     _bot = application.bot
     # Self-heal: replay any JSONL readings the DB missed (e.g. dropped by a
     # transient lock before the WAL/busy-timeout fix). Idempotent.
+    recovered = 0
     try:
         recovered = logs.sync_jsonl_to_db()
         if recovered:
             logging.getLogger(__name__).info("Recovered %d log row(s) from JSONL on startup", recovered)
     except Exception:
         logging.getLogger(__name__).exception("JSONL→DB sync on startup failed")
+    # Tell the user we just (re)started, so a redeploy can't silently eat a
+    # message sent during the restart window — they know to resend.
+    try:
+        note = f"\n♻️ Recovered {recovered} log row(s)." if recovered else ""
+        await application.bot.send_message(
+            chat_id=ALLOWED_USER,
+            text=f"🔄 Bot back online. If you sent anything in the last minute, please resend it.{note}",
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to send back-online ping")
     tz = ZoneInfo("Asia/Jerusalem")
     _scheduler.add_job(morning_plan, "cron", hour=PLAN_HOUR, minute=PLAN_MINUTE, id="morning_plan", replace_existing=True)
     _scheduler.add_job(remind_upcoming, "interval", seconds=600, id="remind_upcoming", replace_existing=True)
