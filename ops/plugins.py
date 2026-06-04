@@ -10,12 +10,14 @@ collect any scheduled jobs.
 """
 from types import SimpleNamespace
 
+from habit_handlers import HabitHandlers
+
 
 def build_plugins(bot, services: SimpleNamespace) -> list:
-    """Construct the active plugins. Empty for now — habits/food/etc. land here
-    one at a time. `services` carries the shared domain singletons."""
+    """Construct the active plugins. `services` carries the shared domain
+    singletons; a domain is active iff it's in this list."""
     return [
-        # HabitHandlers(bot, services.logs, services.context),
+        HabitHandlers(bot, services.logs, services.context, services.allowed_user),
     ]
 
 

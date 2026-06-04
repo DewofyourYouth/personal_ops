@@ -1156,91 +1156,6 @@ async def handle_mood_energy_callback(update: Update, context: ContextTypes.DEFA
 # Generic filler/measure/verb words that appear across many habits and must NOT count
 # as a match on their own — otherwise "at least a liter of water" matches "at least 100
 # grams of protein" via the shared word "least".
-_HABIT_STOPWORDS = {
-    "the", "and", "for", "with", "least", "day", "daily", "minimum", "min",
-    "eat", "ate", "take", "took", "drink", "drank", "get", "got", "log", "logged",
-    "grams", "gram", "liter", "litre", "100", "1000", "7000", "includes", "include",
-    "morning", "every", "least", "about", "some", "more", "than", "per", "week",
-}
-
-
-def _resolve_logged_to_habit(logged: str, all_habits: list) -> dict | None:
-    """Map ONE logged entry to AT MOST ONE habit.
-
-    Exact name match wins outright (this is what a button click produces — it must mark
-    exactly its own habit, never a fuzzy neighbour). Otherwise fall back to the single
-    strongest fuzzy match (most shared distinctive words), or None if nothing matches.
-    This guarantees one log can never light up two habits.
-    """
-    logged_l = logged.strip().lower()
-    for h in all_habits:
-        if logged_l == context_.habit_display_name(h["text"]).strip().lower():
-            return h
-    best, best_score = None, 0
-    for h in all_habits:
-        words = {w for w in re.split(r"\W+", logged_l) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
-        canon = {w for w in re.split(r"\W+", h["raw"].lower()) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
-        score = len(words & canon)
-        if score > best_score:
-            best, best_score = h, score
-    return best if best_score >= 1 else None
-
-
-def _habits_message() -> tuple[str, InlineKeyboardMarkup]:
-    from datetime import date as _date
-    today_weekday = _date.today().weekday()
-    sections = context_.parse_habits()
-    logged_today = [e["content"].strip() for e in logs.read_today() if e.get("tag") == "habit"]
-
-    # Flat list of all habits visible today, then resolve each log to exactly one of them
-    all_visible = []
-    for habits in sections.values():
-        all_visible.extend(h for h in habits if h["days"] is None or today_weekday in h["days"])
-    done_keys = set()
-    for logged in logged_today:
-        h = _resolve_logged_to_habit(logged, all_visible)
-        if h:
-            done_keys.add(h["raw"])
-
-    lines = ["📋 <b>Habits</b>\n"]
-    rows = []
-    for section, habits in sections.items():
-        visible = [h for h in habits if h["days"] is None or today_weekday in h["days"]]
-        if not visible:
-            continue
-        lines.append(f"<b>{html.escape(section)}</b>")
-        for h in visible:
-            name = context_.habit_display_name(h["text"])
-            done = h["raw"] in done_keys
-            lines.append(f"{'✅' if done else '⬜'} {html.escape(name)}")
-            if not done:
-                key = name[:52]  # callback_data max 64 bytes; "hb_done:" = 8
-                rows.append([InlineKeyboardButton(f"✅ {name}", callback_data=f"hb_done:{key}")])
-        lines.append("")
-
-    return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
-
-
-async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    sections = context_.parse_habits()
-    if not sections:
-        await update.message.reply_text("No habits defined. Edit habits.md in your vault.")
-        return
-    text, keyboard = _habits_message()
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-
-async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await safe_answer(query)
-    habit_name = query.data.split(":", 1)[1]
-    logs.write("habit", habit_name)
-    text, keyboard = _habits_message()
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-
 def _parse_queue_date(day_str: str):
     from datetime import date as _date, timedelta as _td
     today = _date.today()
@@ -1351,27 +1266,6 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = e["ts"][11:16]
         lines.append(f"<code>{t}</code> {html.escape(e['content'])}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-async def cmd_habit_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    from datetime import date as _date, timedelta as _td
-    from habit_tracker import generate_habit_log
-    arg = " ".join(context.args).strip().lower() if context.args else ""
-    target = _date.today() - _td(days=1) if arg in ("yesterday", "y") else _date.today()
-    template = context_.dir / "templates" / "habit-template.md"
-    output_dir = context_.dir / "habits"
-    try:
-        path = generate_habit_log(logs, template, output_dir, target)
-        # Wrap the filename in <code> so Telegram doesn't auto-link the .md (a real TLD)
-        # into a broken web URL. Code spans are also long-press-to-copy.
-        await update.message.reply_text(
-            f"✅ Habit log saved: <code>{html.escape(path.name)}</code>\nOpen in Obsidian to add notes.",
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        await update.message.reply_text(f"Failed: {e}")
 
 
 async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1540,15 +1434,13 @@ def main():
     services = SimpleNamespace(
         logs=logs, context=context_, planner=planner_, gcal=gcal_,
         queue=queue_, agenda=agenda_, backlog=backlog_, baseline=baseline_,
-        reminders=reminders,
+        reminders=reminders, allowed_user=ALLOWED_USER,
     )
     plugins = build_plugins(app.bot, services)
     for plugin in plugins:
         plugin.register(app)
 
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("habits", cmd_habits))
-    app.add_handler(CommandHandler("habitlog", cmd_habit_log))
     app.add_handler(CommandHandler("food", cmd_food))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
@@ -1566,14 +1458,12 @@ def main():
     app.add_handler(CommandHandler("l", cmd_logs))
     app.add_handler(CommandHandler("r", cmd_reminders))
     app.add_handler(CommandHandler("b", cmd_backlog))
-    app.add_handler(CommandHandler("h", cmd_habits))
     app.add_handler(CommandHandler("v", cmd_values))
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
     app.add_handler(CallbackQueryHandler(handle_reminder_edit, pattern="^rm_edit:"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
-    app.add_handler(CallbackQueryHandler(handle_habit_callback, pattern="^hb_done:"))
     app.add_handler(CallbackQueryHandler(handle_mood_energy_callback, pattern="^me_"))
     app.add_handler(CallbackQueryHandler(handle_voice_callback, pattern="^voice_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
