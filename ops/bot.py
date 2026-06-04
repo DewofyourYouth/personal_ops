@@ -37,7 +37,7 @@ from agenda_queue import AgendaQueue
 from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
-from llm import parse_queue_entry, transcribe
+from llm import match_habit, parse_queue_entry, transcribe
 from tg_common import safe_answer, encourage
 from agenda_handlers import AgendaHandlers
 from plugins import build_plugins
@@ -576,6 +576,20 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                     content = parts[0] + " — " + ", ".join(stats)
         except Exception:
             pass
+
+    # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
+    # habit it satisfies once, at log time, and store the canonical habit name — so the
+    # checklist renders by exact match (no per-render LLM, no stopword heuristic).
+    if tag == "habit":
+        try:
+            sections = context_.parse_habits()
+            names = [context_.habit_display_name(h["text"]) for hs in sections.values() for h in hs]
+            if content.strip().lower() not in {n.strip().lower() for n in names}:
+                matched = await match_habit(content, names)
+                if matched:
+                    content = matched
+        except Exception:
+            pass  # fall back to the raw text
 
     # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
     # backup. Writing the file directly here bypassed the DB — the bug that made

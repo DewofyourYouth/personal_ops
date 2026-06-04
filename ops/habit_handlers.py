@@ -8,7 +8,6 @@ Habit definitions live in the Obsidian vault (`habits.md`, read through Context)
 a habit is "done" today if a matching `habit`-tagged log entry exists.
 """
 import html
-import re
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -17,14 +16,6 @@ from context import Context
 from habit_tracker import compute_streak, generate_habit_log
 from logs import Logs
 from tg_common import safe_answer
-
-# Generic filler/measure/verb words that must NOT count toward a fuzzy habit match.
-_HABIT_STOPWORDS = {
-    "the", "and", "for", "with", "least", "day", "daily", "minimum", "min",
-    "eat", "ate", "take", "took", "drink", "drank", "get", "got", "log", "logged",
-    "grams", "gram", "liter", "litre", "100", "1000", "7000", "includes", "include",
-    "morning", "every", "least", "about", "some", "more", "than", "per", "week",
-}
 
 
 class HabitHandlers:
@@ -58,25 +49,18 @@ class HabitHandlers:
     # --- Helpers ---
 
     def _resolve_logged_to_habit(self, logged: str, all_habits: list) -> dict | None:
-        """Map ONE logged entry to AT MOST ONE habit.
+        """Map a logged entry to its habit by exact display-name match.
 
-        Exact name match wins outright (this is what a button click produces — it must mark
-        exactly its own habit, never a fuzzy neighbour). Otherwise fall back to the single
-        strongest fuzzy match (most shared distinctive words), or None if nothing matches.
-        This guarantees one log can never light up two habits.
+        Both write paths now store the canonical habit name — button taps write it
+        directly, and free-text logs are resolved to it semantically at log time
+        (`llm.match_habit`). So an exact match is all the checklist needs; the old
+        fuzzy word-overlap + stopword heuristic is gone.
         """
         logged_l = logged.strip().lower()
         for h in all_habits:
             if logged_l == self.context.habit_display_name(h["text"]).strip().lower():
                 return h
-        best, best_score = None, 0
-        for h in all_habits:
-            words = {w for w in re.split(r"\W+", logged_l) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
-            canon = {w for w in re.split(r"\W+", h["raw"].lower()) if len(w) >= 3 and w not in _HABIT_STOPWORDS}
-            score = len(words & canon)
-            if score > best_score:
-                best, best_score = h, score
-        return best if best_score >= 1 else None
+        return None
 
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
