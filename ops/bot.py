@@ -37,7 +37,8 @@ from agenda_queue import AgendaQueue
 from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
-from llm import match_habit, parse_queue_entry, transcribe
+from llm import parse_queue_entry, transcribe
+from habit_handlers import match_habit
 from tg_common import safe_answer, encourage
 from agenda_handlers import AgendaHandlers
 from plugins import build_plugins
@@ -579,15 +580,13 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
 
     # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
     # habit it satisfies once, at log time, and store the canonical habit name — so the
-    # checklist renders by exact match (no per-render LLM, no stopword heuristic).
+    # checklist renders by exact match. The habit-specific resolution lives in the habit
+    # module; the dispatcher just delegates.
     if tag == "habit":
         try:
-            sections = context_.parse_habits()
-            names = [context_.habit_display_name(h["text"]) for hs in sections.values() for h in hs]
-            if content.strip().lower() not in {n.strip().lower() for n in names}:
-                matched = await match_habit(content, names)
-                if matched:
-                    content = matched
+            matched = await match_habit(content, context_)
+            if matched:
+                content = matched
         except Exception:
             pass  # fall back to the raw text
 

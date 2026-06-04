@@ -1,9 +1,14 @@
-"""LLM edge — input interpretation that calls the model SDKs.
+"""Transitional home for two model calls whose domain modules don't exist yet.
 
-Keeps `anthropic`/`openai` out of the Telegram entrypoint (bot.py). This is the
-"AI at the edges" boundary: handlers pass plain data in and get plain data out;
-the SDK calls live here. (Output generation lives in planner.py — the other
-half of this layer; prompt text is slated to move out of inline next.)
+NOTE: this is NOT meant to be a permanent "all LLM calls live here" layer —
+domain-specific model calls belong in their domain (habit matching moved to
+habit_handlers). What's left:
+  - transcribe(): generic audio→text; the one genuinely-shared utility. Moves to
+    a voice module when voice is extracted (or stays a small util).
+  - parse_queue_entry(): queue-specific; moves to the queue plugin when extracted.
+
+Kept here only so the entrypoint (bot.py) doesn't import the SDKs directly until
+those two domains are carved out.
 """
 from datetime import date
 
@@ -16,45 +21,6 @@ def transcribe(audio_path: str) -> str:
     with open(audio_path, "rb") as audio:
         transcript = openai.OpenAI().audio.transcriptions.create(model="whisper-1", file=audio)
     return transcript.text.strip()
-
-
-async def match_habit(text: str, habit_names: list[str]) -> str | None:
-    """Pick which of `habit_names` a free-text log entry satisfies, or None.
-
-    Semantic match (e.g. "took a stroll" -> "Daily walk") via the cheapest model,
-    constrained to the actual habit names. Replaces the old stopword/word-overlap
-    heuristic. Called once at log time; the result is stored so the checklist
-    renders deterministically.
-    """
-    if not habit_names:
-        return None
-    client = anthropic.AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=64,
-        tools=[{
-            "name": "match_habit",
-            "description": "Pick which habit a free-text log entry satisfies, or 'none'.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "habit": {
-                        "type": "string",
-                        "enum": [*habit_names, "none"],
-                        "description": "The habit this entry satisfies, or 'none' if it matches no habit.",
-                    },
-                },
-                "required": ["habit"],
-            },
-        }],
-        tool_choice={"type": "tool", "name": "match_habit"},
-        messages=[{"role": "user", "content": f"Habits: {habit_names}\nLog entry: {text!r}\nWhich habit does this satisfy?"}],
-    )
-    for block in response.content:
-        if block.type == "tool_use":
-            choice = block.input.get("habit")
-            return None if choice in (None, "none") else choice
-    return None
 
 
 async def parse_queue_entry(text: str) -> dict | None:

@@ -9,6 +9,7 @@ a habit is "done" today if a matching `habit`-tagged log entry exists.
 """
 import html
 
+import anthropic
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
@@ -16,6 +17,51 @@ from context import Context
 from habit_tracker import compute_streak, generate_habit_log
 from logs import Logs
 from tg_common import safe_answer
+
+
+async def match_habit(content: str, context: Context) -> str | None:
+    """Resolve a free-text habit log to the canonical habit name it satisfies, or None.
+
+    All habit-specific resolution lives here: it builds the habit list from the vault,
+    short-circuits when the text already is a habit name (no model call), and otherwise
+    asks the cheapest model to pick semantically (e.g. "took a stroll" -> "Daily walk"),
+    constrained to the actual habit names. Replaces the old stopword/word-overlap heuristic.
+    """
+    sections = context.parse_habits()
+    names = [context.habit_display_name(h["text"]) for hs in sections.values() for h in hs]
+    if not names:
+        return None
+    by_lower = {n.strip().lower(): n for n in names}
+    if content.strip().lower() in by_lower:
+        return by_lower[content.strip().lower()]  # already a habit name — no model call
+
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=64,
+        tools=[{
+            "name": "match_habit",
+            "description": "Pick which habit a free-text log entry satisfies, or 'none'.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "habit": {
+                        "type": "string",
+                        "enum": [*names, "none"],
+                        "description": "The habit this entry satisfies, or 'none' if it matches no habit.",
+                    },
+                },
+                "required": ["habit"],
+            },
+        }],
+        tool_choice={"type": "tool", "name": "match_habit"},
+        messages=[{"role": "user", "content": f"Habits: {names}\nLog entry: {content!r}\nWhich habit does this satisfy?"}],
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            choice = block.input.get("habit")
+            return None if choice in (None, "none") else choice
+    return None
 
 
 class HabitHandlers:
