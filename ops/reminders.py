@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 from db import Database
 
 TZ = ZoneInfo("Asia/Jerusalem")
-_LOG_DIR = os.path.join(os.getcwd(), "ops/log")
+# Resolve relative to this file, not the process CWD: getcwd() silently pointed
+# at a different DB if the bot was launched from another directory.
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "log")
 
 
 def _row_to_dict(row) -> dict:

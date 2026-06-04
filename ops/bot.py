@@ -42,20 +42,23 @@ from habit_handlers import match_habit
 from tg_common import safe_answer, encourage
 from agenda_handlers import AgendaHandlers
 from plugins import build_plugins
+from config import Config
 import scheduling
 
-TOKEN = os.environ["OPS_BOT_TOKEN"]
-ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
+# Single per-instance config object: identity, storage path, and tunables come
+# from here rather than from scattered env reads or getcwd(). The globals below
+# are kept as thin aliases so the rest of bot.py is unchanged.
 # Reflective outputs (digests, agenda proposals, hypothesis eval, feedback) run on Sonnet —
 # Haiku ignores nuanced tone restraint (no coda, no moralizing, no directives) and falls back
 # on a generic "church lady" register. Cheap structured parsing (reminders/events/food) stays
 # on Haiku, hardcoded in those methods.
-MODEL = os.environ.get("OPS_MODEL", "claude-sonnet-4-6")
-PLAN_HOUR = int(os.environ.get("OPS_PLAN_HOUR", "8"))
-PLAN_MINUTE = int(os.environ.get("OPS_PLAN_MINUTE", "0"))
-
-cwd = os.getcwd()
-LOG_DIR = os.path.expanduser(f"{cwd}/ops/log")
+config = Config.from_env()
+TOKEN = config.bot_token
+ALLOWED_USER = config.allowed_user
+MODEL = config.model
+PLAN_HOUR = config.plan_hour
+PLAN_MINUTE = config.plan_minute
+LOG_DIR = str(config.data_dir)
 
 # Global bot reference — set in post_init once the Application starts
 _bot = None
