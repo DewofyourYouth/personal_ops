@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 from datetime import date, datetime, time, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -39,6 +40,7 @@ from baseline_tracker import Baseline
 from llm import parse_queue_entry, transcribe
 from tg_common import safe_answer, encourage
 from agenda_handlers import AgendaHandlers
+from plugins import build_plugins
 import scheduling
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
@@ -1533,6 +1535,16 @@ def main():
     global agenda_feature
     agenda_feature = AgendaHandlers(app.bot, agenda_, queue_, gcal_, planner_, logs, ALLOWED_USER)
     agenda_feature.register(app)
+
+    # Plugins (tracking-domain feature classes) self-register via the registry.
+    services = SimpleNamespace(
+        logs=logs, context=context_, planner=planner_, gcal=gcal_,
+        queue=queue_, agenda=agenda_, backlog=backlog_, baseline=baseline_,
+        reminders=reminders,
+    )
+    plugins = build_plugins(app.bot, services)
+    for plugin in plugins:
+        plugin.register(app)
 
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("habits", cmd_habits))
