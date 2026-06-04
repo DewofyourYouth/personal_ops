@@ -119,7 +119,7 @@ STATUS_ICONS = {
 _pending: dict = {}
 _awaiting_time: dict = {}        # chat_id -> partial reminder dict waiting for a time reply
 _awaiting_context: dict = {}     # chat_id -> filename waiting for new content
-_awaiting_job: dict = {}         # chat_id -> {"step": str, "data": dict}
+_awaiting_queue_day: dict = {}   # chat_id -> {"step": "bl_day", "data": {...}} backlog→queue reply
 _awaiting_candles: dict = {}     # chat_id -> True
 _awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
 _awaiting_reminder_edit: dict = {}  # chat_id -> reminder id being edited
@@ -695,29 +695,6 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 return
         await reply("Couldn't parse that. Try: 'schedule for Sunday: deploy to VPS'")
 
-    # job tracker: <description> — parse and add via Claude (works with voice notes too)
-    if re.match(r"^job[-\s]tracker", lower):
-        description = re.sub(r"^job[-\s]tracker[:\s]*", "", text, flags=re.IGNORECASE).strip()
-        if not description:
-            # Start interactive flow
-            _awaiting_job[update_chat_id] = {"step": "company", "data": {}}
-            await reply("Company name?")
-            return
-        await reply("📋 Parsing job details…")
-        parsed = await _parse_job_from_text(description)
-        if not parsed:
-            await reply("Couldn't parse that. Try: 'job tracker: Applied to Acme for Backend Engineer via LinkedIn'")
-            return
-        _awaiting_job[update_chat_id] = {"step": "confirm", "data": parsed}
-        await reply(_job_summary(parsed), parse_mode="HTML", reply_markup=_job_confirm_keyboard())
-        return
-
-    # add a job — start interactive flow
-    if re.match(r"^add\s+a?\s*job\b", lower):
-        _awaiting_job[update_chat_id] = {"step": "company", "data": {}}
-        await reply("Company name?")
-        return
-
     # add: — user adds their own agenda item
     if lower.startswith("add:"):
         item_text = text[4:].strip()
@@ -923,8 +900,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # intercept backlog→queue day reply
-    if chat_id in _awaiting_job and _awaiting_job[chat_id].get("step") == "bl_day":
-        state = _awaiting_job.pop(chat_id)
+    if chat_id in _awaiting_queue_day:
+        state = _awaiting_queue_day.pop(chat_id)
         target = _parse_queue_date(text.strip())
         item_id = state["data"]["item_id"]
         item_text = state["data"]["text"]
@@ -934,25 +911,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         queue_.add(item_text, target)
         backlog_.remove(item_id)
         await update.message.reply_text(f"📅 Queued for {target.strftime('%A %b %d')}: {html.escape(item_text)}", parse_mode="HTML")
-        return
-
-    # intercept job entry flow
-    if chat_id in _awaiting_job:
-        if text.strip().lower() == "/cancel":
-            del _awaiting_job[chat_id]
-            await update.message.reply_text("Job entry cancelled.")
-            return
-        next_prompt = _job_flow_next(chat_id, text.strip())
-        if next_prompt:
-            await update.message.reply_text(next_prompt)
-        else:
-            # ready to confirm
-            state = _awaiting_job[chat_id]
-            state["step"] = "confirm"
-            await update.message.reply_text(
-                _job_summary(state["data"]), parse_mode="HTML",
-                reply_markup=_job_confirm_keyboard(),
-            )
         return
 
     # intercept time reply for pending reminder
@@ -1172,12 +1130,6 @@ HELP_TEXT = """<b>Planning</b>
 /habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
 <code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
 <code>skip: &lt;reason&gt;</code> — log an external constraint that excused habits today (e.g. <i>skip: chavrusa cancelled</i>)
-
-<b>Job Search</b>
-/jobs — job application status summary
-<code>job tracker: &lt;description&gt;</code> — add application from text or voice note
-  e.g. <i>job tracker: Applied to Acme for Backend Engineer via LinkedIn</i>
-<code>add a job</code> — interactive step-by-step entry
 
 <b>Review</b>
 /daily — end-of-day digest with quote, wins, and suggestions (also runs nightly at 22:30)
@@ -1529,46 +1481,6 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
-async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await _safe_answer(query)
-    chat_id = query.message.chat_id
-    action = query.data
-
-    if action == "job_cancel":
-        _awaiting_job.pop(chat_id, None)
-        await query.edit_message_text("Job entry cancelled.")
-        return
-
-    if chat_id not in _awaiting_job:
-        await query.edit_message_text("Session expired — start again.")
-        return
-
-    if action == "job_confirm":
-        from jobs import add_application
-        data = _awaiting_job.pop(chat_id)["data"]
-        app = add_application(
-            company=data.get("company", ""),
-            title=data.get("title", ""),
-            url=data.get("url", ""),
-            source=data.get("source", ""),
-            notes=data.get("notes", ""),
-            status=data.get("status", "applied"),
-            applied_date=data.get("applied_date", ""),
-        )
-        await query.edit_message_text(
-            f"✅ Saved: <b>{html.escape(app.company_name)}</b> — {html.escape(app.job_title or '(no title)')}",
-            parse_mode="HTML",
-        )
-        # Note: previously pushed to a local job_tracker git repo here. Removed —
-        # job tracking is being retired from personal_ops (handed off to a dedicated
-        # agent), and the hardcoded ~/development/job_tracker path fails on the VPS.
-
-    elif action == "job_edit_title":
-        _awaiting_job[chat_id]["step"] = "edit_title"
-        await query.edit_message_text("Send the job title:")
-
-
 async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await _safe_answer(query)
@@ -1638,96 +1550,6 @@ async def cmd_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def cmd_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    from jobs import status_summary
-    await update.message.reply_text(status_summary(), parse_mode="HTML")
-
-
-async def _parse_job_from_text(text: str) -> dict | None:
-    """Use Claude to extract job fields from a natural language description."""
-    from datetime import date as _date
-    client = anthropic.AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        tools=[{
-            "name": "add_job_application",
-            "description": "Extract job application fields from a natural language description",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "company":      {"type": "string"},
-                    "title":        {"type": "string", "description": "Job title — leave blank if unknown"},
-                    "status":       {"type": "string", "enum": ["applied", "phone_screen", "interview", "rejected", "withdrew", "offer"], "description": "Default: applied"},
-                    "applied_date": {"type": "string", "description": f"YYYY-MM-DD. Resolve relative dates against today ({_date.today()}). Leave blank if not mentioned."},
-                    "url":          {"type": "string", "description": "Job posting URL if mentioned"},
-                    "source":       {"type": "string", "description": "Where found, e.g. LinkedIn, direct"},
-                    "notes":        {"type": "string", "description": "Any extra context, e.g. number of interviews"},
-                },
-                "required": ["company"],
-            },
-        }],
-        tool_choice={"type": "tool", "name": "add_job_application"},
-        messages=[{"role": "user", "content": f"Today is {_date.today()}. Extract job application details: {text}"}],
-    )
-    for block in response.content:
-        if block.type == "tool_use":
-            return block.input
-    return None
-
-
-def _job_summary(data: dict) -> str:
-    lines = ["📋 <b>Job entry — confirm or fill in blanks:</b>\n"]
-    lines.append(f"🏢 Company: <b>{html.escape(data.get('company', '?'))}</b>")
-    lines.append(f"💼 Title: <b>{html.escape(data.get('title', '') or '—')}</b>")
-    lines.append(f"📊 Status: {data.get('status', 'applied')}")
-    if data.get('applied_date'):
-        lines.append(f"📅 Date: {data['applied_date']}")
-    if data.get('source'):
-        lines.append(f"🔗 Source: {data['source']}")
-    if data.get('notes'):
-        lines.append(f"📝 Notes: {data['notes']}")
-    return "\n".join(lines)
-
-
-def _job_confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Save", callback_data="job_confirm"),
-        InlineKeyboardButton("✏️ Edit title", callback_data="job_edit_title"),
-        InlineKeyboardButton("❌ Cancel", callback_data="job_cancel"),
-    ]])
-
-
-def _job_flow_next(chat_id: int, value: str) -> str | None:
-    """Advance the job entry flow. Returns next prompt or None when ready to confirm."""
-    state = _awaiting_job[chat_id]
-    step = state["step"]
-
-    if step == "company":
-        state["data"]["company"] = value
-        state["step"] = "title"
-        return "Job title?"
-    elif step == "title":
-        state["data"]["title"] = value
-        state["step"] = "confirm"
-        return None
-    elif step == "url":
-        state["data"]["url"] = "" if value.lower() in ("skip", "-", "") else value
-        state["step"] = "source"
-        return "Source? (LinkedIn, direct, etc. — or 'skip')"
-    elif step == "source":
-        state["data"]["source"] = "" if value.lower() in ("skip", "-", "") else value
-        state["step"] = "confirm"
-        return None
-    elif step == "edit_title":
-        state["data"]["title"] = value
-        state["step"] = "confirm"
-        return None
-    return None
-
-
 def _backlog_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for item in items:
@@ -1769,7 +1591,7 @@ async def handle_backlog_callback(update: Update, context: ContextTypes.DEFAULT_
         if not item:
             await query.edit_message_text("Item not found.")
             return
-        _awaiting_job[query.message.chat_id] = {
+        _awaiting_queue_day[query.message.chat_id] = {
             "step": "bl_day",
             "data": {"item_id": item_id, "text": item["text"]},
         }
@@ -1995,7 +1817,6 @@ def main():
     app.add_handler(CommandHandler("metrics", cmd_metrics))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("daily", cmd_daily_digest))
-    app.add_handler(CommandHandler("jobs", cmd_jobs))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("backlog", cmd_backlog))
     app.add_handler(CommandHandler("values", cmd_values))
@@ -2003,7 +1824,6 @@ def main():
     app.add_handler(CommandHandler("a", cmd_agenda))
     app.add_handler(CommandHandler("p", cmd_plan))
     app.add_handler(CommandHandler("d", cmd_daily_digest))
-    app.add_handler(CommandHandler("j", cmd_jobs))
     app.add_handler(CommandHandler("m", cmd_metrics))
     app.add_handler(CommandHandler("l", cmd_logs))
     app.add_handler(CommandHandler("r", cmd_reminders))
@@ -2019,7 +1839,6 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_reminder_edit, pattern="^rm_edit:"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))
     app.add_handler(CallbackQueryHandler(handle_habit_callback, pattern="^hb_done:"))
-    app.add_handler(CallbackQueryHandler(handle_job_callback, pattern="^job_"))
     app.add_handler(CallbackQueryHandler(handle_mood_energy_callback, pattern="^me_"))
     app.add_handler(CallbackQueryHandler(handle_voice_callback, pattern="^voice_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -7,7 +7,7 @@ written in parallel for integrity debugging and human readability.
 Schema:
   entries          — all log entries (tags: log, insight, habit, food, win, skip, etc.)
   metrics          — metric entries with key/value/unit (mood, energy, weight, steps, etc.)
-  job_applications — job search tracking (migrated from job_tracker CSV)
+  reminders        — scheduled reminders (daily, interval, once, weekly)
 
 Agenda items (-agenda.json), reminders (reminders.json), backlog (backlog.json),
 and baseline (baseline.json) remain as JSON files for now — they have their own
@@ -60,20 +60,6 @@ CREATE TABLE IF NOT EXISTS reminders (
 );
 """
 
-_CREATE_JOB_APPLICATIONS = """
-CREATE TABLE IF NOT EXISTS job_applications (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    company      TEXT NOT NULL,
-    title        TEXT NOT NULL,
-    url          TEXT DEFAULT '',
-    applied_date TEXT DEFAULT '',
-    status       TEXT DEFAULT 'applied',
-    notes        TEXT DEFAULT '',
-    source       TEXT DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON job_applications(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_company ON job_applications(company);
-"""
 
 
 class Database:
@@ -100,7 +86,6 @@ class Database:
         conn.executescript(_CREATE_ENTRIES)
         conn.executescript(_CREATE_METRICS)
         conn.executescript(_CREATE_REMINDERS)
-        conn.executescript(_CREATE_JOB_APPLICATIONS)
         conn.commit()
 
     def insert_entry(self, ts: str, date_str: str, tag: str, content: str):
@@ -220,43 +205,6 @@ class Database:
                 },
             )
         conn.commit()
-
-    # --- Job applications ---
-
-    def upsert_job(self, company: str, title: str, url: str = "", applied_date: str = "",
-                   status: str = "applied", notes: str = "", source: str = "") -> int:
-        """Insert or update a job application. Matches on company+title."""
-        conn = self._conn()
-        existing = conn.execute(
-            "SELECT id FROM job_applications WHERE company = ? AND title = ?",
-            (company, title),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE job_applications SET url=?, applied_date=?, status=?, notes=?, source=? WHERE id=?",
-                (url, applied_date, status, notes, source, existing["id"]),
-            )
-            conn.commit()
-            return existing["id"]
-        else:
-            cur = conn.execute(
-                "INSERT INTO job_applications (company, title, url, applied_date, status, notes, source) VALUES (?,?,?,?,?,?,?)",
-                (company, title, url, applied_date, status, notes, source),
-            )
-            conn.commit()
-            return cur.lastrowid
-
-    def get_jobs(self, status: str | None = None) -> list[sqlite3.Row]:
-        query = "SELECT * FROM job_applications"
-        if status:
-            return self._conn().execute(query + " WHERE status = ? ORDER BY applied_date DESC", (status,)).fetchall()
-        return self._conn().execute(query + " ORDER BY applied_date DESC").fetchall()
-
-    def update_job_status(self, job_id: int, status: str, notes: str = "") -> bool:
-        conn = self._conn()
-        conn.execute("UPDATE job_applications SET status=?, notes=? WHERE id=?", (status, notes, job_id))
-        conn.commit()
-        return conn.execute("SELECT changes()").fetchone()[0] > 0
 
     def earliest_entry_date(self) -> date | None:
         row = self._conn().execute("SELECT MIN(date) as d FROM entries").fetchone()
