@@ -41,7 +41,7 @@ from llm import parse_queue_entry, transcribe
 from habit_handlers import match_habit
 from tg_common import safe_answer, encourage
 from agenda_handlers import AgendaHandlers
-from plugins import build_plugins
+from plugins import build_plugins, collect_jobs
 from config import Config
 import scheduling
 
@@ -97,6 +97,7 @@ _CHECKIN_RE = re.compile(
 
 # Feature handler instances, created in main() once app.bot exists.
 agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
+plugins: list = []   # built in main(); _post_init reads their scheduled jobs
 
 # In-memory conversation state keyed by chat_id (single-user bot, in-memory is fine)
 _awaiting_time: dict = {}        # chat_id -> partial reminder dict waiting for a time reply
@@ -1393,6 +1394,7 @@ async def _post_init(application):
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
+        extra_jobs=collect_jobs(plugins),
     )
 
 
@@ -1433,6 +1435,7 @@ def main():
     agenda_feature.register(app)
 
     # Plugins (tracking-domain feature classes) self-register via the registry.
+    global plugins
     services = SimpleNamespace(
         logs=logs, context=context_, planner=planner_, gcal=gcal_,
         queue=queue_, agenda=agenda_, backlog=backlog_, baseline=baseline_,

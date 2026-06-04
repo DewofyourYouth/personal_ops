@@ -8,20 +8,29 @@ once those helpers are extracted.
 """
 from zoneinfo import ZoneInfo
 
+from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 TZ = ZoneInfo("Asia/Jerusalem")
 
 
-def start(log_dir: str, jobs: dict, *, plan_hour: int, plan_minute: int) -> AsyncIOScheduler:
+def start(log_dir: str, jobs: dict, *, plan_hour: int, plan_minute: int,
+          extra_jobs: list = ()) -> AsyncIOScheduler:
     """Build the scheduler (SQLite job store so jobs survive restarts), register
     the recurring jobs, start it, and return the running instance.
 
-    jobs: name → coroutine function for each scheduled task.
+    jobs: name → coroutine function for each core scheduled task.
+    extra_jobs: per-plugin specs ``{"id", "func", "trigger", "kwargs"}``.
     """
     scheduler = AsyncIOScheduler(
-        jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{log_dir}/scheduler.db")},
+        jobstores={
+            # Core jobs are module-level functions → picklable, so they persist.
+            "default": SQLAlchemyJobStore(url=f"sqlite:///{log_dir}/scheduler.db"),
+            # Plugin jobs are bound methods holding the (unpicklable) Bot; keep them
+            # in memory and re-register them on each boot.
+            "memory": MemoryJobStore(),
+        },
         timezone=TZ,
     )
     scheduler.add_job(jobs["morning_plan"], "cron", hour=plan_hour, minute=plan_minute,
@@ -34,6 +43,9 @@ def start(log_dir: str, jobs: dict, *, plan_hour: int, plan_minute: int) -> Asyn
                       id="daily_digest", replace_existing=True)
     scheduler.add_job(jobs["weekly_digest"], "cron", day_of_week="sun", hour=20, minute=0,
                       id="weekly_digest", replace_existing=True)
+    for spec in extra_jobs:
+        scheduler.add_job(spec["func"], spec["trigger"], id=spec["id"], jobstore="memory",
+                          replace_existing=True, **spec.get("kwargs", {}))
     scheduler.start()
     return scheduler
 

@@ -23,10 +23,11 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
     ]
 
 
-def collect_jobs(plugins: list) -> dict:
-    """Gather scheduled jobs each plugin exposes via an optional `jobs` dict
-    (id -> coroutine). Plugins without scheduled work contribute nothing."""
-    jobs: dict = {}
+def collect_jobs(plugins: list) -> list:
+    """Gather the scheduled-job specs each plugin exposes via an optional `jobs`
+    list — each a dict ``{"id", "func", "trigger", "kwargs"}``. Plugins without
+    scheduled work contribute nothing."""
+    specs: list = []
     for plugin in plugins:
-        jobs.update(getattr(plugin, "jobs", {}))
-    return jobs
+        specs.extend(getattr(plugin, "jobs", []))
+    return specs

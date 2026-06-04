@@ -9,8 +9,6 @@ Source of truth is the `habits` table. On first run it seeds from the legacy
 context bundle (`Context.load_all`) still sees habit scheduling info — the table
 is the mutable source, the markdown is a generated view.
 """
-from __future__ import annotations
-
 import html
 import re
 
@@ -195,6 +193,11 @@ class HabitHandlers:
         self.context = context
         self.allowed_user = allowed_user
         self.store = HabitStore(logs.db, context)   # plugin creates/owns its table here
+        # Scheduled jobs this plugin contributes (the registry collects these).
+        self.jobs = [
+            {"id": "habit_eod_check", "func": self.daily_habit_check,
+             "trigger": "cron", "kwargs": {"hour": 23, "minute": 30}},
+        ]
 
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))
@@ -202,8 +205,10 @@ class HabitHandlers:
         app.add_handler(CommandHandler("habitlog", self.cmd_habit_log))
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
+        app.add_handler(CommandHandler("habitcheck", self.cmd_habit_check))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^hb_done:"))
         app.add_handler(CallbackQueryHandler(self.handle_manage, pattern="^hb_(del|on|off):"))
+        app.add_handler(CallbackQueryHandler(self.handle_eod, pattern="^hbq_(done|miss):"))
 
     # --- Trackable capability ---
 
@@ -262,6 +267,75 @@ class HabitHandlers:
             lines.append("")
 
         return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
+
+    # --- End-of-day check-in ---
+
+    def _eod_message(self) -> tuple[str | None, InlineKeyboardMarkup | None]:
+        """Prompt for habits due today that have neither a done nor a missed log yet.
+        Returns (None, None) when nothing is pending."""
+        from datetime import date as _date
+        today_weekday = _date.today().weekday()
+        sections = self.store.sections()
+        resolved = [e["content"].strip() for e in self.logs.read_today()
+                    if e.get("tag") in ("habit", "habit_missed")]
+
+        all_visible = []
+        for habits in sections.values():
+            all_visible.extend(h for h in habits if h["days"] is None or today_weekday in h["days"])
+        resolved_ids = set()
+        for logged in resolved:
+            h = self._resolve_logged_to_habit(logged, all_visible)
+            if h:
+                resolved_ids.add(h["id"])
+        pending = [h for h in all_visible if h["id"] not in resolved_ids]
+        if not pending:
+            return None, None
+
+        lines = ["🌙 <b>End-of-day habit check</b>", "Did you do these today?", ""]
+        rows = []
+        for h in pending:
+            name = self.context.habit_display_name(h["name"])
+            lines.append(f"⬜ {html.escape(name)}")
+            key = name[:48]  # callback_data budget: "hbq_done:" is 9 bytes
+            rows.append([
+                InlineKeyboardButton(f"✅ {name[:22]}", callback_data=f"hbq_done:{key}"),
+                InlineKeyboardButton("❌ Didn't", callback_data=f"hbq_miss:{key}"),
+            ])
+        return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+    async def daily_habit_check(self, force: bool = False) -> None:
+        """Scheduled 23:30 prompt asking whether today's still-unlogged habits got done.
+        Skips Fri/Sat (Shabbat — habits aren't tracked) and stays silent if nothing's
+        pending. `force` bypasses the Shabbat skip (used by the preview fire)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        if not force and datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() in (4, 5):
+            return
+        text, keyboard = self._eod_message()
+        if text is None:
+            return
+        await self.bot.send_message(chat_id=self.allowed_user, text=text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def cmd_habit_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Trigger the end-of-day habit check on demand."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        text, keyboard = self._eod_message()
+        if text is None:
+            await update.message.reply_text("✅ Every habit due today is already accounted for.")
+        else:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_eod(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await safe_answer(query)
+        action, name = query.data.split(":", 1)
+        self.logs.write("habit" if action == "hbq_done" else "habit_missed", name)
+        text, keyboard = self._eod_message()
+        if text is None:
+            await query.edit_message_text("🌙 End-of-day check done — every habit accounted for. Good night.")
+        else:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     # --- Handlers: checklist + logging ---
 
