@@ -11,8 +11,6 @@ import tempfile
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 from bot_constants import STATUS_ICONS, PREFIXES, ENCOURAGEMENTS
@@ -40,6 +38,7 @@ from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
 from llm import parse_queue_entry, transcribe
+import scheduling
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
 ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
@@ -57,11 +56,8 @@ LOG_DIR = os.path.expanduser(f"{cwd}/ops/log")
 # Global bot reference — set in post_init once the Application starts
 _bot = None
 
-# APScheduler with SQLite job store so jobs survive restarts
-_scheduler = AsyncIOScheduler(
-    jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{LOG_DIR}/scheduler.db")},
-    timezone=ZoneInfo("Asia/Jerusalem"),
-)
+# Running scheduler instance, created in _post_init via the scheduling layer.
+_scheduler = None
 
 # --- Service instances ---
 logs      = Logs(LOG_DIR)
@@ -1694,20 +1690,23 @@ async def _post_init(application):
         )
     except Exception:
         logging.getLogger(__name__).exception("Failed to send back-online ping")
-    tz = ZoneInfo("Asia/Jerusalem")
-    _scheduler.add_job(morning_plan, "cron", hour=PLAN_HOUR, minute=PLAN_MINUTE, id="morning_plan", replace_existing=True)
-    _scheduler.add_job(remind_upcoming, "interval", seconds=600, id="remind_upcoming", replace_existing=True)
-    _scheduler.add_job(check_reminders, "interval", seconds=60, id="check_reminders", replace_existing=True)
-    _scheduler.add_job(scheduled_daily_digest, "cron", hour=22, minute=30, id="daily_digest", replace_existing=True)
-    _scheduler.add_job(weekly_digest, "cron", day_of_week="sun", hour=20, minute=0, id="weekly_digest", replace_existing=True)
-    _scheduler.start()
+    global _scheduler
+    _scheduler = scheduling.start(
+        LOG_DIR,
+        {
+            "morning_plan":    morning_plan,
+            "remind_upcoming": remind_upcoming,
+            "check_reminders": check_reminders,
+            "daily_digest":    scheduled_daily_digest,
+            "weekly_digest":   weekly_digest,
+        },
+        plan_hour=PLAN_HOUR,
+        plan_minute=PLAN_MINUTE,
+    )
 
 
 async def _post_shutdown(application):
-    # Guard: if startup failed before the scheduler started, shutdown() raises and
-    # masks the real error, turning a transient hiccup into a crash loop.
-    if _scheduler.running:
-        _scheduler.shutdown(wait=False)
+    scheduling.shutdown(_scheduler)
 
 
 # --- Entry point ---
