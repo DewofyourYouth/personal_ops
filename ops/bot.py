@@ -454,20 +454,21 @@ async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT
 
     elif data == "pt_all":
         accepted = list(items)
-        _commit_agenda(accepted)
+        _commit_proposal(accepted, [])
         del _pending[chat_id]
         await query.edit_message_text(f"✅ Accepted all {len(accepted)} items. Agenda set.")
 
     elif data == "pt_ok":
         accepted = [items[i] for i in sorted(selected)]
-        if not accepted:
-            del _pending[chat_id]
-            await query.edit_message_text("Nothing selected — agenda not set.")
-            return
-        _commit_agenda(accepted)
+        rejected = [items[i] for i in range(len(items)) if i not in selected]
+        _commit_proposal(accepted, rejected)
         del _pending[chat_id]
-        lines = "\n".join(f"• {html.escape(t)}" for t in accepted)
-        await query.edit_message_text(f"✅ Agenda set ({len(accepted)} items):\n{lines}", parse_mode="HTML")
+        if accepted:
+            lines = "\n".join(f"• {html.escape(t)}" for t in accepted)
+            await query.edit_message_text(f"✅ Agenda set ({len(accepted)} items):\n{lines}", parse_mode="HTML")
+        else:
+            # No minimum: rejecting everything is a valid, respected outcome.
+            await query.edit_message_text("👍 No agenda items today — all set.")
 
     elif data.startswith("pt_e:"):
         idx = int(data.split(":")[1])
@@ -483,6 +484,17 @@ async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT
 def _commit_agenda(texts: list[str], source: str = "llm"):
     items = agenda_.accept_items(texts, source=source)
     agenda_.write_to_markdown(items)
+
+
+def _commit_proposal(accepted: list[str], rejected: list[str], source: str = "llm"):
+    """Commit a proposal decision: add accepted items and remove rejected ones
+    (so unchecking truly rejects). Rejections are logged as signal — a temporary
+    `agenda_reject` tag until the interventions table lands."""
+    new_items = agenda_.reconcile(accepted, rejected, source=source)
+    for text in rejected:
+        logs.write("agenda_reject", text)
+    if new_items:
+        agenda_.write_to_markdown(new_items)
 
 
 # --- Message handler ---

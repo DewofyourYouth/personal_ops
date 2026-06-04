@@ -31,6 +31,32 @@ class Agenda:
         self.save(data)
         return new_items
 
+    def reconcile(self, accepted: list, rejected: list, source: str = "llm") -> list:
+        """Apply a proposal decision. Unlike accept_items (additive), this also
+        *removes* open items the user rejected — so unchecking an item in a
+        proposal actually keeps it off the agenda, even if a prior proposal had
+        already committed it. Completed/missed history is never deleted, and
+        items outside this proposal are untouched.
+        """
+        data = self.load()
+        rejected_keys = {t.strip().lower() for t in rejected}
+        data["items"] = [
+            it for it in data["items"]
+            if not (it["status"] == "open" and it["text"].strip().lower() in rejected_keys)
+        ]
+        existing = {it["text"].strip().lower() for it in data["items"]}
+        next_id = max((it["id"] for it in data["items"]), default=-1) + 1
+        new_items = []
+        for text in accepted:
+            key = text.strip().lower()
+            if key not in existing:
+                new_items.append({"id": next_id, "text": text, "status": "open", "source": source})
+                existing.add(key)
+                next_id += 1
+        data["items"].extend(new_items)
+        self.save(data)
+        return new_items
+
     def edit_item(self, item_id: int, text: str) -> str | None:
         data = self.load()
         old_text = None

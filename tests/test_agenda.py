@@ -26,6 +26,29 @@ def test_accept_items(agenda):
     assert items[0]["source"] == "llm"
 
 
+def test_reconcile_rejects_already_committed_item(agenda):
+    # The screenshot bug: an item committed by an earlier "accept all" must be
+    # removable by unchecking it in a later proposal.
+    agenda.reconcile(["Apply to jobs", "Research lead", "Follow up headhunter"], [])
+    agenda.reconcile(["Apply to jobs", "Research lead"], ["Follow up headhunter"])
+    open_texts = [i["text"] for i in agenda.get_open()]
+    assert "Follow up headhunter" not in open_texts
+    assert open_texts == ["Apply to jobs", "Research lead"]
+
+
+def test_reconcile_no_minimum(agenda):
+    agenda.reconcile(["A", "B"], [])
+    agenda.reconcile([], ["A", "B"])  # reject everything — a valid outcome
+    assert agenda.get_open() == []
+
+
+def test_reconcile_preserves_completed_history(agenda):
+    agenda.reconcile(["Walk"], [])
+    agenda.mark_status(agenda.get_open()[0]["id"], "done")
+    agenda.reconcile([], ["Walk"])  # rejecting a done item must not delete it
+    assert any(i["text"] == "Walk" and i["status"] == "done" for i in agenda.get_status())
+
+
 def test_accept_items_persists(agenda):
     agenda.accept_items(["Task A"])
     data = agenda.load()
