@@ -9,14 +9,13 @@ import re
 import sys
 import tempfile
 from datetime import date, datetime, time, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import anthropic
-import openai
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+
+from bot_constants import STATUS_ICONS, PREFIXES, ENCOURAGEMENTS
 
 load_dotenv()
 
@@ -40,6 +39,7 @@ from agenda_queue import AgendaQueue
 from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
+from llm import parse_queue_entry, transcribe
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
 ALLOWED_USER = int(os.environ["OPS_CHAT_ID"])
@@ -74,26 +74,7 @@ context_  = Context()
 planner_  = Planner(MODEL, logs, context_)
 baseline_ = Baseline(LOG_DIR)
 
-PREFIXES = {
-    "insight:":    "#insight",
-    "hypothesis:": "#hypothesis",
-    "checkin":     "#checkin",
-    "task:":       "#task",
-    "note:":       "#note",
-    "did:":        "#win",
-    "habit:":      "#habit",
-    "wrong:":      "#wrong",
-    "backlog:":    "#backlog",
-    "someday:":    "#backlog",
-    "food:":       "#food",
-    "ate:":        "#food",
-    "ate ":        "#food",
-    "skip:":       "#skip",
-    "excuse:":     "#skip",
-    "excused:":    "#skip",
-    "values:":     "#values",
-    "value:":      "#values",
-}
+
 
 # Matches "feedback:", "feedback request", "question:", "I have a question", etc.
 _FEEDBACK_RE = re.compile(
@@ -109,11 +90,7 @@ _CHECKIN_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-STATUS_ICONS = {
-    "open": "⌛",
-    "done": "✅",
-    "missed": "❌",
-}
+
 
 # Pending proposal state keyed by chat_id (single-user bot, in-memory is fine)
 _pending: dict = {}
@@ -124,23 +101,10 @@ _awaiting_candles: dict = {}     # chat_id -> True
 _awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
 _awaiting_reminder_edit: dict = {}  # chat_id -> reminder id being edited
 
-_ENCOURAGEMENTS = [
-    "Look at you, a functioning adult!",
-    "Your future self just breathed a sigh of relief.",
-    "Scientists confirm: doing things is better than not doing things. 🧪",
-    "Task defeated 🤺. It never stood a chance.",
-    "You absolute legend. Probably.",
-    "Gold star 🌟. Imaginary, but still.",
-    "This is going straight to your permanent record. The good one. 📓",
-    "Somewhere a productivity guru is shedding a single tear of joy. 🥲",
-    "Your mom would be proud. Assuming she cares about task management.",
-    "That task is dead. You killed it. No regrets. 🪦",
-    "Wow. Just... wow. (Keep going.)",
-    "The dopamine was real. Ride it. 👊",
-]
+
 
 def _encourage() -> str:
-    return random.choice(_ENCOURAGEMENTS)
+    return random.choice(ENCOURAGEMENTS)
 
 
 async def _safe_answer(query, text: str = "") -> None:
@@ -686,7 +650,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
 
     # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
     if re.match(r"^(?:queue|schedule|defer|add to)\b", lower):
-        parsed = await _parse_queue_entry(text)
+        parsed = await parse_queue_entry(text)
         if parsed:
             target = _parse_queue_date(parsed["day"])
             if target:
@@ -942,11 +906,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await tg_file.download_to_drive(tmp_path)
-        with open(tmp_path, "rb") as audio:
-            transcript = openai.OpenAI().audio.transcriptions.create(
-                model="whisper-1", file=audio
-            )
-        text = transcript.text.strip()
+        text = transcribe(tmp_path)
     finally:
         os.unlink(tmp_path)
 
@@ -1488,33 +1448,6 @@ async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     logs.write("habit", habit_name)
     text, keyboard = _habits_message()
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-
-async def _parse_queue_entry(text: str) -> dict | None:
-    from datetime import date as _date
-    client = anthropic.AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=128,
-        tools=[{
-            "name": "queue_agenda_item",
-            "description": "Extract the target day and agenda item text from a queue/defer request",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "day":  {"type": "string", "description": "Day name or date, e.g. 'Sunday', 'Monday', 'tomorrow'"},
-                    "item": {"type": "string", "description": "The agenda item text to queue"},
-                },
-                "required": ["day", "item"],
-            },
-        }],
-        tool_choice={"type": "tool", "name": "queue_agenda_item"},
-        messages=[{"role": "user", "content": f"Today is {_date.today()}. Parse this: {text}"}],
-    )
-    for block in response.content:
-        if block.type == "tool_use":
-            return block.input
-    return None
 
 
 def _parse_queue_date(day_str: str):
