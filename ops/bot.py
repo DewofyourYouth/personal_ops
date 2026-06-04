@@ -587,7 +587,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
     # module; the dispatcher just delegates.
     if tag == "habit":
         try:
-            matched = await match_habit(content, context_)
+            matched = await match_habit(content, logs.db)
             if matched:
                 content = matched
         except Exception:

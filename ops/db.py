@@ -88,6 +88,27 @@ class Database:
         conn.executescript(_CREATE_REMINDERS)
         conn.commit()
 
+    # --- Plugin-owned schema ---
+    # Core doesn't know what plugins exist, so it can't own their tables. A plugin
+    # creates and manages its own table(s) through this generic surface; the table
+    # is guaranteed present exactly when its plugin is active.
+
+    def ensure_schema(self, ddl: str) -> None:
+        """Create a plugin's table(s) idempotently (`CREATE TABLE IF NOT EXISTS …`)."""
+        conn = self._conn()
+        conn.executescript(ddl)
+        conn.commit()
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        """Run a write (INSERT/UPDATE/DELETE) and commit."""
+        conn = self._conn()
+        conn.execute(sql, params)
+        conn.commit()
+
+    def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        """Run a read and return all rows."""
+        return self._conn().execute(sql, params).fetchall()
+
     def insert_entry(self, ts: str, date_str: str, tag: str, content: str):
         self._conn().execute(
             "INSERT INTO entries (ts, date, tag, content) VALUES (?, ?, ?, ?)",

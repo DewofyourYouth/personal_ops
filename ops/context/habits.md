@@ -1,3 +1,5 @@
+<!-- generated from the habits table; manage habits via Telegram, not here -->
+
 ## Daily non-negotiables
 
   - Take morning meds (before anything else)
@@ -10,7 +12,7 @@
 ## Fixed learning anchors
 
   - 06:15 Yerushalmi chavrusa
-  - 10:00–11:00 Yoma chavrusa [sun,mon,tue,wed,thu]
+  - 10:00–11:00 Yoma chavrusa [mon,tue,wed,thu,sun]
   - 21:00 Daf Yomi
 
 ## Weekly anchors
