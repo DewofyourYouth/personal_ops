@@ -9,11 +9,12 @@ import pytest
 # Patch required env vars before importing bot
 _env = {"OPS_BOT_TOKEN": "fake", "OPS_CHAT_ID": "12345"}
 
-with patch.dict(os.environ, _env):
-    sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-    from bot import _status_message, STATUS_ICONS
-
+sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
+from agenda_handlers import AgendaHandlers
+from bot_constants import STATUS_ICONS
 from agenda import Agenda
+
+_status_message = AgendaHandlers._status_message
 
 
 @pytest.fixture

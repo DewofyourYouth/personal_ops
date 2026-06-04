@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-from bot_constants import STATUS_ICONS, PREFIXES, ENCOURAGEMENTS
+from bot_constants import PREFIXES
 
 load_dotenv()
 
@@ -31,13 +31,14 @@ from agenda import Agenda
 from context import Context
 from gcal import GCal
 from logs import Logs
-from planner import Planner, day_type
+from planner import Planner
 from agenda_queue import AgendaQueue
 from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
 from llm import parse_queue_entry, transcribe
 from tg_common import safe_answer, encourage
+from agenda_handlers import AgendaHandlers
 import scheduling
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
@@ -88,8 +89,10 @@ _CHECKIN_RE = re.compile(
 
 
 
-# Pending proposal state keyed by chat_id (single-user bot, in-memory is fine)
-_pending: dict = {}
+# Feature handler instances, created in main() once app.bot exists.
+agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
+
+# In-memory conversation state keyed by chat_id (single-user bot, in-memory is fine)
 _awaiting_time: dict = {}        # chat_id -> partial reminder dict waiting for a time reply
 _awaiting_context: dict = {}     # chat_id -> filename waiting for new content
 _awaiting_queue_day: dict = {}   # chat_id -> {"step": "bl_day", "data": {...}} backlog→queue reply
@@ -132,42 +135,7 @@ def _save_reminded(eid: str):
         f.write(eid + "\n")
 
 
-# --- Proposal UI helpers ---
-
-def _proposal_keyboard(items: list[str], selected: set[int]) -> InlineKeyboardMarkup:
-    rows = []
-    for i, item in enumerate(items):
-        mark = "✅" if i in selected else "⬜"
-        label = item if len(item) <= 32 else item[:29] + "…"
-        rows.append([
-            InlineKeyboardButton(f"{mark} {i + 1}. {label}", callback_data=f"pt_t:{i}"),
-            InlineKeyboardButton("✏️", callback_data=f"pt_e:{i}"),
-        ])
-    rows.append([
-        InlineKeyboardButton("Confirm", callback_data="pt_ok"),
-        InlineKeyboardButton("Accept All", callback_data="pt_all"),
-        InlineKeyboardButton("Cancel", callback_data="pt_no"),
-    ])
-    return InlineKeyboardMarkup(rows)
-
-
-def _proposal_text(items: list[str], selected: set[int]) -> str:
-    lines = [f"📋 <b>Proposed agenda ({html.escape(day_type())}):</b>\n"]
-    for i, item in enumerate(items):
-        mark = "✅" if i in selected else "⬜"
-        lines.append(f"{mark} {i + 1}. {html.escape(item)}")
-    lines.append("\n<i>Tap items to toggle, then Confirm.</i>")
-    return "\n".join(lines)
-
-
 # --- Command handlers ---
-
-async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    await update.message.reply_text("Generating today's agenda…")
-    await _send_proposal(update.effective_chat.id)
-
 
 def _reminder_label(r: dict) -> str:
     text = r["text"]
@@ -322,128 +290,6 @@ async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         text = f"Could not fetch calendar: {e}"
     await update.message.reply_text(f"📅 <b>Today's events:</b>\n{html.escape(text)}", parse_mode="HTML")
-
-
-def _agenda_message(open_items: list) -> tuple[str, InlineKeyboardMarkup]:
-    lines = ["📋 <b>Open items:</b>\n"]
-    rows = []
-    for i, item in enumerate(open_items, 1):
-        lines.append(f"{i}. {html.escape(item['text'])}")
-        rows.append([
-            InlineKeyboardButton(f"✅ {i} Done", callback_data=f"ag_done:{item['id']}"),
-            InlineKeyboardButton(f"❌ {i} Missed", callback_data=f"ag_missed:{item['id']}"),
-        ])
-    return "\n".join(lines), InlineKeyboardMarkup(rows)
-
-def _status_message(items: list) -> str:
-    lines = ["Agenda Status:\n"]
-    for i, item in enumerate(items, 1):
-        lines.append(f"{i}. {html.escape(STATUS_ICONS[item['status']])} {html.escape(item['text'])}")
-    return "\n".join(lines)
-
-async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    open_items = agenda_.get_open()
-    if not open_items:
-        await update.message.reply_text("No open agenda items. Use /plan to generate one.")
-        return
-    text, keyboard = _agenda_message(open_items)
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-async def cmd_agenda_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    items = agenda_.get_status()
-    if not items:
-        await update.message.reply_text("No open agenda items. Use /plan to generate one.")
-        return
-    text = _status_message(items)
-    await update.message.reply_text(text, parse_mode="HTML")
-
-async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    action, item_id = query.data.split(":")[0], int(query.data.split(":")[1])
-    status = "done" if action == "ag_done" else "missed"
-    agenda_.mark_status(item_id, status)
-
-    await safe_answer(query, encourage() if status == "done" else "Marked missed.")
-
-    open_items = agenda_.get_open()
-    if not open_items:
-        await query.edit_message_text("✅ All items resolved.")
-        return
-    text, keyboard = _agenda_message(open_items)
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-
-# --- Proposal callback ---
-
-async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await safe_answer(query)
-
-    chat_id = update.effective_chat.id
-    if chat_id not in _pending:
-        await query.edit_message_text("No pending proposal — use /plan to generate one.")
-        return
-
-    state = _pending[chat_id]
-    items, selected = state["items"], state["selected"]
-    data = query.data
-
-    if data.startswith("pt_t:"):
-        idx = int(data.split(":")[1])
-        selected.symmetric_difference_update({idx})
-        await query.edit_message_text(
-            _proposal_text(items, selected),
-            parse_mode="HTML",
-            reply_markup=_proposal_keyboard(items, selected),
-        )
-
-    elif data == "pt_all":
-        accepted = list(items)
-        _commit_proposal(accepted, [])
-        del _pending[chat_id]
-        await query.edit_message_text(f"✅ Accepted all {len(accepted)} items. Agenda set.")
-
-    elif data == "pt_ok":
-        accepted = [items[i] for i in sorted(selected)]
-        rejected = [items[i] for i in range(len(items)) if i not in selected]
-        _commit_proposal(accepted, rejected)
-        del _pending[chat_id]
-        if accepted:
-            lines = "\n".join(f"• {html.escape(t)}" for t in accepted)
-            await query.edit_message_text(f"✅ Agenda set ({len(accepted)} items):\n{lines}", parse_mode="HTML")
-        else:
-            # No minimum: rejecting everything is a valid, respected outcome.
-            await query.edit_message_text("👍 No agenda items today — all set.")
-
-    elif data.startswith("pt_e:"):
-        idx = int(data.split(":")[1])
-        state["editing"] = idx
-        await safe_answer(query, f"Send new text for item {idx + 1}:")
-        await query.message.reply_text(f"✏️ Send new text for item {idx + 1}:")
-
-    elif data == "pt_no":
-        del _pending[chat_id]
-        await query.edit_message_text("Proposal discarded.")
-
-
-def _commit_agenda(texts: list[str], source: str = "llm"):
-    items = agenda_.accept_items(texts, source=source)
-    agenda_.write_to_markdown(items)
-
-
-def _commit_proposal(accepted: list[str], rejected: list[str], source: str = "llm"):
-    """Commit a proposal decision: add accepted items and remove rejected ones
-    (so unchecking truly rejects). Rejections are logged as signal — a temporary
-    `agenda_reject` tag until the interventions table lands."""
-    new_items = agenda_.reconcile(accepted, rejected, source=source)
-    for text in rejected:
-        logs.write("agenda_reject", text)
-    if new_items:
-        agenda_.write_to_markdown(new_items)
 
 
 # --- Message handler ---
@@ -647,7 +493,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
     # add: — user adds their own agenda item
     if lower.startswith("add:"):
         item_text = text[4:].strip()
-        _commit_agenda([item_text], source="user")
+        agenda_feature.commit_agenda([item_text], source="user")
         await reply(f"Added to agenda: {item_text}")
         return
 
@@ -781,16 +627,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
 
-    # intercept edit reply for pending proposal
-    if chat_id in _pending and "editing" in _pending[chat_id]:
-        idx = _pending[chat_id].pop("editing")
-        _pending[chat_id]["items"][idx] = text
-        state = _pending[chat_id]
-        await update.message.reply_text(
-            _proposal_text(state["items"], state["selected"]),
-            parse_mode="HTML",
-            reply_markup=_proposal_keyboard(state["items"], state["selected"]),
-        )
+    # intercept edit reply for pending proposal (owned by the agenda feature)
+    if await agenda_feature.try_handle_proposal_edit(update):
         return
 
     # intercept voice transcript edit
@@ -909,7 +747,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def morning_plan():
     if _shabbat_quiet_now():
         return
-    await _send_proposal(ALLOWED_USER)
+    await agenda_feature.send_proposal(ALLOWED_USER)
     # Friday: ask for candle lighting time
     if datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() == 4:
         if not _load_candle_lighting():
@@ -918,40 +756,6 @@ async def morning_plan():
                 text="🕯️ What time is candle lighting today?",
             )
             _awaiting_candles[ALLOWED_USER] = True
-
-
-async def _send_proposal(chat_id: int):
-    calendar_events = ""
-    try:
-        events = await asyncio.to_thread(gcal_.get_today_events)
-        calendar_events = gcal_.format_events(events)
-    except Exception:
-        pass  # calendar is optional — plan without it if unavailable
-
-    # inject any items queued for today
-    queued = queue_.pop_for_today()
-    if queued:
-        agenda_.accept_items(queued, source="queued")
-
-    try:
-        items = await agenda_.generate(planner_, calendar_events)
-    except Exception as e:
-        await _bot.send_message(chat_id=chat_id, text=f"Agenda generation failed: {e}")
-        return
-
-    if not items:
-        await _bot.send_message(chat_id=chat_id, text="No agenda items returned — try again.")
-        return
-
-    selected = set(range(len(items)))
-    _pending[chat_id] = {"items": items, "selected": selected}
-
-    await _bot.send_message(
-        chat_id=chat_id,
-        text=_proposal_text(items, selected),
-        parse_mode="HTML",
-        reply_markup=_proposal_keyboard(items, selected),
-    )
 
 
 QUIET_START = time(0, 0)   # 00:00
@@ -1725,12 +1529,15 @@ def main():
         .build()
     )
 
+    # Feature handlers (own their commands + callbacks via register()).
+    global agenda_feature
+    agenda_feature = AgendaHandlers(app.bot, agenda_, queue_, gcal_, planner_, logs, ALLOWED_USER)
+    agenda_feature.register(app)
+
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("habitlog", cmd_habit_log))
     app.add_handler(CommandHandler("food", cmd_food))
-    app.add_handler(CommandHandler("plan", cmd_plan))
-    app.add_handler(CommandHandler("agenda", cmd_agenda))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("context", cmd_context))
@@ -1742,8 +1549,6 @@ def main():
     app.add_handler(CommandHandler("backlog", cmd_backlog))
     app.add_handler(CommandHandler("values", cmd_values))
     # Short aliases
-    app.add_handler(CommandHandler("a", cmd_agenda))
-    app.add_handler(CommandHandler("p", cmd_plan))
     app.add_handler(CommandHandler("d", cmd_daily_digest))
     app.add_handler(CommandHandler("m", cmd_metrics))
     app.add_handler(CommandHandler("l", cmd_logs))
@@ -1752,9 +1557,6 @@ def main():
     app.add_handler(CommandHandler("h", cmd_habits))
     app.add_handler(CommandHandler("v", cmd_values))
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
-    app.add_handler(CommandHandler("status", cmd_agenda_status))
-    app.add_handler(CallbackQueryHandler(handle_proposal_callback, pattern="^pt_"))
-    app.add_handler(CallbackQueryHandler(handle_agenda_callback, pattern="^ag_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_reminder_delete, pattern="^rm_del:"))
     app.add_handler(CallbackQueryHandler(handle_reminder_edit, pattern="^rm_edit:"))
