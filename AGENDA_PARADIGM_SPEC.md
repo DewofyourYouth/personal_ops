@@ -250,10 +250,40 @@ right shape because:
 
 This is the *light* morning anchor referenced above, now concretely defined.
 
+## Rejecting Proposed Items + No Minimum (refinement)
+
+Two related gaps in how proposals are accepted today, both flowing from the same principle:
+*refusing a suggestion is valid data, not disobedience* (`principles.md`), and the system
+*can't punish you for failing to do something it made up* (Goodhart resolution above).
+
+**1. Explicit rejection, distinct from editing or deselecting.** The current proposal UI lets
+you toggle an item off (`pt_t:`) or edit it (`pt_e:`), but a passive deselect *records nothing*.
+Add a first-class **reject** action (e.g. `pt_r:<i>` — a ✕ next to each item's ✏️). Rejecting:
+- removes the item from what gets committed, and
+- **logs it as a response signal** — the bot proposed X and you rejected it. This is exactly the
+  intervention `response` label the data-collection section defines ("not for me"). A deselect is
+  silent; a reject is *signal*. The whole adaptive system depends on capturing it.
+
+Editing and rejecting are different acts and should be different buttons: editing reshapes a
+suggestion you basically accept; rejecting says the suggestion was wrong for you. They produce
+opposite labels for the learner.
+
+**2. No minimum — zero accepted is a valid outcome.** Today, confirming with nothing selected
+gives *"Nothing selected — agenda not set"* — which frames an empty agenda as a non-action, a
+mild failure to complete the flow. That's a laundered "a good user accepts some items." Remove
+it. Accepting zero is a legitimate, respected choice: *"No agenda today — all good."* And the
+items you rejected to get there are logged as rejections, so an empty agenda is rich data (the
+bot's whole batch missed your state today), not an error state.
+
+This applies in both directions: the structured-mode proposal UI gets the reject button and the
+no-minimum copy now; advisory-mode suggestions already carry the "not for me" response by design.
+
 ## Open Questions
 
 1. How are futures captured? A prefix like `future: ship the dashboard by Thursday`?
 2. Does the emergent-pattern detection run in the weekly digest, or surface live in suggestions?
+3. Where do rejection signals live before the `interventions` table exists — a temporary log
+   tag, or do we gate the reject button on that table landing first?
 
 ## Build Order (proposed)
 
