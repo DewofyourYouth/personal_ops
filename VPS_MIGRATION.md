@@ -59,6 +59,25 @@
 
 ---
 
+## Post-migration #1 (do FIRST): metrics ingestion endpoint
+
+The iPhone Shortcut has silently dropped a step reading **four days running** (6/2, 6/3,
+6/4 all needed manual DB backfill) — because it POSTs to the Telegram Bot API, so the bot is
+messaging itself and never sees it (`getUpdates` excludes a bot's own messages). The fix is
+the `POST /metrics` ingestion endpoint: the Shortcut POSTs straight to `ops.db`, bypassing
+Telegram. Build it as soon as the bot is up on the VPS — it stops the daily data loss.
+
+Design is done in [DASHBOARD_API_SPEC.md](DASHBOARD_API_SPEC.md); see the **Dashboard / API**
+section below for the SQLite/concurrency decisions.
+- [ ] `api/main.py` — FastAPI `POST /metrics` (Bearer `INGEST_TOKEN`), reuses `logs.write_metric`
+- [ ] Add `fastapi` + `uvicorn` to `requirements.txt`
+- [ ] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, off unless `INGEST_TOKEN` set)
+- [ ] Reverse proxy + TLS so the phone can reach it
+- [ ] Repoint the Shortcut at `POST /metrics`; verify a reading lands without Telegram
+- [ ] Stop manually backfilling steps/weight
+
+---
+
 ## Post-migration: Public repo
 
 Currently private GitHub repo — personal context must stay private.
