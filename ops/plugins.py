@@ -10,6 +10,7 @@ collect any scheduled jobs.
 """
 from types import SimpleNamespace
 
+from food_handlers import FoodHandlers
 from habit_handlers import HabitHandlers
 
 
@@ -18,6 +19,7 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
     singletons; a domain is active iff it's in this list."""
     return [
         HabitHandlers(bot, services.logs, services.context, services.allowed_user),
+        FoodHandlers(bot, services.logs, services.allowed_user),
     ]
 
 

@@ -1268,20 +1268,6 @@ async def handle_backlog_callback(update: Update, context: ContextTypes.DEFAULT_
                     await query.edit_message_text(msg, parse_mode="HTML")
 
 
-async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-    entries = [e for e in logs.read_today() if e.get("tag") == "food"]
-    if not entries:
-        await update.message.reply_text("Nothing logged yet today. Use <code>food: what you ate</code>.", parse_mode="HTML")
-        return
-    lines = ["🍽 <b>Today's food log:</b>\n"]
-    for e in entries:
-        t = e["ts"][11:16]
-        lines.append(f"<code>{t}</code> {html.escape(e['content'])}")
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
 async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -1455,7 +1441,6 @@ def main():
         plugin.register(app)
 
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("food", cmd_food))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("context", cmd_context))
