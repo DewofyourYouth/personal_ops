@@ -61,3 +61,4 @@ Pushback should be calm, not scolding.
 Example:
 
 “You’re not off the rails. You had a constrained day. Protecting the anchors mattered more than forcing a full-output day. If there’s capacity for one small thing, take it; otherwise let the rest wait.”
+

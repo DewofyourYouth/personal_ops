@@ -4,7 +4,6 @@ import html
 import json
 import logging
 import os
-import random
 import re
 import sys
 import tempfile
@@ -38,6 +37,7 @@ from backlog import Backlog
 from reminders import Reminders
 from baseline_tracker import Baseline
 from llm import parse_queue_entry, transcribe
+from tg_common import safe_answer, encourage
 import scheduling
 
 TOKEN = os.environ["OPS_BOT_TOKEN"]
@@ -97,17 +97,6 @@ _awaiting_candles: dict = {}     # chat_id -> True
 _awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
 _awaiting_reminder_edit: dict = {}  # chat_id -> reminder id being edited
 
-
-
-def _encourage() -> str:
-    return random.choice(ENCOURAGEMENTS)
-
-
-async def _safe_answer(query, text: str = "") -> None:
-    try:
-        await query.answer(text)
-    except BadRequest:
-        pass  # query expired (bot restarted, old button tapped)
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -272,7 +261,7 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     reminder_id = query.data.split(":")[1]
     reminders.remove(reminder_id)
     all_reminders = reminders.load()
@@ -284,7 +273,7 @@ async def handle_reminder_delete(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_reminder_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     reminder_id = query.data.split(":")[1]
     r = next((x for x in reminders.load() if x["id"] == reminder_id), None)
     if not r:
@@ -378,7 +367,7 @@ async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_T
     status = "done" if action == "ag_done" else "missed"
     agenda_.mark_status(item_id, status)
 
-    await _safe_answer(query, _encourage() if status == "done" else "Marked missed.")
+    await safe_answer(query, encourage() if status == "done" else "Marked missed.")
 
     open_items = agenda_.get_open()
     if not open_items:
@@ -392,7 +381,7 @@ async def handle_agenda_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
 
     chat_id = update.effective_chat.id
     if chat_id not in _pending:
@@ -433,7 +422,7 @@ async def handle_proposal_callback(update: Update, context: ContextTypes.DEFAULT
     elif data.startswith("pt_e:"):
         idx = int(data.split(":")[1])
         state["editing"] = idx
-        await _safe_answer(query, f"Send new text for item {idx + 1}:")
+        await safe_answer(query, f"Send new text for item {idx + 1}:")
         await query.message.reply_text(f"✏️ Send new text for item {idx + 1}:")
 
     elif data == "pt_no":
@@ -529,7 +518,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
         actual_id = open_items[n - 1]["id"]
         agenda_.mark_status(actual_id, action)
         icon = "✅" if action == "done" else "❌"
-        suffix = f" {_encourage()}" if action == "done" else ""
+        suffix = f" {encourage()}" if action == "done" else ""
         await reply(f"{icon} Item {n} marked {action}.{suffix}")
         return
 
@@ -548,7 +537,7 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
                 item = open_items[item_texts.index(matches[0])]
                 agenda_.mark_status(item["id"], action)
                 icon = "✅" if action == "done" else "❌"
-                suffix = f" {_encourage()}" if action == "done" else ""
+                suffix = f" {encourage()}" if action == "done" else ""
                 await reply(f"{icon} \"{item['text']}\" marked {action}.{suffix}")
                 return
         await reply(f"Couldn't match \"{query_text}\" to any open agenda item.")
@@ -1040,7 +1029,7 @@ async def remind_upcoming():
 
 async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     is_checkin = query.data == "remind_dismiss_c"
     try:
         await query.edit_message_reply_markup(reply_markup=None)
@@ -1330,7 +1319,7 @@ def _mood_energy_keyboard(locked_mood: str = "", locked_energy: str = "") -> Inl
 
 async def handle_mood_energy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     parts = query.data.split(":")  # me_mood:😊:good  or  me_energy:⚡:high
     kind, emoji, value = parts[0][3:], parts[1], parts[2]  # strip "me_"
     _mood_scores   = {"great": 5, "good": 4, "okay": 3, "low": 2, "bad": 1}
@@ -1439,7 +1428,7 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_habit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     habit_name = query.data.split(":", 1)[1]
     logs.write("habit", habit_name)
     text, keyboard = _habits_message()
@@ -1504,7 +1493,7 @@ async def cmd_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_backlog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     action, item_id = query.data.split(":", 1)
 
     if action == "bl_del":
@@ -1592,7 +1581,7 @@ async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     data = query.data
 
     if data.startswith("ctx_view:"):
@@ -1628,7 +1617,7 @@ async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_
 
 async def handle_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await _safe_answer(query)
+    await safe_answer(query)
     chat_id = query.message.chat_id
 
     if query.data == "voice_ok":
