@@ -93,8 +93,13 @@ class Baseline:
 
         if data["weekly"]:
             lines.append("### Weekly (recent)")
-            lines.append("| Week | Completion | Anchors | Wins | Habits |")
-            lines.append("|------|------------|---------|------|--------|")
+            lines.append("Mood is 1-5 (bad→great); energy is 1-3 (drained→high).\n")
+            lines.append(
+                "| Week | Completion | Anchors | Wins | Mood | Energy | Habits |"
+            )
+            lines.append(
+                "|------|------------|---------|------|------|--------|--------|"
+            )
             for w in reversed(data["weekly"]):
                 comp = (
                     f"{w['completion_pct']}%"
@@ -102,18 +107,24 @@ class Baseline:
                     else "—"
                 )
                 anch = f"{w['anchor_pct']}%" if w["anchor_pct"] is not None else "—"
+                mood = w["mood_avg"] if w.get("mood_avg") is not None else "—"
+                energy = w["energy_avg"] if w.get("energy_avg") is not None else "—"
                 habit_summary = ", ".join(
                     f"{h}: {v['logged']}/{v['trackable']}"
                     for h, v in w.get("habits", {}).items()
                 )
                 lines.append(
-                    f"| {w['week_start']} | {comp} | {anch} | {w['wins']} | {habit_summary or '—'} |"
+                    f"| {w['week_start']} | {comp} | {anch} | {w['wins']} | {mood} | {energy} | {habit_summary or '—'} |"
                 )
 
         if data["monthly"]:
             lines.append("\n### Monthly")
-            lines.append("| Month | Avg Completion | Range | Avg Anchors | Wins |")
-            lines.append("|-------|----------------|-------|-------------|------|")
+            lines.append(
+                "| Month | Avg Completion | Range | Avg Anchors | Avg Mood | Avg Energy | Wins |"
+            )
+            lines.append(
+                "|-------|----------------|-------|-------------|----------|------------|------|"
+            )
             for m in reversed(data["monthly"]):
                 comp = (
                     f"{m['completion_avg']}%"
@@ -126,14 +137,20 @@ class Baseline:
                     else "—"
                 )
                 anch = f"{m['anchor_avg']}%" if m["anchor_avg"] is not None else "—"
+                mood = m["mood_avg"] if m.get("mood_avg") is not None else "—"
+                energy = m["energy_avg"] if m.get("energy_avg") is not None else "—"
                 lines.append(
-                    f"| {m['month']} | {comp} | {rng} | {anch} | {m['wins_total']} |"
+                    f"| {m['month']} | {comp} | {rng} | {anch} | {mood} | {energy} | {m['wins_total']} |"
                 )
 
         if data["quarterly"]:
             lines.append("\n### Quarterly")
-            lines.append("| Quarter | Avg Completion | Range | Avg Anchors | Wins |")
-            lines.append("|---------|----------------|-------|-------------|------|")
+            lines.append(
+                "| Quarter | Avg Completion | Range | Avg Anchors | Avg Mood | Avg Energy | Wins |"
+            )
+            lines.append(
+                "|---------|----------------|-------|-------------|----------|------------|------|"
+            )
             for q in reversed(data["quarterly"]):
                 comp = (
                     f"{q['completion_avg']}%"
@@ -146,8 +163,10 @@ class Baseline:
                     else "—"
                 )
                 anch = f"{q['anchor_avg']}%" if q["anchor_avg"] is not None else "—"
+                mood = q["mood_avg"] if q.get("mood_avg") is not None else "—"
+                energy = q["energy_avg"] if q.get("energy_avg") is not None else "—"
                 lines.append(
-                    f"| {q['quarter']} | {comp} | {rng} | {anch} | {q['wins_total']} |"
+                    f"| {q['quarter']} | {comp} | {rng} | {anch} | {mood} | {energy} | {q['wins_total']} |"
                 )
 
         return "\n".join(lines)
@@ -191,6 +210,9 @@ class Baseline:
         for habit in habit_counts:
             habit_counts[habit]["trackable"] = trackable
 
+        # Subjective state: averaged mood (1-5) and energy (1-3) across the week.
+        moods, energies = logs.mood_energy_for_range(week_start, today)
+
         return {
             "week_start": week_start.isoformat(),
             "completion_pct": round(sum(comp_values) / len(comp_values))
@@ -200,6 +222,8 @@ class Baseline:
             if anch_values
             else None,
             "wins": wins_total,
+            "mood_avg": round(sum(moods) / len(moods), 1) if moods else None,
+            "energy_avg": round(sum(energies) / len(energies), 1) if energies else None,
             "habits": dict(habit_counts),
         }
 
@@ -252,6 +276,8 @@ class Baseline:
     def _aggregate_monthly(self, month: str, weeks: list[dict]) -> dict:
         comp = [w["completion_pct"] for w in weeks if w["completion_pct"] is not None]
         anch = [w["anchor_pct"] for w in weeks if w["anchor_pct"] is not None]
+        mood = [w["mood_avg"] for w in weeks if w.get("mood_avg") is not None]
+        energy = [w["energy_avg"] for w in weeks if w.get("energy_avg") is not None]
         wins = sum(w["wins"] for w in weeks)
 
         habit_totals: dict = defaultdict(lambda: {"logged": 0, "trackable": 0})
@@ -273,6 +299,8 @@ class Baseline:
             "completion_range": [min(comp), max(comp)] if comp else None,
             "anchor_avg": round(sum(anch) / len(anch)) if anch else None,
             "anchor_range": [min(anch), max(anch)] if anch else None,
+            "mood_avg": round(sum(mood) / len(mood), 1) if mood else None,
+            "energy_avg": round(sum(energy) / len(energy), 1) if energy else None,
             "wins_total": wins,
             "habits": habit_avgs,
         }
@@ -280,6 +308,8 @@ class Baseline:
     def _aggregate_quarterly(self, quarter: str, months: list[dict]) -> dict:
         comp = [m["completion_avg"] for m in months if m["completion_avg"] is not None]
         anch = [m["anchor_avg"] for m in months if m["anchor_avg"] is not None]
+        mood = [m["mood_avg"] for m in months if m.get("mood_avg") is not None]
+        energy = [m["energy_avg"] for m in months if m.get("energy_avg") is not None]
         wins = sum(m["wins_total"] for m in months)
 
         return {
@@ -288,5 +318,7 @@ class Baseline:
             "completion_range": [min(comp), max(comp)] if comp else None,
             "anchor_avg": round(sum(anch) / len(anch)) if anch else None,
             "anchor_range": [min(anch), max(anch)] if anch else None,
+            "mood_avg": round(sum(mood) / len(mood), 1) if mood else None,
+            "energy_avg": round(sum(energy) / len(energy), 1) if energy else None,
             "wins_total": wins,
         }

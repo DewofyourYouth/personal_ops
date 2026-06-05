@@ -11,6 +11,37 @@ from db import Database
 TZ = ZoneInfo("Asia/Jerusalem")
 logger = logging.getLogger(__name__)
 
+# Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
+# Includes legacy label/emoji fallbacks for pre-numeric data.
+_MOOD_SCORES = {
+    "5": 5,
+    "4": 4,
+    "3": 3,
+    "2": 2,
+    "1": 1,
+    "great": 5,
+    "good": 4,
+    "okay": 3,
+    "low": 2,
+    "bad": 1,
+    "😄": 5,
+    "😊": 4,
+    "😐": 3,
+    "😕": 2,
+    "😞": 1,
+}
+_ENERGY_SCORES = {
+    "3": 3,
+    "2": 2,
+    "1": 1,
+    "high": 3,
+    "okay": 2,
+    "drained": 1,
+    "⚡": 3,
+    "🔋": 2,
+    "🪫": 1,
+}
+
 
 class Logs:
     def __init__(self, log_dir: str):
@@ -489,66 +520,51 @@ class Logs:
     def earliest_habit_date(self) -> date | None:
         return self.db.earliest_entry_date_with_tag("habit")
 
-    def read_day_difficulty(self, d: date) -> str:
-        """Return 'hard', 'okay', or 'good' based on mood/energy logged for the day."""
-        # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
-        # Legacy label/emoji fallbacks for old data.
-        mood_scores = {
-            "5": 5,
-            "4": 4,
-            "3": 3,
-            "2": 2,
-            "1": 1,
-            "great": 5,
-            "good": 4,
-            "okay": 3,
-            "low": 2,
-            "bad": 1,
-            "😄": 5,
-            "😊": 4,
-            "😐": 3,
-            "😕": 2,
-            "😞": 1,
-        }
-        energy_scores = {
-            "3": 3,
-            "2": 2,
-            "1": 1,
-            "high": 3,
-            "okay": 2,
-            "drained": 1,
-            "⚡": 3,
-            "🔋": 2,
-            "🪫": 1,
-        }
+    def mood_energy_for_range(
+        self, start: date, end: date
+    ) -> tuple[list[int], list[int]]:
+        """Collect numeric mood (1-5) and energy (1-3) readings across [start, end].
 
+        Reads from SQLite, falling back to JSONL for pre-migration dates. Legacy
+        label/emoji values are normalised to numbers via the score maps.
+        """
         moods, energies = [], []
-        rows = self.db.metrics_for_range(d, d)
-        for r in rows:
+        db_dates = set()
+        for r in self.db.metrics_for_range(start, end):
+            db_dates.add(r["date"])
             key, val = r["key"], str(r["value"])
-            if key == "mood" and val in mood_scores:
-                moods.append(mood_scores[val])
-            elif key == "energy" and val in energy_scores:
-                energies.append(energy_scores[val])
+            if key == "mood" and val in _MOOD_SCORES:
+                moods.append(_MOOD_SCORES[val])
+            elif key == "energy" and val in _ENERGY_SCORES:
+                energies.append(_ENERGY_SCORES[val])
 
-        # Fallback to JSONL for pre-migration dates
-        if not moods and not energies:
+        # Fallback to JSONL for any day in the range with no DB metrics
+        span = (end - start).days
+        for i in range(span + 1):
+            d = start + timedelta(days=i)
+            if d.isoformat() in db_dates:
+                continue
             path = self._jsonl_path(d)
             if not path.exists():
-                return "okay"
+                continue
             for line in path.read_text().splitlines():
                 try:
                     e = json.loads(line)
                     if e.get("tag") != "metric":
                         continue
                     key, val = e.get("key", ""), str(e.get("value", ""))
-                    if key == "mood" and val in mood_scores:
-                        moods.append(mood_scores[val])
-                    elif key == "energy" and val in energy_scores:
-                        energies.append(energy_scores[val])
+                    if key == "mood" and val in _MOOD_SCORES:
+                        moods.append(_MOOD_SCORES[val])
+                    elif key == "energy" and val in _ENERGY_SCORES:
+                        energies.append(_ENERGY_SCORES[val])
                 except Exception:
                     pass
 
+        return moods, energies
+
+    def read_day_difficulty(self, d: date) -> str:
+        """Return 'hard', 'okay', or 'good' based on mood/energy logged for the day."""
+        moods, energies = self.mood_energy_for_range(d, d)
         if not moods and not energies:
             return "okay"
 
