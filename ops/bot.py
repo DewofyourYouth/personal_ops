@@ -700,10 +700,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             already = now_t.hour * 60 + now_t.minute >= quiet_h * 60 + quiet_m
             msg = f"🕯️ Candle lighting set for {t}. Shabbat Shalom — {'already in quiet mode.' if already else f'going quiet at {quiet}.'}"
             await update.message.reply_text(msg)
-        else:
-            await update.message.reply_text("Couldn't parse that time. Send it again (e.g. 19:45).")
+            return
+        # Not a valid time. Only re-prompt if it actually looks like a time attempt;
+        # otherwise the user has moved on (e.g. a check-in), so drop the candle prompt
+        # and let this message be handled normally instead of hijacking it.
+        if re.fullmatch(r"\s*\d{1,2}[:.\s]?\d{0,2}\s*", text):
             _awaiting_candles[chat_id] = True
-        return
+            await update.message.reply_text("Couldn't parse that time. Send it again (e.g. 19:45).")
+            return
+        # fall through — the candle await was already cleared by .pop() above
 
     # intercept backlog→queue day reply
     if chat_id in _awaiting_queue_day:
