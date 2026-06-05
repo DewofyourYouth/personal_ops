@@ -1,0 +1,55 @@
+name: CI + Deploy
+
+# Tests run on every push and PR. Deploy runs only after tests pass on a push to
+# main — the runner SSHes into the Hetzner box and rebuilds the container there.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        run: pytest tests/ -q
+
+  deploy:
+    needs: test
+    # Only deploy on a real push to main, never on PRs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-vps     # never run two deploys at once
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true   # abort on the first failing command
+          script: |
+            set -e
+            cd /opt/personal_ops
+            git fetch --all
+            git reset --hard origin/main      # match main exactly; leaves gitignored .env/log/context untouched
+            docker compose up -d --build
+            sleep 10
+            docker compose ps
+            cid="$(docker compose ps -q bot)"
+            status="$(docker inspect -f '{{.State.Status}}' "$cid")"
+            if [ "$status" != "running" ]; then
+              echo "::error::bot is '$status' after deploy — see logs below"
+              docker compose logs --tail=80 bot
+              exit 1
+            fi
+            echo "Deployed. Bot is running."
