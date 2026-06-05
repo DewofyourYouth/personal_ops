@@ -238,8 +238,11 @@ class ReminderHandlers:
         if self.shabbat.quiet_now():
             return
         for r in self.reminders.due_now():
-            if r.get("auto_log"):
-                self.logs.write("reminder", r["text"])
+            # NB: we deliberately do NOT log the reminder firing. It used to write the
+            # prompt text on every fire (the check-in nudge fires every 45 min), which
+            # made ~⅓ of all log entries the same "What are you doing?" string — pure
+            # noise that bloated storage and the LLM context, feeding a response-rate
+            # stat nothing actually consumed. The `auto_log` flag is now vestigial.
             is_checkin = any(
                 w in r["text"].lower() for w in ("check in", "checkin", "check-in")
             )

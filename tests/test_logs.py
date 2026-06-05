@@ -211,3 +211,14 @@ def test_mood_energy_by_time_of_day(tmp_path):
     assert tod["evening"]["mood_avg"] == 3.0
     # Empty buckets are omitted entirely.
     assert "late night" not in tod
+
+
+def test_read_skips_reminder_noise(tmp_path):
+    # Reminder entries are bot-fired prompt noise — they must not appear in the
+    # human/LLM-facing day read (regression: they were 31% of all entries).
+    logs = Logs(str(tmp_path))
+    logs.write("reminder", "What are you doing? Log it with: checkin <activity>")
+    logs.write("note", "real content")
+    text = logs.read_recent(days=1)
+    assert "real content" in text
+    assert "What are you doing" not in text

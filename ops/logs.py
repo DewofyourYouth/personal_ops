@@ -663,11 +663,20 @@ class Logs:
     def _jsonl_path(self, d: date) -> Path:
         return Path(self.log_dir) / f"{d}.jsonl"
 
+    # Tags excluded from the human/LLM-facing day read: metrics render via their own
+    # summaries, and `reminder` entries are bot-fired prompt noise (legacy auto-logged
+    # check-in nudges) that should never count as activity context.
+    _UNREADABLE_TAGS = {"metric", "reminder"}
+
     def _read_day(self, d: date) -> list[str]:
         # Read from SQLite (primary). Fall back to JSONL then MD for pre-migration dates.
         rows = self.db.entries_for_date(d)
         if rows:
-            return [f"[{r['ts']}] #{r['tag']}: {r['content']}" for r in rows]
+            return [
+                f"[{r['ts']}] #{r['tag']}: {r['content']}"
+                for r in rows
+                if r["tag"] not in self._UNREADABLE_TAGS
+            ]
         # Fallback: JSONL (pre-migration data)
         jsonl = self._jsonl_path(d)
         md = Path(self.log_dir) / f"{d}.md"
@@ -676,7 +685,7 @@ class Logs:
             for line in jsonl.read_text().splitlines():
                 try:
                     e = json.loads(line)
-                    if e.get("tag") != "metric":
+                    if e.get("tag") not in self._UNREADABLE_TAGS:
                         lines.append(f"[{e['ts']}] #{e['tag']}: {e['content']}")
                 except Exception:
                     pass
