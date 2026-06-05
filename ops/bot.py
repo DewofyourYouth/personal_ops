@@ -206,6 +206,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await router.try_handle_time_reply(update):
         return
 
+    # intercept a food-estimate portion correction (owned by the text router)
+    if await router.try_handle_food_adjust(update):
+        return
+
     await router.process_text(text, update.message.reply_text, chat_id=chat_id)
 
 

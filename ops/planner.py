@@ -583,73 +583,80 @@ class Planner:
                 return block.input
         return None
 
-    async def parse_food_macros(self, text: str) -> dict | None:
-        """Extract food name, weight, and per-100g macros from natural language.
+    async def estimate_food(self, text: str, correction: str = "") -> dict | None:
+        """Itemise a described meal and estimate per-item + total nutrition from knowledge.
 
-        Returns a dict with computed totals if per-100g data + weight are present,
-        otherwise returns None (caller logs the text as-is).
+        Estimates macros for ordinary descriptions like "lasagna and a side salad" from
+        general knowledge — no per-item values required from the user. The estimate is
+        approximate and meant to be confirmed/adjusted by the user before logging.
+        `correction` carries the user's portion fixes on a re-estimate. Returns
+        {"items": [...], "total": {...}} or None if nothing usable was parsed.
         """
         client = anthropic.AsyncAnthropic()
+        user = f"Meal: {text}"
+        if correction:
+            user += (
+                f"\n\nThe user corrected the previous estimate: {correction}\n"
+                "Re-estimate the whole meal taking the correction into account."
+            )
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=256,
+            max_tokens=512,
             tools=[
                 {
-                    "name": "log_food",
+                    "name": "estimate_meal",
                     "description": (
-                        "Extract structured nutrition data from a natural language food description. "
-                        "Only call this tool if the description contains per-100g nutritional values AND a total weight. "
-                        "Do not call it for simple descriptions like 'a banana' or 'handful of nuts'."
+                        "Break a described meal into its component food items and estimate "
+                        "nutrition for each from general knowledge."
                     ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "food_name": {
-                                "type": "string",
-                                "description": "Name of the food",
-                            },
-                            "weight_g": {
-                                "type": "number",
-                                "description": "Total weight consumed in grams",
-                            },
-                            "calories_per_100g": {
-                                "type": "number",
-                                "description": "Calories per 100g",
-                            },
-                            "protein_per_100g": {
-                                "type": "number",
-                                "description": "Protein grams per 100g",
-                            },
-                            "fat_per_100g": {
-                                "type": "number",
-                                "description": "Fat grams per 100g — omit if not mentioned",
-                            },
-                            "carbs_per_100g": {
-                                "type": "number",
-                                "description": "Carbs grams per 100g — omit if not mentioned",
-                            },
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "portion": {
+                                            "type": "string",
+                                            "description": "Estimated portion, e.g. '~300g' or '1 cup'. Use the user's quantity if given, else a typical serving.",
+                                        },
+                                        "kcal": {"type": "number"},
+                                        "protein_g": {"type": "number"},
+                                        "fat_g": {"type": "number"},
+                                        "carbs_g": {"type": "number"},
+                                    },
+                                    "required": ["name", "portion", "kcal", "protein_g"],
+                                },
+                            }
                         },
-                        "required": ["food_name", "weight_g"],
+                        "required": ["items"],
                     },
                 }
             ],
-            tool_choice={"type": "auto"},
-            messages=[{"role": "user", "content": text}],
+            tool_choice={"type": "tool", "name": "estimate_meal"},
+            system=(
+                "Estimate the nutrition of a described meal. Split it into its component food "
+                "items. For each item give a realistic portion (honour any quantity/weight the "
+                "user stated; otherwise assume a typical serving) and estimate kcal, protein, "
+                "fat, and carbs for that portion from general nutritional knowledge. Estimates "
+                "are approximate — that is expected and fine."
+            ),
+            messages=[{"role": "user", "content": user}],
         )
         for block in response.content:
             if block.type == "tool_use":
-                d = block.input
-                w = d["weight_g"]
-                result = {"food": d["food_name"], "weight_g": w}
-                if "calories_per_100g" in d:
-                    result["kcal"] = round(d["calories_per_100g"] * w / 100)
-                if "protein_per_100g" in d:
-                    result["protein_g"] = round(d["protein_per_100g"] * w / 100, 1)
-                if "fat_per_100g" in d:
-                    result["fat_g"] = round(d["fat_per_100g"] * w / 100, 1)
-                if "carbs_per_100g" in d:
-                    result["carbs_g"] = round(d["carbs_per_100g"] * w / 100, 1)
-                return result
+                items = block.input.get("items", [])
+                if not items:
+                    return None
+                total = {
+                    "kcal": round(sum(i.get("kcal", 0) for i in items)),
+                    "protein_g": round(sum(i.get("protein_g", 0) for i in items), 1),
+                    "fat_g": round(sum(i.get("fat_g", 0) for i in items), 1),
+                    "carbs_g": round(sum(i.get("carbs_g", 0) for i in items), 1),
+                }
+                return {"items": items, "total": total}
         return None
 
     async def evaluate_hypothesis(self, text: str) -> dict:

@@ -159,6 +159,46 @@ def _mood_energy_keyboard(
     return InlineKeyboardMarkup([mood_row, energy_row])
 
 
+def _food_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Log it", callback_data="food_confirm"),
+                InlineKeyboardButton("✏️ Adjust", callback_data="food_adjust"),
+            ]
+        ]
+    )
+
+
+def _format_food_estimate(raw: str, estimate: dict) -> str:
+    """Telegram preview of the itemised estimate awaiting confirmation."""
+    t = estimate["total"]
+    lines = [f"🍽 <b>Estimated:</b> {html.escape(raw)}\n"]
+    for i in estimate["items"]:
+        lines.append(
+            f"• {html.escape(i['name'])} ({html.escape(str(i.get('portion', '')))}): "
+            f"{round(i.get('kcal', 0))} kcal, {round(i.get('protein_g', 0))}g P"
+        )
+    lines.append(
+        f"\n<b>Total:</b> ~{t['kcal']} kcal, {t['protein_g']}g protein, "
+        f"{t['fat_g']}g fat, {t['carbs_g']}g carbs"
+    )
+    lines.append("\n<i>Estimates are approximate. Look right?</i>")
+    return "\n".join(lines)
+
+
+def _food_log_content(raw: str, estimate: dict) -> str:
+    """The entry stored in the log once confirmed: a summary line + per-item kcal."""
+    t = estimate["total"]
+    lines = [
+        f"{raw} — ~{t['kcal']} kcal, {t['protein_g']}g protein, "
+        f"{t['fat_g']}g fat, {t['carbs_g']}g carbs"
+    ]
+    for i in estimate["items"]:
+        lines.append(f"  • {i['name']} ({i.get('portion', '')}): {round(i.get('kcal', 0))} kcal")
+    return "\n".join(lines)
+
+
 class TextRouter:
     def __init__(self, bot, services, shabbat, allowed_user: int) -> None:
         self.bot = bot
@@ -178,11 +218,16 @@ class TextRouter:
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
         self._awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
+        # chat_id -> {"raw", "estimate", "adjusting": bool} for the food confirm flow
+        self._awaiting_food: dict = {}
 
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_food_callback, pattern="^food_")
         )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
@@ -322,6 +367,66 @@ class TextRouter:
                 f"✏️ Copy, edit, and send back:\n\n<code>{html.escape(current)}</code>",
                 parse_mode="HTML",
             )
+
+    async def handle_food_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Confirm or adjust a pending food estimate."""
+        query = update.callback_query
+        await query.answer()
+        if query.from_user.id != self.allowed_user:
+            return
+        chat_id = update.effective_chat.id
+        pending = self._awaiting_food.get(chat_id)
+        if not pending:
+            await query.edit_message_text("⚠️ No pending food entry.")
+            return
+
+        if query.data == "food_confirm":
+            self._awaiting_food.pop(chat_id, None)
+            content = _food_log_content(pending["raw"], pending["estimate"])
+            self.logs.write("food", content)
+            await query.edit_message_text(
+                _format_food_estimate(pending["raw"], pending["estimate"])
+                + "\n\n✅ <b>Logged.</b>",
+                parse_mode="HTML",
+            )
+        elif query.data == "food_adjust":
+            pending["adjusting"] = True
+            await query.edit_message_text(
+                _format_food_estimate(pending["raw"], pending["estimate"])
+                + "\n\n✏️ Tell me the correction (e.g. <i>the lasagna was ~400g, no salad</i>).",
+                parse_mode="HTML",
+            )
+
+    async def try_handle_food_adjust(self, update: Update) -> bool:
+        """If a food estimate is awaiting a portion correction, re-estimate from the
+        user's reply. Returns True if it consumed the message."""
+        chat_id = update.effective_chat.id
+        pending = self._awaiting_food.get(chat_id)
+        if not pending or not pending.get("adjusting"):
+            return False
+        correction = update.message.text.strip()
+        try:
+            estimate = await self.planner.estimate_food(pending["raw"], correction)
+        except Exception:
+            estimate = None
+        if not estimate:
+            await update.message.reply_text(
+                "Couldn't re-estimate that. Logging the original estimate instead."
+            )
+            content = _food_log_content(pending["raw"], pending["estimate"])
+            self.logs.write("food", content)
+            self._awaiting_food.pop(chat_id, None)
+            return True
+        pending["estimate"] = estimate
+        pending["adjusting"] = False
+        await update.message.reply_text(
+            _format_food_estimate(pending["raw"], estimate),
+            reply_markup=_food_keyboard(),
+            parse_mode="HTML",
+        )
+        return True
 
     # --- The dispatcher ---
 
@@ -622,27 +727,29 @@ class TextRouter:
                     ).strip()
                     break
 
-        # For food entries, try to extract macros from natural language (e.g. voice notes
-        # that give per-100g values and a weight). If parsing succeeds, replace raw content
-        # with a formatted summary. Falls back to logging as-is if no macro data found.
+        # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
+        # logged. We hold the entry until they tap "Log it" rather than writing immediately.
         if tag == "food":
             try:
-                macros = await self.planner.parse_food_macros(content)
-                if macros:
-                    parts = [f"{macros['food']} {macros['weight_g']}g"]
-                    stats = []
-                    if "kcal" in macros:
-                        stats.append(f"{macros['kcal']} kcal")
-                    if "protein_g" in macros:
-                        stats.append(f"{macros['protein_g']}g protein")
-                    if "fat_g" in macros:
-                        stats.append(f"{macros['fat_g']}g fat")
-                    if "carbs_g" in macros:
-                        stats.append(f"{macros['carbs_g']}g carbs")
-                    if stats:
-                        content = parts[0] + " — " + ", ".join(stats)
+                estimate = await self.planner.estimate_food(content)
             except Exception:
-                pass
+                estimate = None
+            if estimate:
+                self._awaiting_food[chat_id] = {
+                    "raw": content,
+                    "estimate": estimate,
+                    "adjusting": False,
+                }
+                await reply(
+                    _format_food_estimate(content, estimate),
+                    reply_markup=_food_keyboard(),
+                    parse_mode="HTML",
+                )
+                return
+            # No usable estimate — fall back to logging the raw description.
+            self.logs.write(tag, content)
+            await reply(f"🍽 Logged: {content}")
+            return
 
         # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
         # habit it satisfies once, at log time, and store the canonical habit name — so the
@@ -663,8 +770,6 @@ class TextRouter:
 
         if tag == "checkin":
             await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
-        elif tag == "food":
-            await reply(f"🍽 Logged: {content}")
         elif tag == "hypothesis":
             await reply("Logged #hypothesis ✓ — thinking about it…")
             try:
