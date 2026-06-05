@@ -482,8 +482,16 @@ async def _process_text(text: str, reply, chat_id: int = 0) -> None:
 
     # shabbat / candle lighting — set quiet mode manually
     if re.match(r"^(shabbat mode|candle lighting|shabbos mode)", lower):
-        _awaiting_candles[update_chat_id] = True
-        await reply("🕯️ What time is candle lighting?")
+        # One-step: accept the time in the same message ("candle lighting 19:13").
+        # Otherwise fall back to the prompt.
+        rest = re.sub(r"^(shabbat mode|candle lighting|shabbos mode)[:\s]*", "", text, count=1, flags=re.IGNORECASE).strip()
+        t = _parse_time(rest) if rest else None
+        if t:
+            _save_candle_lighting(t)
+            await reply(_candle_confirmation(t))
+        else:
+            _awaiting_candles[update_chat_id] = True
+            await reply("🕯️ What time is candle lighting?")
         return
 
     # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
@@ -692,14 +700,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = _parse_time(text)
         if t:
             _save_candle_lighting(t)
-            h, m = int(t[:2]), int(t[3:])
-            quiet_m = m - 20 if m >= 20 else m + 40
-            quiet_h = h if m >= 20 else h - 1
-            quiet = f"{quiet_h:02d}:{quiet_m:02d}"
-            now_t = datetime.now(ZoneInfo("Asia/Jerusalem"))
-            already = now_t.hour * 60 + now_t.minute >= quiet_h * 60 + quiet_m
-            msg = f"🕯️ Candle lighting set for {t}. Shabbat Shalom — {'already in quiet mode.' if already else f'going quiet at {quiet}.'}"
-            await update.message.reply_text(msg)
+            await update.message.reply_text(_candle_confirmation(t))
             return
         # Not a valid time. Only re-prompt if it actually looks like a time attempt;
         # otherwise the user has moved on (e.g. a check-in), so drop the candle prompt
@@ -795,6 +796,17 @@ def _candles_path() -> str:
 def _save_candle_lighting(t: str):
     with open(_candles_path(), "w") as f:
         f.write(t)
+
+
+def _candle_confirmation(t: str) -> str:
+    """Confirmation message after setting candle lighting (incl. when quiet mode kicks in)."""
+    h, m = int(t[:2]), int(t[3:])
+    quiet_m = m - 20 if m >= 20 else m + 40
+    quiet_h = h if m >= 20 else h - 1
+    quiet = f"{quiet_h:02d}:{quiet_m:02d}"
+    now_t = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    already = now_t.hour * 60 + now_t.minute >= quiet_h * 60 + quiet_m
+    return f"🕯️ Candle lighting set for {t}. Shabbat Shalom — {'already in quiet mode.' if already else f'going quiet at {quiet}.'}"
 
 
 def _load_candle_lighting() -> time | None:
