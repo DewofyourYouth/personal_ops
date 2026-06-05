@@ -355,6 +355,30 @@ class Planner:
         )
         return response.content[0].text.strip()
 
+    async def weight_synopsis(self, data: dict) -> str:
+        """1-3 plain sentences on what the weight figures show. Interpretation at the edge."""
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=200,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You summarise a user's Wegovy weight-loss figures in 1-3 plain sentences. "
+                        "State what the data shows: direction, the rate (kg/week), whether progress is "
+                        "steady, accelerating, or stalling, and the % of body weight lost. "
+                        "Base it on the SMOOTHED figures (7-day average, rate slope) — never the single-day "
+                        "readings, which are noise. Be factual and direct. No hype, no congratulation, no "
+                        "moralizing, no medical advice, no next steps. Just what the numbers say."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": json.dumps(data)}],
+        )
+        return response.content[0].text.strip()
+
     async def extract_insights(self, days: int = 7) -> dict:
         """Read the recent logs, distil durable reflections, and persist them.
 

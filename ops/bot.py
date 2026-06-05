@@ -348,9 +348,15 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    await update.message.reply_text(
-        weight_.format_for_telegram(), parse_mode="HTML"
-    )
+    text = weight_.format_for_telegram()
+    summary = weight_.summary()
+    if summary:
+        try:
+            synopsis = await planner_.weight_synopsis(summary)
+            text = f"📝 {html.escape(synopsis)}\n\n{text}"
+        except Exception:
+            pass  # the figures stand on their own if the synopsis call fails
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
