@@ -1,6 +1,7 @@
 venv
 .env
 .vscode/settings.json
+.claude/settings.local.json
 ops/log
 *.pyc
 credentials.json

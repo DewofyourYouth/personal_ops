@@ -12,6 +12,7 @@ API keys (ANTHROPIC_API_KEY / OPENAI_API_KEY) are intentionally NOT held here â€
 the Anthropic/OpenAI SDKs read them straight from the environment, so a
 bring-your-own-key instance already works without us touching them.
 """
+
 import os
 from dataclasses import dataclass
 from functools import cached_property

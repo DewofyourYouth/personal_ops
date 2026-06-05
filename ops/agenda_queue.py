@@ -21,7 +21,11 @@ class AgendaQueue:
 
     def add(self, text: str, target_date: date) -> dict:
         items = self.load()
-        entry = {"date": target_date.isoformat(), "text": text, "queued_at": date.today().isoformat()}
+        entry = {
+            "date": target_date.isoformat(),
+            "text": text,
+            "queued_at": date.today().isoformat(),
+        }
         items.append(entry)
         self.save(items)
         return entry

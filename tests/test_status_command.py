@@ -1,4 +1,5 @@
 """Tests for /status command formatting (_status_message + Agenda.get_status)."""
+
 import os
 import sys
 from pathlib import Path

@@ -37,8 +37,25 @@ def test_read_recent_skips_metrics(tmp_path):
     yesterday = date.today() - timedelta(days=1)
     jsonl = tmp_path / f"{yesterday}.jsonl"
     jsonl.write_text(
-        json.dumps({"ts": "2026-05-26T10:00:00+03:00", "tag": "note", "content": "readable entry"}) + "\n"
-        + json.dumps({"ts": "2026-05-26T10:01:00+03:00", "tag": "metric", "key": "weight", "value": 75, "unit": "kg", "content": "weight 75kg"}) + "\n"
+        json.dumps(
+            {
+                "ts": "2026-05-26T10:00:00+03:00",
+                "tag": "note",
+                "content": "readable entry",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "ts": "2026-05-26T10:01:00+03:00",
+                "tag": "metric",
+                "key": "weight",
+                "value": 75,
+                "unit": "kg",
+                "content": "weight 75kg",
+            }
+        )
+        + "\n"
     )
     recent = logs.read_recent(days=1)
     assert "readable entry" in recent
@@ -76,11 +93,13 @@ def test_read_recent_includes_today(log_dir):
 def test_compute_stats_completion(tmp_path):
     logs = Logs(str(tmp_path))
     today = date.today()
-    agenda = {"items": [
-        {"id": 0, "text": "Do something", "status": "done", "source": "llm"},
-        {"id": 1, "text": "Do another", "status": "missed", "source": "llm"},
-        {"id": 2, "text": "Open item", "status": "open", "source": "llm"},
-    ]}
+    agenda = {
+        "items": [
+            {"id": 0, "text": "Do something", "status": "done", "source": "llm"},
+            {"id": 1, "text": "Do another", "status": "missed", "source": "llm"},
+            {"id": 2, "text": "Open item", "status": "open", "source": "llm"},
+        ]
+    }
     (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
     stats = logs.compute_stats(days=1)
     s = stats[str(today)]
@@ -90,11 +109,18 @@ def test_compute_stats_completion(tmp_path):
 def test_compute_stats_anchors(tmp_path):
     logs = Logs(str(tmp_path))
     today = date.today()
-    agenda = {"items": [
-        {"id": 0, "text": "Complete Yoma chavrusa (10:00)", "status": "done", "source": "llm"},
-        {"id": 1, "text": "Anki review", "status": "missed", "source": "llm"},
-        {"id": 2, "text": "Job applications", "status": "done", "source": "llm"},
-    ]}
+    agenda = {
+        "items": [
+            {
+                "id": 0,
+                "text": "Complete Yoma chavrusa (10:00)",
+                "status": "done",
+                "source": "llm",
+            },
+            {"id": 1, "text": "Anki review", "status": "missed", "source": "llm"},
+            {"id": 2, "text": "Job applications", "status": "done", "source": "llm"},
+        ]
+    }
     (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
     stats = logs.compute_stats(days=1)
     s = stats[str(today)]
@@ -115,11 +141,20 @@ def test_compute_stats_checkin_response(tmp_path):
     today = date.today()
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
     TZ = ZoneInfo("Asia/Jerusalem")
     now = datetime.now(TZ).replace(second=0, microsecond=0)
     jsonl = tmp_path / f"{today}.jsonl"
-    reminder = {"ts": now.isoformat(timespec="seconds"), "tag": "reminder", "content": "check in"}
-    checkin  = {"ts": (now + timedelta(minutes=5)).isoformat(timespec="seconds"), "tag": "checkin", "content": "working"}
+    reminder = {
+        "ts": now.isoformat(timespec="seconds"),
+        "tag": "reminder",
+        "content": "check in",
+    }
+    checkin = {
+        "ts": (now + timedelta(minutes=5)).isoformat(timespec="seconds"),
+        "tag": "checkin",
+        "content": "working",
+    }
     jsonl.write_text(json.dumps(reminder) + "\n" + json.dumps(checkin) + "\n")
     stats = logs.compute_stats(days=1)
     s = stats[str(today)]
@@ -130,10 +165,12 @@ def test_compute_stats_checkin_response(tmp_path):
 def test_format_stats_for_prompt(tmp_path):
     logs = Logs(str(tmp_path))
     today = date.today()
-    agenda = {"items": [
-        {"id": 0, "text": "Job search", "status": "done", "source": "llm"},
-        {"id": 1, "text": "Anki", "status": "done", "source": "llm"},
-    ]}
+    agenda = {
+        "items": [
+            {"id": 0, "text": "Job search", "status": "done", "source": "llm"},
+            {"id": 1, "text": "Anki", "status": "done", "source": "llm"},
+        ]
+    }
     (tmp_path / f"{today}-agenda.json").write_text(json.dumps(agenda))
     logs.write("win", "applied to 3 jobs")
     text = logs.format_stats_for_prompt(days=1)

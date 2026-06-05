@@ -8,6 +8,7 @@ independent classes. `@runtime_checkable` lets the digest and the eval harness
 Add a new protocol only when a second real shared need appears; never widen one
 to fit a single domain.
 """
+
 from typing import Protocol, runtime_checkable
 
 

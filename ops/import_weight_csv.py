@@ -21,7 +21,9 @@ TZ = ZoneInfo("Asia/Jerusalem")
 LOG_DIR = os.path.join(os.getcwd(), "ops/log")
 db = Database(os.path.join(LOG_DIR, "ops.db"))
 
-csv_path = sys.argv[1] if len(sys.argv) > 1 else "/Users/jacobshore/Documents/Weight-2.csv"
+csv_path = (
+    sys.argv[1] if len(sys.argv) > 1 else "/Users/jacobshore/Documents/Weight-2.csv"
+)
 
 imported = skipped = 0
 conn = db._conn()

@@ -13,7 +13,9 @@ TZ = ZoneInfo("Asia/Jerusalem")
 
 
 class GCal:
-    def __init__(self, credentials_file: Path | None = None, token_file: Path | None = None):
+    def __init__(
+        self, credentials_file: Path | None = None, token_file: Path | None = None
+    ):
         base = Path(__file__).parent.parent
         self.credentials_file = credentials_file or base / "credentials.json"
         self.token_file = token_file or base / "token.json"
@@ -24,37 +26,57 @@ class GCal:
     def get_today_events(self) -> list:
         now = datetime.now(TZ)
         end = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        result = self._service().events().list(
-            calendarId=self.calendar_id,
-            timeMin=now.isoformat(),
-            timeMax=end.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
+        result = (
+            self._service()
+            .events()
+            .list(
+                calendarId=self.calendar_id,
+                timeMin=now.isoformat(),
+                timeMax=end.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+        )
         return result.get("items", [])
 
     def get_upcoming_events(self, within_minutes: int = 15) -> list:
         now = datetime.now(timezone.utc)
-        result = self._service().events().list(
-            calendarId=self.calendar_id,
-            timeMin=now.isoformat(),
-            timeMax=(now + timedelta(minutes=within_minutes)).isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
+        result = (
+            self._service()
+            .events()
+            .list(
+                calendarId=self.calendar_id,
+                timeMin=now.isoformat(),
+                timeMax=(now + timedelta(minutes=within_minutes)).isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+        )
         return result.get("items", [])
 
-    def create_event(self, summary: str, start_dt: datetime,
-                     duration_minutes: int = 60, description: str | None = None) -> dict:
+    def create_event(
+        self,
+        summary: str,
+        start_dt: datetime,
+        duration_minutes: int = 60,
+        description: str | None = None,
+    ) -> dict:
         end_dt = start_dt + timedelta(minutes=duration_minutes)
         body = {
             "summary": summary,
             "start": {"dateTime": start_dt.isoformat(), "timeZone": "Asia/Jerusalem"},
-            "end":   {"dateTime": end_dt.isoformat(),   "timeZone": "Asia/Jerusalem"},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": "Asia/Jerusalem"},
         }
         if description:
             body["description"] = description
-        return self._service().events().insert(calendarId=self.calendar_id, body=body).execute()
+        return (
+            self._service()
+            .events()
+            .insert(calendarId=self.calendar_id, body=body)
+            .execute()
+        )
 
     def format_events(self, events: list) -> str:
         if not events:
@@ -73,18 +95,23 @@ class GCal:
     def _service(self):
         if self.service_account_file.exists():
             from google.oauth2.service_account import Credentials as SACredentials
+
             creds = SACredentials.from_service_account_file(
                 str(self.service_account_file), scopes=SCOPES
             )
         else:
             creds = None
             if self.token_file.exists():
-                creds = Credentials.from_authorized_user_file(str(self.token_file), SCOPES)
+                creds = Credentials.from_authorized_user_file(
+                    str(self.token_file), SCOPES
+                )
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
-                    flow = InstalledAppFlow.from_client_secrets_file(str(self.credentials_file), SCOPES)
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        str(self.credentials_file), SCOPES
+                    )
                     creds = flow.run_local_server(port=0)
                 self.token_file.write_text(creds.to_json())
         return build("calendar", "v3", credentials=creds)

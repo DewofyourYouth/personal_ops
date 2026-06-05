@@ -68,6 +68,7 @@ def test_due_now_daily_does_not_remove(rem):
 
 def test_due_now_once_removes_after_firing(rem):
     import datetime as dt_mod
+
     today = dt_mod.date.today().isoformat()
     rem.add("One-time", "once", date=today, time="10:00")
     now = _at(10, 0)
@@ -79,7 +80,13 @@ def test_due_now_once_removes_after_firing(rem):
 
 
 def test_due_now_interval_fires_at_boundary(rem):
-    rem.add("Stretch", "interval", interval_minutes=30, window_start="08:00", window_end="22:00")
+    rem.add(
+        "Stretch",
+        "interval",
+        interval_minutes=30,
+        window_start="08:00",
+        window_end="22:00",
+    )
     now = _at(9, 0)
     with patch("reminders.datetime") as mock_dt:
         mock_dt.now.return_value = now
@@ -88,7 +95,13 @@ def test_due_now_interval_fires_at_boundary(rem):
 
 
 def test_due_now_interval_silent_outside_window(rem):
-    rem.add("Stretch", "interval", interval_minutes=30, window_start="08:00", window_end="22:00")
+    rem.add(
+        "Stretch",
+        "interval",
+        interval_minutes=30,
+        window_start="08:00",
+        window_end="22:00",
+    )
     now = _at(3, 0)
     with patch("reminders.datetime") as mock_dt:
         mock_dt.now.return_value = now
@@ -97,7 +110,13 @@ def test_due_now_interval_silent_outside_window(rem):
 
 
 def test_due_now_interval_not_off_boundary(rem):
-    rem.add("Stretch", "interval", interval_minutes=30, window_start="08:00", window_end="22:00")
+    rem.add(
+        "Stretch",
+        "interval",
+        interval_minutes=30,
+        window_start="08:00",
+        window_end="22:00",
+    )
     now = _at(8, 17)
     with patch("reminders.datetime") as mock_dt:
         mock_dt.now.return_value = now

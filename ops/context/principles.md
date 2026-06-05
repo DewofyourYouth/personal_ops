@@ -95,3 +95,37 @@ A useful rule:
 > The app may hold up a mirror, but it may not decide what the reflection means.
 
 When the system makes an inference, it should label it as an inference. When values are unclear, it should ask or offer multiple interpretations rather than resolving the ambiguity on the user's behalf. Its job is not to convert the user to a productivity philosophy. Its job is to help the user live more coherently with what they themselves have chosen.
+
+## Measurement Distortion
+
+The app must avoid rewarding foods, actions, or behaviors merely because they are easier to quantify.
+
+Many diet loggers accidentally push users toward highly processed foods because packaged foods come with clean numbers: calories, macros, serving sizes, barcodes. Homemade food, leftovers, family meals, restaurant meals, and culturally normal eating are harder to log precisely.
+
+This creates a measurement distortion: the tool starts favoring the most measurable behavior over the healthiest, most sustainable, or most human behavior.
+
+The system must not confuse quantifiability with quality.
+
+A homemade meal logged fuzzily should be treated as better data than a processed food logged precisely if it more accurately reflects the user’s real life. The goal is not to make eating conform to the database. The goal is to make the database flexible enough to capture actual eating.
+
+Bad:
+
+> “This packaged protein bar is a cleaner entry than your homemade chicken soup.”
+
+Better:
+
+> “Homemade chicken soup, medium-large bowl, approximate. Good enough for pattern tracking.”
+
+Bad:
+
+> “Please enter grams, calories, and macros.”
+
+Better:
+
+> “Logged as a homemade mixed meal. Portion: medium-large. Confidence: approximate.”
+
+Design rule:
+
+> Do not let the logging interface make processed food feel easier, cleaner, or more virtuous than real food.
+
+When precision is available, use it. When only approximation is available, preserve the approximation. The system should reward honest fidelity over false precision.

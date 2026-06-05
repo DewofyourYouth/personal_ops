@@ -42,7 +42,7 @@ from pathlib import Path
 
 
 class Baseline:
-    WEEKLY_KEEP = 8    # weeks kept at full resolution before rolling into monthly
+    WEEKLY_KEEP = 8  # weeks kept at full resolution before rolling into monthly
     MONTHLY_KEEP = 12  # months kept before rolling into quarterly
 
     def __init__(self, log_dir: str):
@@ -96,33 +96,59 @@ class Baseline:
             lines.append("| Week | Completion | Anchors | Wins | Habits |")
             lines.append("|------|------------|---------|------|--------|")
             for w in reversed(data["weekly"]):
-                comp = f"{w['completion_pct']}%" if w["completion_pct"] is not None else "—"
+                comp = (
+                    f"{w['completion_pct']}%"
+                    if w["completion_pct"] is not None
+                    else "—"
+                )
                 anch = f"{w['anchor_pct']}%" if w["anchor_pct"] is not None else "—"
                 habit_summary = ", ".join(
                     f"{h}: {v['logged']}/{v['trackable']}"
                     for h, v in w.get("habits", {}).items()
                 )
-                lines.append(f"| {w['week_start']} | {comp} | {anch} | {w['wins']} | {habit_summary or '—'} |")
+                lines.append(
+                    f"| {w['week_start']} | {comp} | {anch} | {w['wins']} | {habit_summary or '—'} |"
+                )
 
         if data["monthly"]:
             lines.append("\n### Monthly")
             lines.append("| Month | Avg Completion | Range | Avg Anchors | Wins |")
             lines.append("|-------|----------------|-------|-------------|------|")
             for m in reversed(data["monthly"]):
-                comp = f"{m['completion_avg']}%" if m["completion_avg"] is not None else "—"
-                rng = f"{m['completion_range'][0]}–{m['completion_range'][1]}%" if m.get("completion_range") else "—"
+                comp = (
+                    f"{m['completion_avg']}%"
+                    if m["completion_avg"] is not None
+                    else "—"
+                )
+                rng = (
+                    f"{m['completion_range'][0]}–{m['completion_range'][1]}%"
+                    if m.get("completion_range")
+                    else "—"
+                )
                 anch = f"{m['anchor_avg']}%" if m["anchor_avg"] is not None else "—"
-                lines.append(f"| {m['month']} | {comp} | {rng} | {anch} | {m['wins_total']} |")
+                lines.append(
+                    f"| {m['month']} | {comp} | {rng} | {anch} | {m['wins_total']} |"
+                )
 
         if data["quarterly"]:
             lines.append("\n### Quarterly")
             lines.append("| Quarter | Avg Completion | Range | Avg Anchors | Wins |")
             lines.append("|---------|----------------|-------|-------------|------|")
             for q in reversed(data["quarterly"]):
-                comp = f"{q['completion_avg']}%" if q["completion_avg"] is not None else "—"
-                rng = f"{q['completion_range'][0]}–{q['completion_range'][1]}%" if q.get("completion_range") else "—"
+                comp = (
+                    f"{q['completion_avg']}%"
+                    if q["completion_avg"] is not None
+                    else "—"
+                )
+                rng = (
+                    f"{q['completion_range'][0]}–{q['completion_range'][1]}%"
+                    if q.get("completion_range")
+                    else "—"
+                )
                 anch = f"{q['anchor_avg']}%" if q["anchor_avg"] is not None else "—"
-                lines.append(f"| {q['quarter']} | {comp} | {rng} | {anch} | {q['wins_total']} |")
+                lines.append(
+                    f"| {q['quarter']} | {comp} | {rng} | {anch} | {q['wins_total']} |"
+                )
 
         return "\n".join(lines)
 
@@ -167,8 +193,12 @@ class Baseline:
 
         return {
             "week_start": week_start.isoformat(),
-            "completion_pct": round(sum(comp_values) / len(comp_values)) if comp_values else None,
-            "anchor_pct": round(sum(anch_values) / len(anch_values)) if anch_values else None,
+            "completion_pct": round(sum(comp_values) / len(comp_values))
+            if comp_values
+            else None,
+            "anchor_pct": round(sum(anch_values) / len(anch_values))
+            if anch_values
+            else None,
             "wins": wins_total,
             "habits": dict(habit_counts),
         }
@@ -181,7 +211,9 @@ class Baseline:
         indefinitely regardless of how long the bot has been running.
         """
         cutoff_weekly = (date.today() - timedelta(weeks=self.WEEKLY_KEEP)).isoformat()
-        cutoff_monthly = date.today().replace(day=1) - timedelta(days=self.MONTHLY_KEEP * 30)
+        cutoff_monthly = date.today().replace(day=1) - timedelta(
+            days=self.MONTHLY_KEEP * 30
+        )
 
         # Move weekly entries older than WEEKLY_KEEP weeks into monthly summaries
         old_weekly = [w for w in data["weekly"] if w["week_start"] < cutoff_weekly]
@@ -197,8 +229,12 @@ class Baseline:
             data["monthly"].sort(key=lambda m: m["month"])
 
         # Move monthly entries older than MONTHLY_KEEP months into quarterly summaries
-        old_monthly = [m for m in data["monthly"] if m["month"] < cutoff_monthly.strftime("%Y-%m")]
-        data["monthly"] = [m for m in data["monthly"] if m["month"] >= cutoff_monthly.strftime("%Y-%m")]
+        old_monthly = [
+            m for m in data["monthly"] if m["month"] < cutoff_monthly.strftime("%Y-%m")
+        ]
+        data["monthly"] = [
+            m for m in data["monthly"] if m["month"] >= cutoff_monthly.strftime("%Y-%m")
+        ]
 
         if old_monthly:
             by_quarter: dict = defaultdict(list)

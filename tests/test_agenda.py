@@ -46,7 +46,9 @@ def test_reconcile_preserves_completed_history(agenda):
     agenda.reconcile(["Walk"], [])
     agenda.mark_status(agenda.get_open()[0]["id"], "done")
     agenda.reconcile([], ["Walk"])  # rejecting a done item must not delete it
-    assert any(i["text"] == "Walk" and i["status"] == "done" for i in agenda.get_status())
+    assert any(
+        i["text"] == "Walk" and i["status"] == "done" for i in agenda.get_status()
+    )
 
 
 def test_accept_items_persists(agenda):

@@ -9,6 +9,7 @@ Source of truth is the `habits` table. On first run it seeds from the legacy
 context bundle (`Context.load_all`) still sees habit scheduling info — the table
 is the mutable source, the markdown is a generated view.
 """
+
 import html
 import re
 
@@ -63,10 +64,15 @@ class HabitStore:
         for r in rows:
             if tracked_only and not r["tracked"]:
                 continue
-            out.append({
-                "id": r["id"], "section": r["section"], "name": r["name"],
-                "days": _csv_to_days(r["days"]), "tracked": bool(r["tracked"]),
-            })
+            out.append(
+                {
+                    "id": r["id"],
+                    "section": r["section"],
+                    "name": r["name"],
+                    "days": _csv_to_days(r["days"]),
+                    "tracked": bool(r["tracked"]),
+                }
+            )
         return out
 
     def sections(self) -> dict[str, list[dict]]:
@@ -78,8 +84,12 @@ class HabitStore:
 
     # --- Writes (CRUD) ---
 
-    def add(self, name: str, section: str = "Habits", days: list[int] | None = None) -> None:
-        nxt = self.db.query("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM habits")[0]["p"]
+    def add(
+        self, name: str, section: str = "Habits", days: list[int] | None = None
+    ) -> None:
+        nxt = self.db.query("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM habits")[
+            0
+        ]["p"]
         self.db.execute(
             "INSERT INTO habits (section, name, days, tracked, position) VALUES (?, ?, ?, 1, ?)",
             (section, name.strip(), _days_to_csv(days), nxt),
@@ -91,7 +101,10 @@ class HabitStore:
         self._project_markdown()
 
     def set_tracked(self, habit_id: int, tracked: bool) -> None:
-        self.db.execute("UPDATE habits SET tracked = ? WHERE id = ?", (1 if tracked else 0, habit_id))
+        self.db.execute(
+            "UPDATE habits SET tracked = ? WHERE id = ?",
+            (1 if tracked else 0, habit_id),
+        )
         self._project_markdown()
 
     # --- Seed + projection (table <-> habits.md) ---
@@ -109,9 +122,12 @@ class HabitStore:
                 raw = re.sub(r"^\s*- ", "", line).strip()
                 tag_m = re.search(r"\[([^\]]+)\]$", raw)
                 if tag_m:
-                    days = [Context._DAY_NAMES[d.strip()] for d in tag_m.group(1).split(",")
-                            if d.strip() in Context._DAY_NAMES]
-                    name = raw[:tag_m.start()].strip().rstrip("—").strip()
+                    days = [
+                        Context._DAY_NAMES[d.strip()]
+                        for d in tag_m.group(1).split(",")
+                        if d.strip() in Context._DAY_NAMES
+                    ]
+                    name = raw[: tag_m.start()].strip().rstrip("—").strip()
                 else:
                     days, name = [], raw
                 pos += 1
@@ -123,7 +139,9 @@ class HabitStore:
     def _project_markdown(self) -> None:
         """Regenerate habits.md from the table so Context.load_all (planner context) and
         Obsidian keep working. Source of truth is the table; this file is a derived view."""
-        rows = self.db.query("SELECT section, name, days, tracked FROM habits ORDER BY position, id")
+        rows = self.db.query(
+            "SELECT section, name, days, tracked FROM habits ORDER BY position, id"
+        )
         order: list[str] = []
         by_section: dict[str, list] = {}
         for r in rows:
@@ -131,12 +149,19 @@ class HabitStore:
                 by_section[r["section"]] = []
                 order.append(r["section"])
             by_section[r["section"]].append(r)
-        lines = ["<!-- generated from the habits table; manage habits via Telegram, not here -->", ""]
+        lines = [
+            "<!-- generated from the habits table; manage habits via Telegram, not here -->",
+            "",
+        ]
         for section in order:
             lines.append(f"## {section}\n")
             for r in by_section[section]:
                 days = _csv_to_days(r["days"])
-                tag = f" [{','.join(_INT_TO_ABBR[d] for d in sorted(days))}]" if days else ""
+                tag = (
+                    f" [{','.join(_INT_TO_ABBR[d] for d in sorted(days))}]"
+                    if days
+                    else ""
+                )
                 lines.append(f"  - {r['name']}{tag}")
             lines.append("")
         self.context.write("habits.md", "\n".join(lines).rstrip() + "\n")
@@ -161,23 +186,30 @@ async def match_habit(content: str, db) -> str | None:
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=64,
-        tools=[{
-            "name": "match_habit",
-            "description": "Pick which habit a free-text log entry satisfies, or 'none'.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "habit": {
-                        "type": "string",
-                        "enum": [*names, "none"],
-                        "description": "The habit this entry satisfies, or 'none' if it matches no habit.",
+        tools=[
+            {
+                "name": "match_habit",
+                "description": "Pick which habit a free-text log entry satisfies, or 'none'.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "habit": {
+                            "type": "string",
+                            "enum": [*names, "none"],
+                            "description": "The habit this entry satisfies, or 'none' if it matches no habit.",
+                        },
                     },
+                    "required": ["habit"],
                 },
-                "required": ["habit"],
-            },
-        }],
+            }
+        ],
         tool_choice={"type": "tool", "name": "match_habit"},
-        messages=[{"role": "user", "content": f"Habits: {names}\nLog entry: {content!r}\nWhich habit does this satisfy?"}],
+        messages=[
+            {
+                "role": "user",
+                "content": f"Habits: {names}\nLog entry: {content!r}\nWhich habit does this satisfy?",
+            }
+        ],
     )
     for block in response.content:
         if block.type == "tool_use":
@@ -187,16 +219,22 @@ async def match_habit(content: str, db) -> str | None:
 
 
 class HabitHandlers:
-    def __init__(self, bot: Bot, logs: Logs, context: Context, allowed_user: int) -> None:
+    def __init__(
+        self, bot: Bot, logs: Logs, context: Context, allowed_user: int
+    ) -> None:
         self.bot = bot
         self.logs = logs
         self.context = context
         self.allowed_user = allowed_user
-        self.store = HabitStore(logs.db, context)   # plugin creates/owns its table here
+        self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
-            {"id": "habit_eod_check", "func": self.daily_habit_check,
-             "trigger": "cron", "kwargs": {"hour": 23, "minute": 30}},
+            {
+                "id": "habit_eod_check",
+                "func": self.daily_habit_check,
+                "trigger": "cron",
+                "kwargs": {"hour": 23, "minute": 30},
+            },
         ]
 
     def register(self, app: Application) -> None:
@@ -207,8 +245,12 @@ class HabitHandlers:
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
         app.add_handler(CommandHandler("habitcheck", self.cmd_habit_check))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^hb_done:"))
-        app.add_handler(CallbackQueryHandler(self.handle_manage, pattern="^hb_(del|on|off):"))
-        app.add_handler(CallbackQueryHandler(self.handle_eod, pattern="^hbq_(done|miss):"))
+        app.add_handler(
+            CallbackQueryHandler(self.handle_manage, pattern="^hb_(del|on|off):")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_eod, pattern="^hbq_(done|miss):")
+        )
 
     # --- Trackable capability ---
 
@@ -237,13 +279,20 @@ class HabitHandlers:
 
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
+
         today_weekday = _date.today().weekday()
         sections = self.store.sections()
-        logged_today = [e["content"].strip() for e in self.logs.read_today() if e.get("tag") == "habit"]
+        logged_today = [
+            e["content"].strip()
+            for e in self.logs.read_today()
+            if e.get("tag") == "habit"
+        ]
 
         all_visible = []
         for habits in sections.values():
-            all_visible.extend(h for h in habits if h["days"] is None or today_weekday in h["days"])
+            all_visible.extend(
+                h for h in habits if h["days"] is None or today_weekday in h["days"]
+            )
         done_ids = set()
         for logged in logged_today:
             h = self._resolve_logged_to_habit(logged, all_visible)
@@ -253,7 +302,9 @@ class HabitHandlers:
         lines = ["📋 <b>Habits</b>\n"]
         rows = []
         for section, habits in sections.items():
-            visible = [h for h in habits if h["days"] is None or today_weekday in h["days"]]
+            visible = [
+                h for h in habits if h["days"] is None or today_weekday in h["days"]
+            ]
             if not visible:
                 continue
             lines.append(f"<b>{html.escape(section)}</b>")
@@ -263,7 +314,13 @@ class HabitHandlers:
                 lines.append(f"{'✅' if done else '⬜'} {html.escape(name)}")
                 if not done:
                     key = name[:52]  # callback_data max 64 bytes; "hb_done:" = 8
-                    rows.append([InlineKeyboardButton(f"✅ {name}", callback_data=f"hb_done:{key}")])
+                    rows.append(
+                        [
+                            InlineKeyboardButton(
+                                f"✅ {name}", callback_data=f"hb_done:{key}"
+                            )
+                        ]
+                    )
             lines.append("")
 
         return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
@@ -274,14 +331,20 @@ class HabitHandlers:
         """Prompt for habits due today that have neither a done nor a missed log yet.
         Returns (None, None) when nothing is pending."""
         from datetime import date as _date
+
         today_weekday = _date.today().weekday()
         sections = self.store.sections()
-        resolved = [e["content"].strip() for e in self.logs.read_today()
-                    if e.get("tag") in ("habit", "habit_missed")]
+        resolved = [
+            e["content"].strip()
+            for e in self.logs.read_today()
+            if e.get("tag") in ("habit", "habit_missed")
+        ]
 
         all_visible = []
         for habits in sections.values():
-            all_visible.extend(h for h in habits if h["days"] is None or today_weekday in h["days"])
+            all_visible.extend(
+                h for h in habits if h["days"] is None or today_weekday in h["days"]
+            )
         resolved_ids = set()
         for logged in resolved:
             h = self._resolve_logged_to_habit(logged, all_visible)
@@ -297,10 +360,14 @@ class HabitHandlers:
             name = self.context.habit_display_name(h["name"])
             lines.append(f"⬜ {html.escape(name)}")
             key = name[:48]  # callback_data budget: "hbq_done:" is 9 bytes
-            rows.append([
-                InlineKeyboardButton(f"✅ {name[:22]}", callback_data=f"hbq_done:{key}"),
-                InlineKeyboardButton("❌ Didn't", callback_data=f"hbq_miss:{key}"),
-            ])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"✅ {name[:22]}", callback_data=f"hbq_done:{key}"
+                    ),
+                    InlineKeyboardButton("❌ Didn't", callback_data=f"hbq_miss:{key}"),
+                ]
+            )
         return "\n".join(lines), InlineKeyboardMarkup(rows)
 
     async def daily_habit_check(self, force: bool = False) -> None:
@@ -309,12 +376,18 @@ class HabitHandlers:
         pending. `force` bypasses the Shabbat skip (used by the preview fire)."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         if not force and datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() in (4, 5):
             return
         text, keyboard = self._eod_message()
         if text is None:
             return
-        await self.bot.send_message(chat_id=self.allowed_user, text=text, parse_mode="HTML", reply_markup=keyboard)
+        await self.bot.send_message(
+            chat_id=self.allowed_user,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
     async def cmd_habit_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Trigger the end-of-day habit check on demand."""
@@ -322,9 +395,13 @@ class HabitHandlers:
             return
         text, keyboard = self._eod_message()
         if text is None:
-            await update.message.reply_text("✅ Every habit due today is already accounted for.")
+            await update.message.reply_text(
+                "✅ Every habit due today is already accounted for."
+            )
         else:
-            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+            await update.message.reply_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
 
     async def handle_eod(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -333,9 +410,13 @@ class HabitHandlers:
         self.logs.write("habit" if action == "hbq_done" else "habit_missed", name)
         text, keyboard = self._eod_message()
         if text is None:
-            await query.edit_message_text("🌙 End-of-day check done — every habit accounted for. Good night.")
+            await query.edit_message_text(
+                "🌙 End-of-day check done — every habit accounted for. Good night."
+            )
         else:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+            await query.edit_message_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
 
     # --- Handlers: checklist + logging ---
 
@@ -343,7 +424,10 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         if not self.store.list_habits():
-            await update.message.reply_text("No habits yet. Add one with <code>/addhabit Drink water</code>.", parse_mode="HTML")
+            await update.message.reply_text(
+                "No habits yet. Add one with <code>/addhabit Drink water</code>.",
+                parse_mode="HTML",
+            )
             return
         text, keyboard = self._message()
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -360,8 +444,11 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         from datetime import date as _date, timedelta as _td
+
         arg = " ".join(context.args).strip().lower() if context.args else ""
-        target = _date.today() - _td(days=1) if arg in ("yesterday", "y") else _date.today()
+        target = (
+            _date.today() - _td(days=1) if arg in ("yesterday", "y") else _date.today()
+        )
         template = self.context.dir / "templates" / "habit-template.md"
         output_dir = self.context.dir / "habits"
         try:
@@ -381,35 +468,53 @@ class HabitHandlers:
             return
         raw = " ".join(context.args).strip()
         if not raw:
-            await update.message.reply_text("Usage: <code>/addhabit Drink water [mon,wed,fri]</code>", parse_mode="HTML")
+            await update.message.reply_text(
+                "Usage: <code>/addhabit Drink water [mon,wed,fri]</code>",
+                parse_mode="HTML",
+            )
             return
         days = None
         tag_m = re.search(r"\[([^\]]+)\]$", raw)
         if tag_m:
-            days = [Context._DAY_NAMES[d.strip()] for d in tag_m.group(1).split(",")
-                    if d.strip() in Context._DAY_NAMES] or None
-            raw = raw[:tag_m.start()].strip()
+            days = [
+                Context._DAY_NAMES[d.strip()]
+                for d in tag_m.group(1).split(",")
+                if d.strip() in Context._DAY_NAMES
+            ] or None
+            raw = raw[: tag_m.start()].strip()
         self.store.add(raw, days=days)
-        await update.message.reply_text(f"➕ Added habit: <b>{html.escape(raw)}</b>", parse_mode="HTML")
+        await update.message.reply_text(
+            f"➕ Added habit: <b>{html.escape(raw)}</b>", parse_mode="HTML"
+        )
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []
         for h in self.store.list_habits(tracked_only=False):
             disp = self.context.habit_display_name(h["name"])
             mark = "" if h["tracked"] else " (off)"
-            rows.append([
-                InlineKeyboardButton(f"{disp}{mark}", callback_data="noop"),
-                InlineKeyboardButton("⏸" if h["tracked"] else "▶️",
-                                     callback_data=f"hb_{'off' if h['tracked'] else 'on'}:{h['id']}"),
-                InlineKeyboardButton("🗑", callback_data=f"hb_del:{h['id']}"),
-            ])
-        return "⚙️ <b>Manage habits</b> — toggle tracking or delete:", InlineKeyboardMarkup(rows)
+            rows.append(
+                [
+                    InlineKeyboardButton(f"{disp}{mark}", callback_data="noop"),
+                    InlineKeyboardButton(
+                        "⏸" if h["tracked"] else "▶️",
+                        callback_data=f"hb_{'off' if h['tracked'] else 'on'}:{h['id']}",
+                    ),
+                    InlineKeyboardButton("🗑", callback_data=f"hb_del:{h['id']}"),
+                ]
+            )
+        return (
+            "⚙️ <b>Manage habits</b> — toggle tracking or delete:",
+            InlineKeyboardMarkup(rows),
+        )
 
     async def cmd_manage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != self.allowed_user:
             return
         if not self.store.list_habits(tracked_only=False):
-            await update.message.reply_text("No habits yet. Add one with <code>/addhabit Drink water</code>.", parse_mode="HTML")
+            await update.message.reply_text(
+                "No habits yet. Add one with <code>/addhabit Drink water</code>.",
+                parse_mode="HTML",
+            )
             return
         text, keyboard = self._manage_message()
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)

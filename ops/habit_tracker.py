@@ -107,7 +107,9 @@ def _fill_table(template_text: str, logs: Logs, target_date: date) -> str:
     return "\n".join(result)
 
 
-def generate_habit_log(logs: Logs, template_path: Path, output_dir: Path, target_date: date) -> Path:
+def generate_habit_log(
+    logs: Logs, template_path: Path, output_dir: Path, target_date: date
+) -> Path:
     if not template_path.exists():
         raise FileNotFoundError(f"Habit template not found: {template_path}")
     template = template_path.read_text()

@@ -1,0 +1,718 @@
+"""Text router — the central inbound-message dispatcher.
+
+A feature class (same shape as the other handlers): built with the bot and the
+domain services it needs, with the conversation state it owns kept on the
+instance rather than in module globals. `process_text` parses a free-text or
+transcribed message, decides which command/log it is, and acts.
+
+`bot.py`'s `handle_message` stays the composition point that knows about every
+feature's pending-reply state; it delegates the candle/reminder-time/voice flows
+and the final fall-through to the methods here. Voice intake (transcription +
+the confirm/edit loop) self-registers via `register(app)`.
+
+The small parsing helpers (`_parse_time`, `_parse_queue_date`, `_normalize`) and
+the mood/energy keyboard are module-level so `bot.py` can reuse them without a
+circular import (this module never imports bot.py).
+"""
+
+import asyncio
+import difflib
+import html
+import os
+import re
+import tempfile
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from bot_constants import PREFIXES
+from habit_handlers import match_habit
+from llm import parse_queue_entry, transcribe
+from tg_common import encourage, safe_answer
+
+
+# Matches "feedback:", "feedback request", "question:", "I have a question", etc.
+_FEEDBACK_RE = re.compile(
+    r"^(?:feedback(?:\s+request)?|question|i\s+have\s+a\s+(?:question|thought)|i\s+want\s+(?:feedback|your\s+take))"
+    r"(?:[,:.\s\-]+(.+))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Matches "checkin", "checking in", "check in", "update", "status update", etc.
+_CHECKIN_RE = re.compile(
+    r"^(?:check(?:ing|in)?(?:\s+in)?|update|status(?:\s+update)?)"
+    r"(?:[,:.\s\-]+(.+))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_NUM_WORDS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+}
+
+_UNICODE_JUNK = re.compile("[​-‏‪-‮⁠-⁤﻿]+")
+
+
+def _normalize(text: str) -> str:
+    def _replace(w: str) -> str:
+        clean = w.strip(".,!?;:")
+        return _NUM_WORDS.get(clean, w)
+
+    return " ".join(_replace(w) for w in text.split())
+
+
+def _parse_time(text: str) -> str | None:
+    text = text.strip().lower()
+    if text in ("now", "עכשיו"):
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        return f"{now.hour:02d}:{now.minute:02d}"
+    m = re.search(r"(\d{1,2}):(\d{2})", text)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    m = re.search(r"(\d{1,2})\s*(am|pm)", text)
+    if m:
+        h = int(m.group(1))
+        if m.group(2) == "pm" and h != 12:
+            h += 12
+        elif m.group(2) == "am" and h == 12:
+            h = 0
+        return f"{h:02d}:00"
+    m = re.match(r"^(\d{1,2})$", text)
+    if m:
+        return f"{int(m.group(1)):02d}:00"
+    return None
+
+
+def _parse_queue_date(day_str: str):
+    from datetime import date as _date, timedelta as _td
+
+    today = _date.today()
+    day_str = day_str.strip().lower()
+    weekdays = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    # "sunday", "next monday", etc.
+    for name, num in weekdays.items():
+        if name in day_str:
+            days_ahead = (num - today.weekday()) % 7 or 7
+            return today + _td(days=days_ahead)
+    if day_str in ("tomorrow", "tmrw"):
+        return today + _td(days=1)
+    # try ISO date
+    try:
+        return _date.fromisoformat(day_str)
+    except ValueError:
+        pass
+    return None
+
+
+MOOD_OPTIONS = [
+    ("😄", "great"),
+    ("😊", "good"),
+    ("😐", "okay"),
+    ("😕", "low"),
+    ("😞", "bad"),
+]
+ENERGY_OPTIONS = [("⚡", "high"), ("🔋", "okay"), ("🪫", "drained")]
+
+
+def _mood_energy_keyboard(
+    locked_mood: str = "", locked_energy: str = ""
+) -> InlineKeyboardMarkup:
+    mood_row = [
+        InlineKeyboardButton(
+            f"✅ {e} {v}" if locked_mood == v else f"{e} {v}",
+            callback_data="noop" if locked_mood == v else f"me_mood:{e}:{v}",
+        )
+        for e, v in MOOD_OPTIONS
+    ]
+    energy_row = [
+        InlineKeyboardButton(
+            f"✅ {e} {v}" if locked_energy == v else f"{e} {v}",
+            callback_data="noop" if locked_energy == v else f"me_energy:{e}:{v}",
+        )
+        for e, v in ENERGY_OPTIONS
+    ]
+    return InlineKeyboardMarkup([mood_row, energy_row])
+
+
+class TextRouter:
+    def __init__(self, bot, services, shabbat, allowed_user: int) -> None:
+        self.bot = bot
+        self.logs = services.logs
+        self.agenda = services.agenda
+        self.queue = services.queue
+        self.backlog = services.backlog
+        self.reminders = services.reminders
+        self.gcal = services.gcal
+        self.planner = services.planner
+        self.shabbat = shabbat
+        self.allowed_user = allowed_user
+        # Set by bot.py once both features exist — process_text commits user-added
+        # agenda items through the agenda feature.
+        self.agenda_feature = None
+        # Conversation state owned here (single-user bot, in-memory is fine).
+        self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
+        self._awaiting_candles: dict = {}  # chat_id -> True
+        self._awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
+
+    def register(self, app: Application) -> None:
+        app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
+        app.add_handler(
+            CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
+        )
+
+    # --- Candle-lighting prompt state (shared with the morning_plan job) ---
+
+    def expect_candle_time(self, chat_id: int) -> None:
+        self._awaiting_candles[chat_id] = True
+
+    # --- Pending-reply interceptors (called by bot.py's handle_message) ---
+
+    async def try_handle_voice_edit(self, update: Update) -> bool:
+        """If the user is editing a voice transcript, capture their reply and
+        re-show the confirm/edit buttons. Returns True if it consumed the message."""
+        chat_id = update.effective_chat.id
+        if (
+            chat_id in self._awaiting_voice_edit
+            and self._awaiting_voice_edit[chat_id] == "__edit__"
+        ):
+            text = update.message.text.strip()
+            self._awaiting_voice_edit[chat_id] = text
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("✅ OK", callback_data="voice_ok"),
+                        InlineKeyboardButton("✏️ Edit", callback_data="voice_edit"),
+                    ]
+                ]
+            )
+            await update.message.reply_text(f'🎙 "{text}"', reply_markup=keyboard)
+            return True
+        return False
+
+    async def try_handle_candle_reply(self, update: Update) -> bool:
+        """If we asked for candle-lighting time, parse this reply. Returns True if
+        it consumed the message."""
+        chat_id = update.effective_chat.id
+        if not self._awaiting_candles.pop(chat_id, False):
+            return False
+        text = update.message.text.strip()
+        t = _parse_time(text)
+        if t:
+            self.shabbat.save_candle_lighting(t)
+            await update.message.reply_text(self.shabbat.candle_confirmation(t))
+            return True
+        # Not a valid time. Only re-prompt if it actually looks like a time attempt;
+        # otherwise the user has moved on (e.g. a check-in), so drop the candle prompt
+        # and let this message be handled normally instead of hijacking it.
+        if re.fullmatch(r"\s*\d{1,2}[:.\s]?\d{0,2}\s*", text):
+            self._awaiting_candles[chat_id] = True
+            await update.message.reply_text(
+                "Couldn't parse that time. Send it again (e.g. 19:45)."
+            )
+            return True
+        return False  # fall through — the candle await was already cleared by .pop()
+
+    async def try_handle_time_reply(self, update: Update) -> bool:
+        """If a reminder is waiting on a time, finish creating it. Returns True if
+        it consumed the message."""
+        chat_id = update.effective_chat.id
+        if chat_id not in self._awaiting_time:
+            return False
+        partial = self._awaiting_time.pop(chat_id)
+        text = update.message.text.strip()
+        t = _parse_time(text)
+        if not t:
+            await update.message.reply_text(
+                "Couldn't parse that as a time. Reminder cancelled."
+            )
+            return True
+        from datetime import date as _date
+
+        entry = self.reminders.add(
+            text=partial["text"],
+            reminder_type=partial["type"],
+            **{k: v for k, v in partial.items() if k not in ("text", "type")},
+            time=t,
+        )
+        d = entry.get("date", _date.today().isoformat())
+        when = "today" if d == _date.today().isoformat() else d
+        await update.message.reply_text(
+            f'⏰ Reminder set: "{entry["text"]}" on {when} at {t}'
+        )
+        return True
+
+    # --- Voice intake ---
+
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != self.allowed_user:
+            return
+
+        tg_file = await update.message.voice.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            await tg_file.download_to_drive(tmp_path)
+            text = transcribe(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
+        chat_id = update.effective_chat.id
+        self._awaiting_voice_edit[chat_id] = text
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ OK", callback_data="voice_ok"),
+                    InlineKeyboardButton("✏️ Edit", callback_data="voice_edit"),
+                ]
+            ]
+        )
+        await update.message.reply_text(f'🎙 "{text}"', reply_markup=keyboard)
+
+    async def handle_voice_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        query = update.callback_query
+        await safe_answer(query)
+        chat_id = query.message.chat_id
+
+        if query.data == "voice_ok":
+            text = self._awaiting_voice_edit.pop(chat_id, None)
+            if not text or text == "__edit__":
+                await query.edit_message_text("⚠️ No pending transcript.")
+                return
+            await query.edit_message_text(f'🎙 "{text}"')
+            await self.process_text(
+                text,
+                lambda msg, **kw: context.bot.send_message(
+                    chat_id=chat_id, text=msg, **kw
+                ),
+                chat_id=chat_id,
+            )
+
+        elif query.data == "voice_edit":
+            current = self._awaiting_voice_edit.get(chat_id, "")
+            self._awaiting_voice_edit[chat_id] = "__edit__"
+            await query.edit_message_text(
+                f"✏️ Copy, edit, and send back:\n\n<code>{html.escape(current)}</code>",
+                parse_mode="HTML",
+            )
+
+    # --- The dispatcher ---
+
+    async def process_text(self, text: str, reply, chat_id: int = 0) -> None:
+        text = _UNICODE_JUNK.sub("", text).strip()
+        update_chat_id = chat_id
+        lower = _normalize(text.lower()).strip(".,!?;: ")
+
+        # edit N <text> — update agenda item text
+        edit_match = re.match(r"^edit\s+(\d+)\s+(.+)$", lower)
+        if edit_match:
+            n = int(edit_match.group(1))
+            open_items = self.agenda.get_open()
+            if n < 1 or n > len(open_items):
+                await reply(f"No open item #{n}.")
+                return
+            actual_id = open_items[n - 1]["id"]
+            orig_match = re.match(
+                r"^edit\s+\S+\s+(.*?)[\s.,!?;:]*$", text, re.IGNORECASE
+            )
+            new_text = orig_match.group(1) if orig_match else edit_match.group(2)
+            old_text = self.agenda.edit_item(actual_id, new_text)
+            self.logs.write("edit", f"item {n}: '{old_text}' → '{new_text}'")
+            await reply(f"✏️ Item {n} updated.")
+            return
+
+        # done N / missed N — mark by number
+        done_match = re.match(r"^(done|missed)\s+(\d+)$", lower)
+        if done_match:
+            action, n = done_match.group(1), int(done_match.group(2))
+            open_items = self.agenda.get_open()
+            if n < 1 or n > len(open_items):
+                await reply(f"No open item #{n}.")
+                return
+            actual_id = open_items[n - 1]["id"]
+            self.agenda.mark_status(actual_id, action)
+            icon = "✅" if action == "done" else "❌"
+            suffix = f" {encourage()}" if action == "done" else ""
+            await reply(f"{icon} Item {n} marked {action}.{suffix}")
+            return
+
+        # done <name> / missed <name> — mark by fuzzy name match
+        name_match = re.match(r"^(done|missed)\s+(.+)$", lower)
+        if name_match:
+            action, query_text = name_match.group(1), name_match.group(2)
+            open_items = self.agenda.get_open()
+            if open_items:
+                item_texts = [i["text"].lower() for i in open_items]
+                matches = difflib.get_close_matches(
+                    query_text, item_texts, n=1, cutoff=0.3
+                )
+                if not matches:
+                    # fallback: substring match
+                    matches = [
+                        t for t in item_texts if query_text in t or t in query_text
+                    ]
+                if matches:
+                    item = open_items[item_texts.index(matches[0])]
+                    self.agenda.mark_status(item["id"], action)
+                    icon = "✅" if action == "done" else "❌"
+                    suffix = f" {encourage()}" if action == "done" else ""
+                    await reply(f'{icon} "{item["text"]}" marked {action}.{suffix}')
+                    return
+            await reply(f'Couldn\'t match "{query_text}" to any open agenda item.')
+            return
+
+        # event: / new event / add to calendar / etc — create a Google Calendar event
+        _event_pattern = re.match(
+            r"^(?:new\s+)?(?:calendar\s+)?event[:\s]+(.+)$"
+            r"|^add(?:\s+(?:calendar\s+)?event)[:\s]+(.+)$"
+            r"|^add\s+to\s+(?:(?:google\s+)?calendar)[:\s]+(.+)$",
+            lower,
+        )
+        if _event_pattern:
+            event_text = next(g for g in _event_pattern.groups() if g is not None)
+            # use original text with preserved case, same offset as matched group
+            event_text = text[lower.index(event_text) :].strip()
+            await reply("📅 Parsing event…")
+            try:
+                parsed = await self.planner.parse_event(event_text)
+                if not parsed:
+                    await reply(
+                        "Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am"
+                    )
+                    return
+                tz = ZoneInfo("Asia/Jerusalem")
+                start_dt = datetime.fromisoformat(
+                    f"{parsed['date']}T{parsed['start_time']}:00"
+                ).replace(tzinfo=tz)
+                event = await asyncio.to_thread(
+                    self.gcal.create_event,
+                    parsed["summary"],
+                    start_dt,
+                    parsed.get("duration_minutes", 60),
+                    parsed.get("description"),
+                )
+                link = event.get("htmlLink", "")
+                await reply(
+                    f"✅ Created: <b>{html.escape(parsed['summary'])}</b> on {parsed['date']} at {parsed['start_time']}\n{link}",
+                )
+            except Exception as e:
+                await reply(f"Failed to create event: {e}")
+            return
+
+        # remind: / remind me — create a recurring reminder
+        if lower.startswith("remind:") or lower.startswith("remind me"):
+            reminder_text = re.sub(
+                r"^remind(:|(\s+me\b))\s*", "", text, flags=re.IGNORECASE
+            ).strip()
+            await reply("⏰ Parsing reminder…")
+            try:
+                parsed = await self.planner.parse_reminder(reminder_text)
+                if not parsed:
+                    await reply(
+                        "Couldn't parse the reminder. Try: remind: eat lunch at 13:00 or remind: drink water every 60 minutes"
+                    )
+                    return
+                from datetime import date as _date
+
+                extra = {k: v for k, v in parsed.items() if k not in ("text", "type")}
+                if parsed["type"] == "once" and "date" not in extra:
+                    extra["date"] = _date.today().isoformat()
+                if parsed["type"] == "weekly" and "day_of_week" in parsed:
+                    day_map = {
+                        "monday": 0,
+                        "tuesday": 1,
+                        "wednesday": 2,
+                        "thursday": 3,
+                        "friday": 4,
+                        "saturday": 5,
+                        "sunday": 6,
+                    }
+                    extra["day"] = day_map.get(parsed["day_of_week"].lower(), 4)
+                if (
+                    parsed["type"] in ("once", "daily", "weekly")
+                    and "time" not in extra
+                ):
+                    # ask for the time rather than defaulting
+                    self._awaiting_time[update_chat_id] = {
+                        "text": parsed["text"],
+                        "type": parsed["type"],
+                        **extra,
+                    }
+                    d = extra.get("date", _date.today().isoformat())
+                    when = "today" if d == _date.today().isoformat() else d
+                    await reply(f"What time on {when} should I remind you?")
+                    return
+                entry = self.reminders.add(
+                    text=parsed["text"], reminder_type=parsed["type"], **extra
+                )
+                if entry["type"] == "once":
+                    d = entry.get("date", _date.today().isoformat())
+                    when = "today" if d == _date.today().isoformat() else d
+                    await reply(
+                        f'⏰ Reminder set: "{entry["text"]}" on {when} at {entry["time"]}'
+                    )
+                elif entry["type"] == "daily":
+                    await reply(
+                        f'⏰ Reminder set: "{entry["text"]}" every day at {entry["time"]}'
+                    )
+                elif entry["type"] == "weekly":
+                    days = [
+                        "Monday",
+                        "Tuesday",
+                        "Wednesday",
+                        "Thursday",
+                        "Friday",
+                        "Saturday",
+                        "Sunday",
+                    ]
+                    day_name = days[entry.get("day", 4)]
+                    await reply(
+                        f'⏰ Reminder set: "{entry["text"]}" every {day_name} at {entry["time"]}'
+                    )
+                else:
+                    ws = entry.get("window_start", "08:00")
+                    we = entry.get("window_end", "22:00")
+                    await reply(
+                        f'⏰ Reminder set: "{entry["text"]}" every {entry["interval_minutes"]} min ({ws}–{we})'
+                    )
+            except Exception as e:
+                await reply(f"Failed to set reminder: {e}")
+            return
+
+        # backlog: / someday: — add to backlog
+        if re.match(r"^(backlog|someday)[:\s]", lower):
+            item_text = re.sub(
+                r"^(backlog|someday)[:\s]\s*", "", text, flags=re.IGNORECASE
+            ).strip()
+            if item_text:
+                self.backlog.add(item_text)
+                await reply(f"📋 Added to backlog: {item_text}")
+                return
+
+        # shabbat / candle lighting — set quiet mode manually
+        if re.match(r"^(shabbat mode|candle lighting|shabbos mode)", lower):
+            # One-step: accept the time in the same message ("candle lighting 19:13").
+            # Otherwise fall back to the prompt.
+            rest = re.sub(
+                r"^(shabbat mode|candle lighting|shabbos mode)[:\s]*",
+                "",
+                text,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            t = _parse_time(rest) if rest else None
+            if t:
+                self.shabbat.save_candle_lighting(t)
+                await reply(self.shabbat.candle_confirmation(t))
+            else:
+                self._awaiting_candles[update_chat_id] = True
+                await reply("🕯️ What time is candle lighting?")
+            return
+
+        # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
+        if re.match(r"^(?:queue|schedule|defer|add to)\b", lower):
+            parsed = await parse_queue_entry(text)
+            if parsed:
+                target = _parse_queue_date(parsed["day"])
+                if target:
+                    self.queue.add(parsed["item"], target)
+                    await reply(
+                        f"📅 Queued for {target.strftime('%A %b %d')}: {parsed['item']}"
+                    )
+                    return
+            await reply(
+                "Couldn't parse that. Try: 'schedule for Sunday: deploy to VPS'"
+            )
+
+        # add: — user adds their own agenda item
+        if lower.startswith("add:"):
+            item_text = text[4:].strip()
+            self.agenda_feature.commit_agenda([item_text], source="user")
+            await reply(f"Added to agenda: {item_text}")
+            return
+
+        # metric: <key> <value> — structured metric entry
+        metric_m = re.match(r"^metric[,:.\s]\s*([\w\-]+)\s+(\S+)", text, re.IGNORECASE)
+        if metric_m:
+            key = metric_m.group(1).lower().replace("-", "_")
+            raw_val = metric_m.group(2)
+            # If key is numeric and value looks like a word, they're reversed — swap them
+            # e.g. "metric: 8000 steps" → key=steps, value=8000
+            if re.match(r"^[\d.]+$", key) and re.match(
+                r"^[a-z_]+$", raw_val, re.IGNORECASE
+            ):
+                key, raw_val = raw_val.lower().replace("-", "_"), key
+            num_m = re.match(r"^([\d.]+)", raw_val)
+            value = float(num_m.group(1)) if num_m else raw_val
+            unit = raw_val[len(num_m.group(1)) :] if num_m else ""
+            try:
+                self.logs.write_metric(key, value, unit)
+            except Exception as e:
+                # Don't fail silently: the reading is safe in JSONL (recoverable via
+                # sync_jsonl_to_db), but tell the user it didn't reach the database.
+                await reply(
+                    f"⚠️ Metric NOT saved to DB: {key} = {raw_val}\n{e}\n(Kept in the log; run a sync to recover.)"
+                )
+                return
+            await reply(f"📊 Metric logged: {key} = {raw_val}")
+            return
+
+        # feedback request — log it and respond with Claude's take
+        feedback_m = _FEEDBACK_RE.match(text)
+        if feedback_m:
+            content = (feedback_m.group(1) or "").strip()
+            if not content:
+                await reply(
+                    "What's on your mind? Send your idea or question after 'feedback:'"
+                )
+                return
+            self.logs.write("feedback", content)
+            await reply("💭 Thinking…")
+            try:
+                response_text = await self.planner.feedback(content)
+                await reply(response_text)
+            except Exception as e:
+                await reply(f"Feedback failed: {e}")
+            return
+
+        # standard log entry — match prefix keyword regardless of trailing punctuation/case
+        tag = "log"
+        content = text
+
+        checkin_m = _CHECKIN_RE.match(text)
+        if checkin_m:
+            tag = "checkin"
+            content = (checkin_m.group(1) or "").strip()
+        else:
+            first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
+            first_word = first_word_m.group(1) if first_word_m else ""
+            for prefix, t in PREFIXES.items():
+                keyword = prefix.rstrip(": ")
+                if first_word == keyword or lower.startswith(prefix):
+                    tag = t.lstrip("#")
+                    content = re.sub(
+                        r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE
+                    ).strip()
+                    break
+
+        # For food entries, try to extract macros from natural language (e.g. voice notes
+        # that give per-100g values and a weight). If parsing succeeds, replace raw content
+        # with a formatted summary. Falls back to logging as-is if no macro data found.
+        if tag == "food":
+            try:
+                macros = await self.planner.parse_food_macros(content)
+                if macros:
+                    parts = [f"{macros['food']} {macros['weight_g']}g"]
+                    stats = []
+                    if "kcal" in macros:
+                        stats.append(f"{macros['kcal']} kcal")
+                    if "protein_g" in macros:
+                        stats.append(f"{macros['protein_g']}g protein")
+                    if "fat_g" in macros:
+                        stats.append(f"{macros['fat_g']}g fat")
+                    if "carbs_g" in macros:
+                        stats.append(f"{macros['carbs_g']}g carbs")
+                    if stats:
+                        content = parts[0] + " — " + ", ".join(stats)
+            except Exception:
+                pass
+
+        # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
+        # habit it satisfies once, at log time, and store the canonical habit name — so the
+        # checklist renders by exact match. The habit-specific resolution lives in the habit
+        # module; the dispatcher just delegates.
+        if tag == "habit":
+            try:
+                matched = await match_habit(content, self.logs.db)
+                if matched:
+                    content = matched
+            except Exception:
+                pass  # fall back to the raw text
+
+        # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
+        # backup. Writing the file directly here bypassed the DB — the bug that made
+        # prefix entries (values, insight, note, …) invisible to /values and other readers.
+        self.logs.write(tag, content)
+
+        if tag == "checkin":
+            await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
+        elif tag == "food":
+            await reply(f"🍽 Logged: {content}")
+        elif tag == "hypothesis":
+            await reply("Logged #hypothesis ✓ — thinking about it…")
+            try:
+                result = await self.planner.evaluate_hypothesis(content)
+
+                # Show the narrative
+                await reply(result["narrative"])
+
+                # Set up tracking actions
+                actions = []
+
+                if result.get("metrics"):
+                    keys = ", ".join(
+                        f"<code>metric: {m['key']} &lt;value&gt;</code>"
+                        for m in result["metrics"]
+                    )
+                    descs = "\n".join(
+                        f"• <b>{m['key']}</b>: {m['description']}"
+                        for m in result["metrics"]
+                    )
+                    actions.append(
+                        f"📊 <b>Track these metrics:</b>\n{descs}\n\nLog with: {keys}"
+                    )
+
+                if result.get("habits"):
+                    actions.append(
+                        "👁 <b>Watch these habits:</b> " + ", ".join(result["habits"])
+                    )
+
+                if result.get("follow_up_date"):
+                    from datetime import date as _date
+
+                    fu_date = _date.fromisoformat(result["follow_up_date"])
+                    reminder_text = f"Hypothesis check-in: {result['follow_up_note']}"
+                    self.reminders.add(
+                        reminder_text,
+                        reminder_type="once",
+                        date=result["follow_up_date"],
+                        time="10:00",
+                    )
+                    actions.append(
+                        f"⏰ <b>Follow-up reminder set:</b> {fu_date.strftime('%A %b %d')} — {result['follow_up_note']}"
+                    )
+
+                if actions:
+                    await reply("\n\n".join(actions), parse_mode="HTML")
+
+            except Exception as e:
+                await reply(f"Hypothesis logged but evaluation failed: {e}")
+        else:
+            await reply(f"Logged #{tag} ✓")

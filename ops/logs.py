@@ -23,7 +23,9 @@ class Logs:
     def write(self, tag: str, content: str, extra: dict | None = None):
         now = datetime.now(TZ)
         ts = now.isoformat(timespec="seconds")
-        date_str = now.date().isoformat()  # bucket by local (Jerusalem) day, matching ts
+        date_str = (
+            now.date().isoformat()
+        )  # bucket by local (Jerusalem) day, matching ts
         entry = {"ts": ts, "tag": tag, "content": content, **(extra or {})}
 
         # Durable capture FIRST: append to JSONL before touching SQLite, so a DB
@@ -39,7 +41,13 @@ class Logs:
         # dropping them; the caller can then tell the user it didn't save.
         try:
             if tag == "metric" and extra:
-                self.db.insert_metric(ts, date_str, extra.get("key", ""), str(extra.get("value", "")), extra.get("unit", ""))
+                self.db.insert_metric(
+                    ts,
+                    date_str,
+                    extra.get("key", ""),
+                    str(extra.get("value", "")),
+                    extra.get("unit", ""),
+                )
             else:
                 self.db.insert_entry(ts, date_str, tag, content)
         except Exception:
@@ -47,7 +55,11 @@ class Logs:
             raise
 
     def write_metric(self, key: str, value, unit: str = ""):
-        self.write("metric", f"{key} {value}{unit}", extra={"key": key, "value": value, "unit": unit})
+        self.write(
+            "metric",
+            f"{key} {value}{unit}",
+            extra={"key": key, "value": value, "unit": unit},
+        )
 
     def sync_jsonl_to_db(self) -> int:
         """Replay JSONL entries that never made it into SQLite (e.g. a write
@@ -75,7 +87,13 @@ class Logs:
                     k = (ts, e["key"])
                     if k in have_metrics:
                         continue
-                    self.db.insert_metric(ts, date_str, e["key"], str(e.get("value", "")), e.get("unit", ""))
+                    self.db.insert_metric(
+                        ts,
+                        date_str,
+                        e["key"],
+                        str(e.get("value", "")),
+                        e.get("unit", ""),
+                    )
                     have_metrics.add(k)
                     inserted += 1
                 elif tag != "metric":
@@ -131,6 +149,7 @@ class Logs:
 
     def load_metrics(self, days: int = 14) -> dict[str, list]:
         from collections import defaultdict
+
         result: dict = defaultdict(list)
         start = date.today() - timedelta(days=days)
 
@@ -157,8 +176,17 @@ class Logs:
     # --- Stats ---
 
     _ANCHOR_KEYWORDS = {
-        "meds", "shacharit", "davening", "chavrusa", "daf yomi", "daf",
-        "yoma", "yerushalmi", "walk", "anki", "strength",
+        "meds",
+        "shacharit",
+        "davening",
+        "chavrusa",
+        "daf yomi",
+        "daf",
+        "yoma",
+        "yerushalmi",
+        "walk",
+        "anki",
+        "strength",
     }
 
     def compute_stats(self, days: int = 7) -> dict[str, dict]:
@@ -166,13 +194,13 @@ class Logs:
         for i in range(days - 1, -1, -1):
             d = date.today() - timedelta(days=i)
             s: dict = {
-                "completion": None,   # (done, total)
-                "anchors": None,      # (done, total)
+                "completion": None,  # (done, total)
+                "anchors": None,  # (done, total)
                 "wins": 0,
-                "habits": [],         # habit names logged this day
+                "habits": [],  # habit names logged this day
                 "reminders": 0,
                 "checkins": 0,
-                "responded": 0,       # reminders responded to within 15 min
+                "responded": 0,  # reminders responded to within 15 min
             }
 
             # Agenda completion
@@ -184,10 +212,19 @@ class Logs:
                     if resolved:
                         done = sum(1 for i in resolved if i["status"] == "done")
                         s["completion"] = (done, len(resolved))
-                    anchors = [i for i in items if any(kw in i["text"].lower() for kw in self._ANCHOR_KEYWORDS)]
-                    resolved_anchors = [i for i in anchors if i["status"] in ("done", "missed")]
+                    anchors = [
+                        i
+                        for i in items
+                        if any(kw in i["text"].lower() for kw in self._ANCHOR_KEYWORDS)
+                    ]
+                    resolved_anchors = [
+                        i for i in anchors if i["status"] in ("done", "missed")
+                    ]
                     if resolved_anchors:
-                        s["anchors"] = (sum(1 for i in resolved_anchors if i["status"] == "done"), len(resolved_anchors))
+                        s["anchors"] = (
+                            sum(1 for i in resolved_anchors if i["status"] == "done"),
+                            len(resolved_anchors),
+                        )
                 except Exception:
                     pass
 
@@ -205,16 +242,32 @@ class Logs:
                         except Exception:
                             pass
             s["wins"] = sum(1 for e in entries if e.get("tag") == "win")
-            s["habits"] = [e["content"].strip().lower() for e in entries if e.get("tag") == "habit"]
-            s["skips"] = [e["content"].strip() for e in entries if e.get("tag") == "skip"]
-            reminder_times = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "reminder"]
-            checkin_times  = [datetime.fromisoformat(e["ts"]) for e in entries if e.get("tag") == "checkin"]
+            s["habits"] = [
+                e["content"].strip().lower() for e in entries if e.get("tag") == "habit"
+            ]
+            s["skips"] = [
+                e["content"].strip() for e in entries if e.get("tag") == "skip"
+            ]
+            reminder_times = [
+                datetime.fromisoformat(e["ts"])
+                for e in entries
+                if e.get("tag") == "reminder"
+            ]
+            checkin_times = [
+                datetime.fromisoformat(e["ts"])
+                for e in entries
+                if e.get("tag") == "checkin"
+            ]
             s["reminders"] = len(reminder_times)
-            s["checkins"]  = len(checkin_times)
+            s["checkins"] = len(checkin_times)
             if reminder_times:
                 s["responded"] = sum(
-                    1 for rt in reminder_times
-                    if any(timedelta(0) <= ct - rt <= timedelta(minutes=15) for ct in checkin_times)
+                    1
+                    for rt in reminder_times
+                    if any(
+                        timedelta(0) <= ct - rt <= timedelta(minutes=15)
+                        for ct in checkin_times
+                    )
                 )
 
             stats[str(d)] = s
@@ -231,15 +284,25 @@ class Logs:
         lines.append("|------|------------|---------|------|")
 
         for date_str, s in stats.items():
-            comp = f"{s['completion'][0]}/{s['completion'][1]} ({100*s['completion'][0]//s['completion'][1]}%)" if s["completion"] else "—"
-            anch = f"{s['anchors'][0]}/{s['anchors'][1]} ({100*s['anchors'][0]//s['anchors'][1]}%)" if s["anchors"] else "—"
+            comp = (
+                f"{s['completion'][0]}/{s['completion'][1]} ({100 * s['completion'][0] // s['completion'][1]}%)"
+                if s["completion"]
+                else "—"
+            )
+            anch = (
+                f"{s['anchors'][0]}/{s['anchors'][1]} ({100 * s['anchors'][0] // s['anchors'][1]}%)"
+                if s["anchors"]
+                else "—"
+            )
             wins = str(s["wins"]) if s["wins"] else "—"
-            skip_note = f" ⚠️ skip: {'; '.join(s.get('skips', []))}" if s.get("skips") else ""
+            skip_note = (
+                f" ⚠️ skip: {'; '.join(s.get('skips', []))}" if s.get("skips") else ""
+            )
             lines.append(f"| {date_str} | {comp} | {anch} | {wins} |{skip_note}")
 
         # Rolling averages over days with completion data
         comp_days = [s["completion"] for s in stats.values() if s["completion"]]
-        anch_days = [s["anchors"]    for s in stats.values() if s["anchors"]]
+        anch_days = [s["anchors"] for s in stats.values() if s["anchors"]]
         total_wins = sum(s["wins"] for s in stats.values())
         summary = []
         if comp_days:
@@ -251,28 +314,38 @@ class Logs:
         if total_wins:
             summary.append(f"{total_wins} wins logged")
         if summary:
-            lines.append("\n**Rolling (" + str(days) + " days):** " + ", ".join(summary))
+            lines.append(
+                "\n**Rolling (" + str(days) + " days):** " + ", ".join(summary)
+            )
 
         # Habit frequency table
         from collections import Counter
+
         habit_counts: Counter = Counter()
         days_with_habit_logging = sum(1 for s in stats.values() if s["habits"])
         for s in stats.values():
             habit_counts.update(set(s["habits"]))  # count days, not occurrences
         if habit_counts:
             earliest_habit = self.earliest_habit_date()
-            habit_days = (date.today() - earliest_habit).days + 1 if earliest_habit else days
+            habit_days = (
+                (date.today() - earliest_habit).days + 1 if earliest_habit else days
+            )
             habit_window = min(days, habit_days)
             # Shabbat (Saturday) is explicitly excluded from habit tracking
             shabbat_in_window = sum(
-                1 for i in range(habit_window)
+                1
+                for i in range(habit_window)
                 if (date.today() - timedelta(days=i)).weekday() == 5
             )
             trackable_days = habit_window - shabbat_in_window
             lines.append("\n## Habit log\n")
             lines.append(
                 f"_(logged via `habit:` prefix; {days_with_habit_logging}/{trackable_days} non-Shabbat days had any habit entries"
-                + (f" — habit tracking started {earliest_habit})" if earliest_habit and habit_days < days else ")")
+                + (
+                    f" — habit tracking started {earliest_habit})"
+                    if earliest_habit and habit_days < days
+                    else ")"
+                )
                 + "_\n"
             )
             lines.append("| Habit | Days logged |")
@@ -311,7 +384,7 @@ class Logs:
 
     def _steps_summary(self) -> str:
         today = date.today()
-        start_7  = today - timedelta(days=6)
+        start_7 = today - timedelta(days=6)
         start_30 = today - timedelta(days=29)
 
         def _active_avg(rows) -> float | None:
@@ -325,10 +398,10 @@ class Logs:
                     pass
             return round(sum(vals) / len(vals)) if vals else None
 
-        rows_7  = self.db.metrics_max_per_day(start_7,  today, "steps")
+        rows_7 = self.db.metrics_max_per_day(start_7, today, "steps")
         rows_30 = self.db.metrics_max_per_day(start_30, today, "steps")
 
-        avg_7  = _active_avg(rows_7)
+        avg_7 = _active_avg(rows_7)
         avg_30 = _active_avg(rows_30)
 
         if avg_7 is None:
@@ -361,7 +434,7 @@ class Logs:
 
     def _weight_summary(self) -> str:
         today = date.today()
-        start_7  = today - timedelta(days=6)
+        start_7 = today - timedelta(days=6)
         start_30 = today - timedelta(days=29)
 
         def _latest_per_day(rows) -> list[tuple[str, float]]:
@@ -373,17 +446,25 @@ class Logs:
                     pass
             return result
 
-        rows_7  = self.db.metrics_max_per_day(start_7,  today, "weight")
+        rows_7 = self.db.metrics_max_per_day(start_7, today, "weight")
         rows_30 = self.db.metrics_max_per_day(start_30, today, "weight")
 
-        entries_7  = _latest_per_day(rows_7)
+        entries_7 = _latest_per_day(rows_7)
         entries_30 = _latest_per_day(rows_30)
 
         if not entries_7:
             return ""
 
-        avg_7  = round(sum(v for _, v in entries_7)  / len(entries_7),  1) if entries_7  else None
-        avg_30 = round(sum(v for _, v in entries_30) / len(entries_30), 1) if entries_30 else None
+        avg_7 = (
+            round(sum(v for _, v in entries_7) / len(entries_7), 1)
+            if entries_7
+            else None
+        )
+        avg_30 = (
+            round(sum(v for _, v in entries_30) / len(entries_30), 1)
+            if entries_30
+            else None
+        )
 
         recent_vals = " → ".join(f"{v}" for _, v in entries_7[-5:])
 
@@ -412,12 +493,34 @@ class Logs:
         """Return 'hard', 'okay', or 'good' based on mood/energy logged for the day."""
         # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
         # Legacy label/emoji fallbacks for old data.
-        mood_scores   = {"5": 5, "4": 4, "3": 3, "2": 2, "1": 1,
-                         "great": 5, "good": 4, "okay": 3, "low": 2, "bad": 1,
-                         "😄": 5, "😊": 4, "😐": 3, "😕": 2, "😞": 1}
-        energy_scores = {"3": 3, "2": 2, "1": 1,
-                         "high": 3, "okay": 2, "drained": 1,
-                         "⚡": 3, "🔋": 2, "🪫": 1}
+        mood_scores = {
+            "5": 5,
+            "4": 4,
+            "3": 3,
+            "2": 2,
+            "1": 1,
+            "great": 5,
+            "good": 4,
+            "okay": 3,
+            "low": 2,
+            "bad": 1,
+            "😄": 5,
+            "😊": 4,
+            "😐": 3,
+            "😕": 2,
+            "😞": 1,
+        }
+        energy_scores = {
+            "3": 3,
+            "2": 2,
+            "1": 1,
+            "high": 3,
+            "okay": 2,
+            "drained": 1,
+            "⚡": 3,
+            "🔋": 2,
+            "🪫": 1,
+        }
 
         moods, energies = [], []
         rows = self.db.metrics_for_range(d, d)
@@ -450,10 +553,10 @@ class Logs:
             return "okay"
 
         # Mood: 1-5, Energy: 1-3. Hard = drained energy or low/bad mood pulling avg down.
-        has_drained  = any(e == 1 for e in energies)
+        has_drained = any(e == 1 for e in energies)
         has_bad_mood = any(m <= 2 for m in moods)
-        mood_avg     = sum(moods) / len(moods) if moods else 3
-        energy_avg   = sum(energies) / len(energies) if energies else 2
+        mood_avg = sum(moods) / len(moods) if moods else 3
+        energy_avg = sum(energies) / len(energies) if energies else 2
 
         if has_drained or (has_bad_mood and mood_avg < 2.5):
             return "hard"
@@ -500,7 +603,11 @@ class Logs:
                 tag, content = m.group(2), ""
             elif tag is not None:
                 stripped = line.strip()
-                if stripped and not stripped.startswith("- [ ]") and stripped != "## Agenda":
+                if (
+                    stripped
+                    and not stripped.startswith("- [ ]")
+                    and stripped != "## Agenda"
+                ):
                     content = (content + " " + stripped).strip()
         if tag and content:
             lines.append(f"[?] {tag}: {content}")

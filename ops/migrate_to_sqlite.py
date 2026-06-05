@@ -86,4 +86,6 @@ for path in sorted(Path(LOG_DIR).glob("*.jsonl")):
 
 conn.commit()
 
-print(f"Done. {entries_imported} entries, {metrics_imported} metrics imported. {skipped} duplicates skipped.")
+print(
+    f"Done. {entries_imported} entries, {metrics_imported} metrics imported. {skipped} duplicates skipped."
+)

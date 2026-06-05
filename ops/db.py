@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS reminders (
 """
 
 
-
 class Database:
     def __init__(self, db_path: str):
         self.path = db_path
@@ -118,12 +117,18 @@ class Database:
 
     def entries_by_tag(self, tag: str) -> list[sqlite3.Row]:
         """All entries with a given tag, chronological — for reviewing evolution over time."""
-        return self._conn().execute(
-            "SELECT * FROM entries WHERE tag = ? ORDER BY ts",
-            (tag,),
-        ).fetchall()
+        return (
+            self._conn()
+            .execute(
+                "SELECT * FROM entries WHERE tag = ? ORDER BY ts",
+                (tag,),
+            )
+            .fetchall()
+        )
 
-    def insert_metric(self, ts: str, date_str: str, key: str, value: str, unit: str = ""):
+    def insert_metric(
+        self, ts: str, date_str: str, key: str, value: str, unit: str = ""
+    ):
         self._conn().execute(
             "INSERT INTO metrics (ts, date, key, value, unit) VALUES (?, ?, ?, ?, ?)",
             (ts, date_str, key, value, unit),
@@ -131,47 +136,71 @@ class Database:
         self._conn().commit()
 
     def entries_for_date(self, d: date) -> list[sqlite3.Row]:
-        return self._conn().execute(
-            "SELECT * FROM entries WHERE date = ? ORDER BY ts",
-            (d.isoformat(),),
-        ).fetchall()
+        return (
+            self._conn()
+            .execute(
+                "SELECT * FROM entries WHERE date = ? ORDER BY ts",
+                (d.isoformat(),),
+            )
+            .fetchall()
+        )
 
     def entries_for_range(self, start: date, end: date) -> list[sqlite3.Row]:
-        return self._conn().execute(
-            "SELECT * FROM entries WHERE date >= ? AND date <= ? ORDER BY date, ts",
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
+        return (
+            self._conn()
+            .execute(
+                "SELECT * FROM entries WHERE date >= ? AND date <= ? ORDER BY date, ts",
+                (start.isoformat(), end.isoformat()),
+            )
+            .fetchall()
+        )
 
     def metrics_for_range(self, start: date, end: date) -> list[sqlite3.Row]:
-        return self._conn().execute(
-            "SELECT * FROM metrics WHERE date >= ? AND date <= ? ORDER BY date, ts",
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
+        return (
+            self._conn()
+            .execute(
+                "SELECT * FROM metrics WHERE date >= ? AND date <= ? ORDER BY date, ts",
+                (start.isoformat(), end.isoformat()),
+            )
+            .fetchall()
+        )
 
-    def metrics_max_per_day(self, start: date, end: date, key: str) -> list[sqlite3.Row]:
+    def metrics_max_per_day(
+        self, start: date, end: date, key: str
+    ) -> list[sqlite3.Row]:
         """Return the highest numeric value per day for a given metric key.
 
         Used for step counts where multiple readings per day exist and the
         highest value is the most complete (end-of-day total wins).
         """
-        return self._conn().execute(
-            """
+        return (
+            self._conn()
+            .execute(
+                """
             SELECT date, key, CAST(MAX(CAST(value AS REAL)) AS INTEGER) as value, unit
             FROM metrics
             WHERE date >= ? AND date <= ? AND key = ?
             GROUP BY date
             ORDER BY date
             """,
-            (start.isoformat(), end.isoformat(), key),
-        ).fetchall()
+                (start.isoformat(), end.isoformat(), key),
+            )
+            .fetchall()
+        )
 
     def existing_metric_keys(self) -> set[tuple[str, str]]:
         """Set of (ts, key) already in metrics — used to dedup JSONL recovery."""
-        return {(r["ts"], r["key"]) for r in self._conn().execute("SELECT ts, key FROM metrics")}
+        return {
+            (r["ts"], r["key"])
+            for r in self._conn().execute("SELECT ts, key FROM metrics")
+        }
 
     def existing_entry_keys(self) -> set[tuple[str, str]]:
         """Set of (ts, tag) already in entries — used to dedup JSONL recovery."""
-        return {(r["ts"], r["tag"]) for r in self._conn().execute("SELECT ts, tag FROM entries")}
+        return {
+            (r["ts"], r["tag"])
+            for r in self._conn().execute("SELECT ts, tag FROM entries")
+        }
 
     # --- Reminders ---
 
@@ -184,16 +213,16 @@ class Database:
                (id, text, type, date, time, day, interval_minutes, window_start, window_end, auto_log)
                VALUES (:id, :text, :type, :date, :time, :day, :interval_minutes, :window_start, :window_end, :auto_log)""",
             {
-                "id":               r["id"],
-                "text":             r["text"],
-                "type":             r["type"],
-                "date":             r.get("date", ""),
-                "time":             r.get("time", ""),
-                "day":              r.get("day"),
+                "id": r["id"],
+                "text": r["text"],
+                "type": r["type"],
+                "date": r.get("date", ""),
+                "time": r.get("time", ""),
+                "day": r.get("day"),
                 "interval_minutes": r.get("interval_minutes"),
-                "window_start":     r.get("window_start", "08:00"),
-                "window_end":       r.get("window_end", "22:00"),
-                "auto_log":         int(r.get("auto_log", False)),
+                "window_start": r.get("window_start", "08:00"),
+                "window_end": r.get("window_end", "22:00"),
+                "auto_log": int(r.get("auto_log", False)),
             },
         )
         self._conn().commit()
@@ -213,16 +242,16 @@ class Database:
                    (id, text, type, date, time, day, interval_minutes, window_start, window_end, auto_log)
                    VALUES (:id, :text, :type, :date, :time, :day, :interval_minutes, :window_start, :window_end, :auto_log)""",
                 {
-                    "id":               r["id"],
-                    "text":             r["text"],
-                    "type":             r["type"],
-                    "date":             r.get("date", ""),
-                    "time":             r.get("time", ""),
-                    "day":              r.get("day"),
+                    "id": r["id"],
+                    "text": r["text"],
+                    "type": r["type"],
+                    "date": r.get("date", ""),
+                    "time": r.get("time", ""),
+                    "day": r.get("day"),
                     "interval_minutes": r.get("interval_minutes"),
-                    "window_start":     r.get("window_start", "08:00"),
-                    "window_end":       r.get("window_end", "22:00"),
-                    "auto_log":         int(r.get("auto_log", False)),
+                    "window_start": r.get("window_start", "08:00"),
+                    "window_end": r.get("window_end", "22:00"),
+                    "auto_log": int(r.get("auto_log", False)),
                 },
             )
         conn.commit()
@@ -232,7 +261,9 @@ class Database:
         return date.fromisoformat(row["d"]) if row and row["d"] else None
 
     def earliest_entry_date_with_tag(self, tag: str) -> date | None:
-        row = self._conn().execute(
-            "SELECT MIN(date) as d FROM entries WHERE tag = ?", (tag,)
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute("SELECT MIN(date) as d FROM entries WHERE tag = ?", (tag,))
+            .fetchone()
+        )
         return date.fromisoformat(row["d"]) if row and row["d"] else None

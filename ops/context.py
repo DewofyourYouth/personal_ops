@@ -2,8 +2,22 @@ import os
 import re
 from pathlib import Path
 
-CONTEXT_DIR = Path(os.environ["OPS_CONTEXT_DIR"]) if "OPS_CONTEXT_DIR" in os.environ else Path(__file__).parent / "context"
-CONTEXT_FILES = ["goals.md", "priorities.md", "constraints.md", "habits.md", "projects.md", "principles.md", "bot-personality.md", "review-rules.md", "agenda-rules.md"]
+CONTEXT_DIR = (
+    Path(os.environ["OPS_CONTEXT_DIR"])
+    if "OPS_CONTEXT_DIR" in os.environ
+    else Path(__file__).parent / "context"
+)
+CONTEXT_FILES = [
+    "goals.md",
+    "priorities.md",
+    "constraints.md",
+    "habits.md",
+    "projects.md",
+    "principles.md",
+    "bot-personality.md",
+    "review-rules.md",
+    "agenda-rules.md",
+]
 
 
 class Context:
@@ -52,9 +66,12 @@ class Context:
                 raw = re.sub(r"^\s*- ", "", line).strip()
                 tag_m = re.search(r"\[([^\]]+)\]$", raw)
                 if tag_m:
-                    days = [self._DAY_NAMES[d.strip()] for d in tag_m.group(1).split(",")
-                            if d.strip() in self._DAY_NAMES]
-                    text_clean = raw[:tag_m.start()].strip().rstrip("—").strip()
+                    days = [
+                        self._DAY_NAMES[d.strip()]
+                        for d in tag_m.group(1).split(",")
+                        if d.strip() in self._DAY_NAMES
+                    ]
+                    text_clean = raw[: tag_m.start()].strip().rstrip("—").strip()
                 else:
                     days = None
                     text_clean = raw

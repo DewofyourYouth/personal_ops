@@ -25,7 +25,14 @@ class Agenda:
         new_items = []
         for text in texts:
             if text.strip().lower() not in existing:
-                new_items.append({"id": start + len(new_items), "text": text, "status": "open", "source": source})
+                new_items.append(
+                    {
+                        "id": start + len(new_items),
+                        "text": text,
+                        "status": "open",
+                        "source": source,
+                    }
+                )
                 existing.add(text.strip().lower())
         data["items"].extend(new_items)
         self.save(data)
@@ -41,8 +48,11 @@ class Agenda:
         data = self.load()
         rejected_keys = {t.strip().lower() for t in rejected}
         data["items"] = [
-            it for it in data["items"]
-            if not (it["status"] == "open" and it["text"].strip().lower() in rejected_keys)
+            it
+            for it in data["items"]
+            if not (
+                it["status"] == "open" and it["text"].strip().lower() in rejected_keys
+            )
         ]
         existing = {it["text"].strip().lower() for it in data["items"]}
         next_id = max((it["id"] for it in data["items"]), default=-1) + 1
@@ -50,7 +60,9 @@ class Agenda:
         for text in accepted:
             key = text.strip().lower()
             if key not in existing:
-                new_items.append({"id": next_id, "text": text, "status": "open", "source": source})
+                new_items.append(
+                    {"id": next_id, "text": text, "status": "open", "source": source}
+                )
                 existing.add(key)
                 next_id += 1
         data["items"].extend(new_items)
@@ -88,7 +100,9 @@ class Agenda:
         open_ = [i["text"] for i in items if i["status"] == "open"]
         parts = []
         if done:
-            parts.append("Already completed/missed:\n" + "\n".join(f"- {t}" for t in done))
+            parts.append(
+                "Already completed/missed:\n" + "\n".join(f"- {t}" for t in done)
+            )
         if open_:
             parts.append("Still open:\n" + "\n".join(f"- {t}" for t in open_))
         return "\n\n".join(parts)

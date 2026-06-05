@@ -8,6 +8,7 @@ touching the entry point.
 `bot.py` calls `build_plugins(...)`, then loops the result to register each and
 collect any scheduled jobs.
 """
+
 from types import SimpleNamespace
 
 from food_handlers import FoodHandlers

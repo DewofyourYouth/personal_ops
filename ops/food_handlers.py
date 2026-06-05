@@ -6,6 +6,7 @@ Feature class: built with the bot + logs, `/food` is a method, self-registers vi
 Food is logged with the `food:` / `ate:` prefixes (the dispatcher enriches the
 entry with parsed macros at write time); this plugin owns the read side.
 """
+
 import html
 from datetime import date, timedelta
 
@@ -44,7 +45,8 @@ class FoodHandlers:
         entries = [e for e in self.logs.read_today() if e.get("tag") == "food"]
         if not entries:
             await update.message.reply_text(
-                "Nothing logged yet today. Use <code>food: what you ate</code>.", parse_mode="HTML"
+                "Nothing logged yet today. Use <code>food: what you ate</code>.",
+                parse_mode="HTML",
             )
             return
         lines = ["🍽 <b>Today's food log:</b>\n"]

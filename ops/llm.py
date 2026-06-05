@@ -10,6 +10,7 @@ habit_handlers). What's left:
 Kept here only so the entrypoint (bot.py) doesn't import the SDKs directly until
 those two domains are carved out.
 """
+
 from datetime import date
 
 import anthropic
@@ -19,7 +20,9 @@ import openai
 def transcribe(audio_path: str) -> str:
     """Transcribe a voice note via Whisper. Returns the stripped transcript."""
     with open(audio_path, "rb") as audio:
-        transcript = openai.OpenAI().audio.transcriptions.create(model="whisper-1", file=audio)
+        transcript = openai.OpenAI().audio.transcriptions.create(
+            model="whisper-1", file=audio
+        )
     return transcript.text.strip()
 
 
@@ -29,20 +32,30 @@ async def parse_queue_entry(text: str) -> dict | None:
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=128,
-        tools=[{
-            "name": "queue_agenda_item",
-            "description": "Extract the target day and agenda item text from a queue/defer request",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "day":  {"type": "string", "description": "Day name or date, e.g. 'Sunday', 'Monday', 'tomorrow'"},
-                    "item": {"type": "string", "description": "The agenda item text to queue"},
+        tools=[
+            {
+                "name": "queue_agenda_item",
+                "description": "Extract the target day and agenda item text from a queue/defer request",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "day": {
+                            "type": "string",
+                            "description": "Day name or date, e.g. 'Sunday', 'Monday', 'tomorrow'",
+                        },
+                        "item": {
+                            "type": "string",
+                            "description": "The agenda item text to queue",
+                        },
+                    },
+                    "required": ["day", "item"],
                 },
-                "required": ["day", "item"],
-            },
-        }],
+            }
+        ],
         tool_choice={"type": "tool", "name": "queue_agenda_item"},
-        messages=[{"role": "user", "content": f"Today is {date.today()}. Parse this: {text}"}],
+        messages=[
+            {"role": "user", "content": f"Today is {date.today()}. Parse this: {text}"}
+        ],
     )
     for block in response.content:
         if block.type == "tool_use":

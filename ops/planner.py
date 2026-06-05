@@ -34,7 +34,9 @@ class Planner:
         self.context = context or Context()
         self.baseline = Baseline(logs.log_dir)
 
-    async def propose(self, calendar_events: str = "", existing_summary: str = "") -> list[str]:
+    async def propose(
+        self, calendar_events: str = "", existing_summary: str = ""
+    ) -> list[str]:
         client = anthropic.AsyncAnthropic(max_retries=4)
         history = self._completion_history()
 
@@ -198,7 +200,9 @@ class Planner:
 
         agenda_text = self.logs.read_agenda_as_text(d)
         if agenda_text:
-            user_content += f"\nAgenda for {d} (what was planned and its status):\n{agenda_text}\n"
+            user_content += (
+                f"\nAgenda for {d} (what was planned and its status):\n{agenda_text}\n"
+            )
         user_content += f"\nLog for {d}:\n{self.logs.read_day_as_text(d)}\n\n"
         if stats_text:
             user_content += f"{stats_text}\n\n"
@@ -261,7 +265,7 @@ class Planner:
                         "genuine to say — an empty Improve section is fine and often correct, especially on a hard or "
                         "unfinished day.\n\n"
                         "## Format\n\n"
-                        "💬 \"[short relevant quote]\" — [Author, specific source]\n"
+                        '💬 "[short relevant quote]" — [Author, specific source]\n'
                         "(Stoic — Marcus Aurelius/Epictetus/Seneca — or Talmud with tractate+daf or named sage. "
                         "Must connect to the actual day. Must NOT be the user's own logged words.)\n\n"
                         "✅ Wins\n"
@@ -308,9 +312,7 @@ class Planner:
 
         user_content = text
         if data_block:
-            user_content = (
-                f"{text}\n\n---\nYour actual logged data (use it — don't claim you can't see it):\n\n{data_block}"
-            )
+            user_content = f"{text}\n\n---\nYour actual logged data (use it — don't claim you can't see it):\n\n{data_block}"
 
         response = await client.messages.create(
             model=self.model,
@@ -343,23 +345,36 @@ class Planner:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=256,
-            tools=[{
-                "name": "create_calendar_event",
-                "description": "Parse a natural language event description into structured fields",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "summary":          {"type": "string"},
-                        "date":             {"type": "string", "description": "YYYY-MM-DD"},
-                        "start_time":       {"type": "string", "description": "HH:MM (24h)"},
-                        "duration_minutes": {"type": "integer", "description": "Default 60"},
-                        "description":      {"type": "string"},
+            tools=[
+                {
+                    "name": "create_calendar_event",
+                    "description": "Parse a natural language event description into structured fields",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD"},
+                            "start_time": {
+                                "type": "string",
+                                "description": "HH:MM (24h)",
+                            },
+                            "duration_minutes": {
+                                "type": "integer",
+                                "description": "Default 60",
+                            },
+                            "description": {"type": "string"},
+                        },
+                        "required": ["summary", "date", "start_time"],
                     },
-                    "required": ["summary", "date", "start_time"],
-                },
-            }],
+                }
+            ],
             tool_choice={"type": "tool", "name": "create_calendar_event"},
-            messages=[{"role": "user", "content": f"Today is {date.today()} ({day_type()}). Parse this event: {text}"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Today is {date.today()} ({day_type()}). Parse this event: {text}",
+                }
+            ],
         )
         for block in response.content:
             if block.type == "tool_use":
@@ -371,35 +386,75 @@ class Planner:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=256,
-            tools=[{
-                "name": "create_reminder",
-                "description": "Parse a natural language reminder into structured fields",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "text":             {"type": "string", "description": "The reminder message. If the user mentions an event/appointment time, KEEP that time in the message (e.g. 'Meeting with Rabbi Haber at 19:55') so they see it when reminded."},
-                        "type":             {"type": "string", "enum": ["once", "daily", "weekly", "interval"],
-                                             "description": "'once' for a one-time reminder (default), 'daily' if user says 'every day', 'weekly' if user says 'every [weekday]', 'interval' for repeating every N minutes"},
-                        "day_of_week":      {"type": "string", "enum": ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"],
-                                             "description": "Required for 'weekly' type — the day to fire on"},
-                        "date":             {"type": "string", "description": "YYYY-MM-DD — required for 'once'. Resolve relative dates ('tomorrow', 'in a week', 'June 23rd') against today."},
-                        "time":             {"type": "string", "description": (
-                                             "HH:MM in 24-hour format — the time the REMINDER SHOULD FIRE (not necessarily the event time). "
-                                             "Convert 12h to 24h: 7:55 p.m. = 19:55, 8:00 a.m. = 08:00, 12:00 p.m. = 12:00, 12:00 a.m. = 00:00.\n"
-                                             "Lead-time handling: if the user wants to be reminded BEFORE an event, compute the fire time. "
-                                             "Examples: 'remind me 2 hours before my 7:55pm meeting' -> fire time 17:55. "
-                                             "'remind me at 6 about the 7:55 meeting' -> fire time 18:00. "
-                                             "'remind me 30 min before my 9am call' -> fire time 08:30. "
-                                             "If no lead time or separate reminder time is given, fire time = event time.")},
-                        "interval_minutes": {"type": "integer", "description": "Minutes between reminders — required for 'interval'"},
-                        "window_start":     {"type": "string", "description": "HH:MM — only set if user specifies a start time. System default: 08:00."},
-                        "window_end":       {"type": "string", "description": "HH:MM — only set if user specifies an end time. System default: 22:00."},
+            tools=[
+                {
+                    "name": "create_reminder",
+                    "description": "Parse a natural language reminder into structured fields",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "The reminder message. If the user mentions an event/appointment time, KEEP that time in the message (e.g. 'Meeting with Rabbi Haber at 19:55') so they see it when reminded.",
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["once", "daily", "weekly", "interval"],
+                                "description": "'once' for a one-time reminder (default), 'daily' if user says 'every day', 'weekly' if user says 'every [weekday]', 'interval' for repeating every N minutes",
+                            },
+                            "day_of_week": {
+                                "type": "string",
+                                "enum": [
+                                    "monday",
+                                    "tuesday",
+                                    "wednesday",
+                                    "thursday",
+                                    "friday",
+                                    "saturday",
+                                    "sunday",
+                                ],
+                                "description": "Required for 'weekly' type — the day to fire on",
+                            },
+                            "date": {
+                                "type": "string",
+                                "description": "YYYY-MM-DD — required for 'once'. Resolve relative dates ('tomorrow', 'in a week', 'June 23rd') against today.",
+                            },
+                            "time": {
+                                "type": "string",
+                                "description": (
+                                    "HH:MM in 24-hour format — the time the REMINDER SHOULD FIRE (not necessarily the event time). "
+                                    "Convert 12h to 24h: 7:55 p.m. = 19:55, 8:00 a.m. = 08:00, 12:00 p.m. = 12:00, 12:00 a.m. = 00:00.\n"
+                                    "Lead-time handling: if the user wants to be reminded BEFORE an event, compute the fire time. "
+                                    "Examples: 'remind me 2 hours before my 7:55pm meeting' -> fire time 17:55. "
+                                    "'remind me at 6 about the 7:55 meeting' -> fire time 18:00. "
+                                    "'remind me 30 min before my 9am call' -> fire time 08:30. "
+                                    "If no lead time or separate reminder time is given, fire time = event time."
+                                ),
+                            },
+                            "interval_minutes": {
+                                "type": "integer",
+                                "description": "Minutes between reminders — required for 'interval'",
+                            },
+                            "window_start": {
+                                "type": "string",
+                                "description": "HH:MM — only set if user specifies a start time. System default: 08:00.",
+                            },
+                            "window_end": {
+                                "type": "string",
+                                "description": "HH:MM — only set if user specifies an end time. System default: 22:00.",
+                            },
+                        },
+                        "required": ["text", "type"],
                     },
-                    "required": ["text", "type"],
-                },
-            }],
+                }
+            ],
             tool_choice={"type": "tool", "name": "create_reminder"},
-            messages=[{"role": "user", "content": f"Today is {date.today().isoformat()}. Parse this reminder: {text}"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Today is {date.today().isoformat()}. Parse this reminder: {text}",
+                }
+            ],
         )
         for block in response.content:
             if block.type == "tool_use":
@@ -416,26 +471,46 @@ class Planner:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=256,
-            tools=[{
-                "name": "log_food",
-                "description": (
-                    "Extract structured nutrition data from a natural language food description. "
-                    "Only call this tool if the description contains per-100g nutritional values AND a total weight. "
-                    "Do not call it for simple descriptions like 'a banana' or 'handful of nuts'."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "food_name":          {"type": "string", "description": "Name of the food"},
-                        "weight_g":           {"type": "number", "description": "Total weight consumed in grams"},
-                        "calories_per_100g":  {"type": "number", "description": "Calories per 100g"},
-                        "protein_per_100g":   {"type": "number", "description": "Protein grams per 100g"},
-                        "fat_per_100g":       {"type": "number", "description": "Fat grams per 100g — omit if not mentioned"},
-                        "carbs_per_100g":     {"type": "number", "description": "Carbs grams per 100g — omit if not mentioned"},
+            tools=[
+                {
+                    "name": "log_food",
+                    "description": (
+                        "Extract structured nutrition data from a natural language food description. "
+                        "Only call this tool if the description contains per-100g nutritional values AND a total weight. "
+                        "Do not call it for simple descriptions like 'a banana' or 'handful of nuts'."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "food_name": {
+                                "type": "string",
+                                "description": "Name of the food",
+                            },
+                            "weight_g": {
+                                "type": "number",
+                                "description": "Total weight consumed in grams",
+                            },
+                            "calories_per_100g": {
+                                "type": "number",
+                                "description": "Calories per 100g",
+                            },
+                            "protein_per_100g": {
+                                "type": "number",
+                                "description": "Protein grams per 100g",
+                            },
+                            "fat_per_100g": {
+                                "type": "number",
+                                "description": "Fat grams per 100g — omit if not mentioned",
+                            },
+                            "carbs_per_100g": {
+                                "type": "number",
+                                "description": "Carbs grams per 100g — omit if not mentioned",
+                            },
+                        },
+                        "required": ["food_name", "weight_g"],
                     },
-                    "required": ["food_name", "weight_g"],
-                },
-            }],
+                }
+            ],
             tool_choice={"type": "auto"},
             messages=[{"role": "user", "content": text}],
         )
@@ -494,53 +569,70 @@ class Planner:
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
-            tools=[{
-                "name": "setup_hypothesis_tracking",
-                "description": "Structure the hypothesis evaluation with narrative and tracking actions",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "narrative": {
-                            "type": "string",
-                            "description": "The response to show the user — restatement, confirm/falsify conditions, brief tracking rationale"
-                        },
-                        "metrics": {
-                            "type": "array",
-                            "description": "Metric keys to track. 1-2 max.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "key": {"type": "string", "description": "Short snake_case key, e.g. shami_cards"},
-                                    "description": {"type": "string", "description": "What to log and when"}
+            tools=[
+                {
+                    "name": "setup_hypothesis_tracking",
+                    "description": "Structure the hypothesis evaluation with narrative and tracking actions",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "narrative": {
+                                "type": "string",
+                                "description": "The response to show the user — restatement, confirm/falsify conditions, brief tracking rationale",
+                            },
+                            "metrics": {
+                                "type": "array",
+                                "description": "Metric keys to track. 1-2 max.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {
+                                            "type": "string",
+                                            "description": "Short snake_case key, e.g. shami_cards",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What to log and when",
+                                        },
+                                    },
+                                    "required": ["key", "description"],
                                 },
-                                "required": ["key", "description"]
-                            }
+                            },
+                            "habits": {
+                                "type": "array",
+                                "description": "Existing or new habit names to watch as signals",
+                                "items": {"type": "string"},
+                            },
+                            "follow_up_days": {
+                                "type": "integer",
+                                "description": "Days until a follow-up check-in reminder (typically 14-21)",
+                            },
+                            "follow_up_note": {
+                                "type": "string",
+                                "description": "What to check at the follow-up — 1 sentence",
+                            },
                         },
-                        "habits": {
-                            "type": "array",
-                            "description": "Existing or new habit names to watch as signals",
-                            "items": {"type": "string"}
-                        },
-                        "follow_up_days": {
-                            "type": "integer",
-                            "description": "Days until a follow-up check-in reminder (typically 14-21)"
-                        },
-                        "follow_up_note": {
-                            "type": "string",
-                            "description": "What to check at the follow-up — 1 sentence"
-                        }
+                        "required": [
+                            "narrative",
+                            "metrics",
+                            "follow_up_days",
+                            "follow_up_note",
+                        ],
                     },
-                    "required": ["narrative", "metrics", "follow_up_days", "follow_up_note"]
                 }
-            }],
+            ],
             tool_choice={"type": "tool", "name": "setup_hypothesis_tracking"},
-            messages=[{"role": "user", "content": f"Today is {today}. Hypothesis: {text}"}],
+            messages=[
+                {"role": "user", "content": f"Today is {today}. Hypothesis: {text}"}
+            ],
         )
 
         for block in response.content:
             if block.type == "tool_use":
                 d = block.input
-                follow_up_date = (date.today() + timedelta(days=d["follow_up_days"])).isoformat()
+                follow_up_date = (
+                    date.today() + timedelta(days=d["follow_up_days"])
+                ).isoformat()
                 return {
                     "narrative": d["narrative"],
                     "metrics": d.get("metrics", []),
@@ -550,10 +642,18 @@ class Planner:
                     "follow_up_note": d["follow_up_note"],
                 }
 
-        return {"narrative": "Couldn't evaluate hypothesis.", "metrics": [], "habits": [], "follow_up_days": 14, "follow_up_date": "", "follow_up_note": ""}
+        return {
+            "narrative": "Couldn't evaluate hypothesis.",
+            "metrics": [],
+            "habits": [],
+            "follow_up_days": 14,
+            "follow_up_date": "",
+            "follow_up_note": "",
+        }
 
     def _completion_history(self, days: int = 14) -> str:
         from collections import defaultdict
+
         counts: dict = defaultdict(lambda: {"done": 0, "missed": 0, "total": 0})
         for i in range(1, days + 1):
             d = date.today() - timedelta(days=i)
@@ -571,7 +671,7 @@ class Planner:
                 pass
 
         lines = [
-            f"- \"{text}\": done {c['done']}/{c['total']}, missed {c['missed']}/{c['total']}"
+            f'- "{text}": done {c["done"]}/{c["total"]}, missed {c["missed"]}/{c["total"]}'
             for text, c in sorted(counts.items(), key=lambda x: -x[1]["total"])
             if c["total"] >= 2
         ]

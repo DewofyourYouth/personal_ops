@@ -21,7 +21,11 @@ class Backlog:
 
     def add(self, text: str) -> dict:
         items = self.load()
-        entry = {"id": str(uuid.uuid4())[:8], "text": text.strip(), "added": date.today().isoformat()}
+        entry = {
+            "id": str(uuid.uuid4())[:8],
+            "text": text.strip(),
+            "added": date.today().isoformat(),
+        }
         items.append(entry)
         self.save(items)
         return entry

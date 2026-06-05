@@ -7,24 +7,24 @@ STATUS_ICONS = {
 }
 
 PREFIXES = {
-    "insight:":    "#insight",
+    "insight:": "#insight",
     "hypothesis:": "#hypothesis",
-    "checkin":     "#checkin",
-    "task:":       "#task",
-    "note:":       "#note",
-    "did:":        "#win",
-    "habit:":      "#habit",
-    "wrong:":      "#wrong",
-    "backlog:":    "#backlog",
-    "someday:":    "#backlog",
-    "food:":       "#food",
-    "ate:":        "#food",
-    "ate ":        "#food",
-    "skip:":       "#skip",
-    "excuse:":     "#skip",
-    "excused:":    "#skip",
-    "values:":     "#values",
-    "value:":      "#values",
+    "checkin": "#checkin",
+    "task:": "#task",
+    "note:": "#note",
+    "did:": "#win",
+    "habit:": "#habit",
+    "wrong:": "#wrong",
+    "backlog:": "#backlog",
+    "someday:": "#backlog",
+    "food:": "#food",
+    "ate:": "#food",
+    "ate ": "#food",
+    "skip:": "#skip",
+    "excuse:": "#skip",
+    "excused:": "#skip",
+    "values:": "#values",
+    "value:": "#values",
 }
 
 ENCOURAGEMENTS = [
@@ -43,5 +43,54 @@ ENCOURAGEMENTS = [
 ]
 
 
+HELP_TEXT = """<b>Planning</b>
+/plan — generate today's agenda (also runs daily at 06:00)
+/agenda — open items with ✅ Done / ❌ Missed buttons
+/status — all items with their current status (done / missed / open)
 
+<b>Calendar</b>
+/events — upcoming events for today
+<code>event: &lt;description&gt;</code> — create a Google Calendar event
+  e.g. <i>new calendar event: PTA meeting April 13th at 4:20pm</i>
+  e.g. <i>add to calendar: dentist tomorrow at 10am</i>
 
+<b>Reminders</b>
+/reminders — list all reminders (tap 🗑 to delete)
+<code>remind me &lt;...&gt;</code> — set a reminder
+  e.g. <i>remind me at 3pm to start a walk</i>
+  e.g. <i>remind me every 60 minutes to drink water</i>
+  e.g. <i>remind me of my meeting on June 15th</i>
+
+<b>Agenda</b>
+/queue — view queued future agenda items
+<code>schedule for Sunday: &lt;item&gt;</code> — add item to a future day's agenda
+<code>done &lt;N or name&gt;</code> — mark item done
+<code>missed &lt;N or name&gt;</code> — mark item missed
+<code>add: &lt;text&gt;</code> — add your own agenda item
+<code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
+
+<b>Habits</b>
+/habits — today's habit checklist (from habits.md)
+/habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
+<code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
+<code>skip: &lt;reason&gt;</code> — log an external constraint that excused habits today (e.g. <i>skip: chavrusa cancelled</i>)
+
+<b>Review</b>
+/daily — end-of-day digest with quote, wins, and suggestions (also runs nightly at 22:30)
+/digest — weekly AI review of the last 7 days (also runs every Sunday at 20:00)
+/metrics — tracked metrics with trend (last 14 days)
+/logs — view today's log entries
+
+<b>Context</b>
+/context — view and edit your goals, priorities, constraints, projects, principles
+
+<b>Logging</b>
+<code>food: &lt;what you ate&gt;</code> — log a meal (/food shows today's food log)
+<code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric (e.g. <i>metric: steps 8000</i>)
+<code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
+<code>values: &lt;impression&gt;</code> — log a value/impression about the project (/values shows the evolution)
+<code>feedback: &lt;idea or question&gt;</code> — get Claude's take (also: "feedback request", "question")
+<code>note: / insight: / task: / hypothesis: / checkin</code>
+Anything else is logged as <code>#log</code>
+
+Voice notes are transcribed automatically."""
