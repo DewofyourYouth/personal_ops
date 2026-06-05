@@ -520,25 +520,31 @@ class Logs:
     def earliest_habit_date(self) -> date | None:
         return self.db.earliest_entry_date_with_tag("habit")
 
-    def mood_energy_for_range(
-        self, start: date, end: date
-    ) -> tuple[list[int], list[int]]:
-        """Collect numeric mood (1-5) and energy (1-3) readings across [start, end].
+    @staticmethod
+    def _mood_energy_score(key: str, val: str):
+        """Normalise a mood/energy value (numeric, label, or emoji) to its score, or None."""
+        if key == "mood":
+            return _MOOD_SCORES.get(val)
+        if key == "energy":
+            return _ENERGY_SCORES.get(val)
+        return None
 
-        Reads from SQLite, falling back to JSONL for pre-migration dates. Legacy
-        label/emoji values are normalised to numbers via the score maps.
+    def _mood_energy_readings(
+        self, start: date, end: date
+    ) -> list[tuple[datetime, str, int]]:
+        """Timestamped mood/energy readings across [start, end] as (ts, key, score).
+
+        Reads from SQLite, falling back to JSONL for any day with no DB metrics
+        (pre-migration data). Legacy label/emoji values are normalised to numbers.
         """
-        moods, energies = [], []
+        readings: list[tuple[datetime, str, int]] = []
         db_dates = set()
         for r in self.db.metrics_for_range(start, end):
             db_dates.add(r["date"])
-            key, val = r["key"], str(r["value"])
-            if key == "mood" and val in _MOOD_SCORES:
-                moods.append(_MOOD_SCORES[val])
-            elif key == "energy" and val in _ENERGY_SCORES:
-                energies.append(_ENERGY_SCORES[val])
+            score = self._mood_energy_score(r["key"], str(r["value"]))
+            if score is not None:
+                readings.append((datetime.fromisoformat(r["ts"]), r["key"], score))
 
-        # Fallback to JSONL for any day in the range with no DB metrics
         span = (end - start).days
         for i in range(span + 1):
             d = start + timedelta(days=i)
@@ -552,15 +558,87 @@ class Logs:
                     e = json.loads(line)
                     if e.get("tag") != "metric":
                         continue
-                    key, val = e.get("key", ""), str(e.get("value", ""))
-                    if key == "mood" and val in _MOOD_SCORES:
-                        moods.append(_MOOD_SCORES[val])
-                    elif key == "energy" and val in _ENERGY_SCORES:
-                        energies.append(_ENERGY_SCORES[val])
+                    score = self._mood_energy_score(
+                        e.get("key", ""), str(e.get("value", ""))
+                    )
+                    if score is not None:
+                        readings.append(
+                            (datetime.fromisoformat(e["ts"]), e["key"], score)
+                        )
                 except Exception:
                     pass
 
+        return readings
+
+    def mood_energy_for_range(
+        self, start: date, end: date
+    ) -> tuple[list[int], list[int]]:
+        """Collect numeric mood (1-5) and energy (1-3) readings across [start, end]."""
+        moods, energies = [], []
+        for _, key, score in self._mood_energy_readings(start, end):
+            (moods if key == "mood" else energies).append(score)
         return moods, energies
+
+    # Time-of-day buckets for diurnal mood/energy analysis. (label, start_hour, end_hour);
+    # end is exclusive. Covers the full 24h; "late" catches the 3am can't-sleep entries.
+    _TOD_BUCKETS = (
+        ("late night", 0, 5),
+        ("morning", 5, 12),
+        ("afternoon", 12, 18),
+        ("evening", 18, 24),
+    )
+
+    def mood_energy_by_time_of_day(self, days: int = 14) -> dict:
+        """Average mood/energy split by time of day over the last `days`.
+
+        Pure analysis of the existing timestamped readings — answers "am I happier in
+        the morning or the afternoon" without any new logging. Returns a dict keyed by
+        bucket label; only buckets with data are included.
+        """
+        start = date.today() - timedelta(days=days)
+        acc: dict[str, dict[str, list]] = {
+            label: {"mood": [], "energy": []} for label, _, _ in self._TOD_BUCKETS
+        }
+        for ts, key, score in self._mood_energy_readings(start, date.today()):
+            for label, lo, hi in self._TOD_BUCKETS:
+                if lo <= ts.hour < hi:
+                    acc[label][key].append(score)
+                    break
+
+        result = {}
+        for label, _, _ in self._TOD_BUCKETS:
+            moods, energies = acc[label]["mood"], acc[label]["energy"]
+            if not moods and not energies:
+                continue
+            result[label] = {
+                "mood_avg": round(sum(moods) / len(moods), 1) if moods else None,
+                "energy_avg": round(sum(energies) / len(energies), 1)
+                if energies
+                else None,
+                "n": len(moods) + len(energies),
+            }
+        return result
+
+    def format_time_of_day_for_prompt(self, days: int = 14) -> str:
+        """Render the diurnal mood/energy breakdown for an LLM prompt. Empty if no data."""
+        tod = self.mood_energy_by_time_of_day(days=days)
+        if not tod:
+            return ""
+        lines = [
+            f"Mood/energy by time of day (last {days} days; "
+            "mood 1-5, energy 1-3, n = total readings):"
+        ]
+        for label, lo, hi in self._TOD_BUCKETS:
+            if label not in tod:
+                continue
+            b = tod[label]
+            mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
+            energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
+            lines.append(
+                f"  {label.capitalize()} ({lo:02d}:00-{hi:02d}:00): "
+                f"mood {mood}, energy {energy} (n={b['n']})"
+            )
+        return "\n".join(lines)
 
     def read_day_difficulty(self, d: date) -> str:
         """Return 'hard', 'okay', or 'good' based on mood/energy logged for the day."""

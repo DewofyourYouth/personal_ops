@@ -321,6 +321,18 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         avg = f" | avg {sum(numeric) / len(numeric):.1f}" if len(numeric) > 1 else ""
         recent = ", ".join(str(v) for _, v in entries[-5:])
         lines.append(f"<b>{key}</b>: {recent}{avg}{trend}")
+
+    tod = logs.mood_energy_by_time_of_day(days=14)
+    if tod:
+        lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
+        for label in ("late night", "morning", "afternoon", "evening"):
+            if label not in tod:
+                continue
+            b = tod[label]
+            mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
+            energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
+            lines.append(f"{label}: mood {mood}, energy {energy} (n={b['n']})")
+
     text = "\n".join(lines)
     if len(text) > 4000:
         text = text[:4000] + "\n…"

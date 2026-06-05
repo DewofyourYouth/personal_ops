@@ -114,6 +114,9 @@ class Planner:
             user_content += f"{history}\n\n"
         if metrics_text:
             user_content += f"{metrics_text}\n\n"
+        tod_text = self.logs.format_time_of_day_for_prompt(days=max(days, 14))
+        if tod_text:
+            user_content += f"{tod_text}\n\n"
         baseline_text = self.baseline.format_for_prompt()
         if baseline_text:
             user_content += f"{baseline_text}\n\n"
@@ -154,6 +157,7 @@ class Planner:
                         "- Step counts on Friday and Saturday are structurally low due to Shabbat — do not use raw step averages. The metrics include a pre-computed average excluding Fri/Sat; use that figure when referencing step activity.\n"
                         "- Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused and remove those days from the denominator for affected habits — they are not misses.\n"
                         "- The historical baseline includes weekly average Mood (1-5) and Energy (1-3). Use these for longitudinal context: if mood or energy is trending down (or up) across multiple weeks/months, that is a real, citable pattern — surface it. A single low week is not a trend; a multi-week drift is. Do not diagnose causes you can't see — state the trend and connect it to logged events only when the link is explicit.\n"
+                        "- If a 'Mood/energy by time of day' breakdown is provided, use it to surface diurnal patterns the user explicitly wants to understand — e.g. whether mornings, afternoons, or evenings run reliably lower or higher. Only call a time-of-day difference real if the gap is meaningful and the n is not tiny. Where the logs show a recurring event around a low-mood window (e.g. Friday Shabbat-prep stress, a flaky chavrusa, a bad night's sleep), name the likely trigger — but only when the log makes the link explicit, never as invented psychology.\n"
                         "- If an insight ledger is provided, it holds the user's own recurring reflections (hypotheses, ideas, concerns) distilled from past logs, with a 'raised N×' recurrence count. A reflection the user keeps returning to — especially a concern or a hypothesis with a rising count — is exactly the kind of non-obvious, durable pattern the Insight line should surface. Reflect it back as their own observation; never relabel, therapize, or moralize it."
                     ),
                     "cache_control": {"type": "ephemeral"},
@@ -314,6 +318,9 @@ class Planner:
         metrics_text = self.logs.format_metrics_for_prompt(days=30)
         if metrics_text:
             data_block += f"{metrics_text}\n\n"
+        tod_text = self.logs.format_time_of_day_for_prompt(days=30)
+        if tod_text:
+            data_block += f"{tod_text}\n\n"
         stats_text = self.logs.format_stats_for_prompt(days=7)
         if stats_text:
             data_block += f"{stats_text}\n\n"
