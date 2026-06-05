@@ -40,6 +40,15 @@ class Weight:
                 continue
         return sorted(per_day.items())
 
+    def injections(self) -> list[tuple[str, str]]:
+        """Logged Wegovy injections as (date, dose) pairs, oldest first."""
+        rows = self.db.entries_for_range(WEGOVY_START_DATE, date.today())
+        return [
+            (r["date"], (r["content"] or "").strip())
+            for r in rows
+            if r["tag"] == "injection"
+        ]
+
     def latest(self, n: int = 5) -> list[dict]:
         """The n most recent weigh-in days, newest first, with deltas vs the Wegovy start."""
         days = self._per_day()
@@ -192,4 +201,76 @@ class Weight:
                 )
                 lines.append(f"<code>{r['week']}</code>  {r['avg']} kg  ({vs_prev})")
 
+        injections = self.injections()
+        if injections:
+            last_date, last_dose = injections[-1]
+            lines.append(
+                f"\n<b>Injections:</b> {len(injections)} logged · "
+                f"latest {last_dose} on {last_date}"
+            )
+
         return "\n".join(lines)
+
+    def chart_png(self) -> bytes | None:
+        """Render the Wegovy-era weight chart as PNG bytes (None if no data/plot fails).
+
+        Daily readings as faint dots, a 7-day rolling average as the trend line, the
+        start-week baseline as a reference, and injection dates marked — so a change in
+        slope can be read against a dose change. matplotlib is imported lazily so the
+        rest of the module has no hard dependency on it.
+        """
+        days = self._per_day(since=WEGOVY_START_DATE)
+        if len(days) < 2:
+            return None
+        try:
+            import io
+
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.dates as mdates
+            import matplotlib.pyplot as plt
+        except Exception:
+            return None
+
+        xs = [date.fromisoformat(d) for d, _ in days]
+        ys = [kg for _, kg in days]
+
+        # 7-day trailing rolling average over the per-day series.
+        roll = []
+        for i, d in enumerate(xs):
+            window = [
+                kg for x, kg in zip(xs, ys) if timedelta(0) <= (d - x) <= timedelta(days=6)
+            ]
+            roll.append(sum(window) / len(window))
+
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.scatter(xs, ys, s=12, color="#c9c9c9", label="daily", zorder=2)
+        ax.plot(xs, roll, color="#1f77b4", linewidth=2, label="7-day avg", zorder=3)
+        ax.axhline(
+            self._window_avg(days, first=True),
+            color="#999",
+            linestyle="--",
+            linewidth=1,
+            label="start-week avg",
+        )
+
+        for inj_date, dose in self.injections():
+            try:
+                x = date.fromisoformat(inj_date)
+            except ValueError:
+                continue
+            ax.axvline(x, color="#2ca02c", alpha=0.25, linewidth=1, zorder=1)
+
+        ax.set_title("Weight — Wegovy era")
+        ax.set_ylabel("kg")
+        ax.grid(True, alpha=0.2)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        fig.autofmt_xdate()
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120)
+        plt.close(fig)
+        return buf.getvalue()

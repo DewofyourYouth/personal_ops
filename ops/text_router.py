@@ -772,6 +772,8 @@ class TextRouter:
 
         if tag == "checkin":
             await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
+        elif tag == "injection":
+            await reply(f"💉 Injection logged: {html.escape(content)}")
         elif tag == "hypothesis":
             await reply("Logged #hypothesis ✓ — thinking about it…")
             try:

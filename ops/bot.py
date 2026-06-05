@@ -358,6 +358,14 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass  # the figures stand on their own if the synopsis call fails
     await update.message.reply_text(text, parse_mode="HTML")
 
+    # Chart as a follow-up photo (rendering is offloaded so the bot loop isn't blocked).
+    try:
+        png = await asyncio.to_thread(weight_.chart_png)
+        if png:
+            await update.message.reply_photo(photo=png)
+    except Exception:
+        logging.getLogger(__name__).exception("Weight chart render failed")
+
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:

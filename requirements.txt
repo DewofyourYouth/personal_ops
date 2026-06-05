@@ -7,3 +7,4 @@ openai>=2.0.0
 python-dotenv>=1.0.0
 python-telegram-bot[job-queue]==22.7
 sqlalchemy==2.0.50
+matplotlib>=3.9.0

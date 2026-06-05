@@ -76,3 +76,12 @@ def test_summary_pct_and_rate(tmp_path):
 
 def test_summary_none_when_empty(tmp_path):
     assert Weight(Database(str(tmp_path / "ops.db"))).summary() is None
+
+
+def test_injections(tmp_path):
+    db = Database(str(tmp_path / "ops.db"))
+    db.insert_entry("2025-11-11T09:00:00+02:00", "2025-11-11", "injection", "0.25mg")
+    db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "injection", "0.5mg")
+    db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "note", "not an injection")
+    injections = Weight(db).injections()
+    assert injections == [("2025-11-11", "0.25mg"), ("2025-12-09", "0.5mg")]
