@@ -9,6 +9,8 @@ import anthropic
 from context import Context
 from logs import Logs
 from baseline_tracker import Baseline
+from insights import KINDS as INSIGHT_KINDS
+from insights import Insights
 
 
 def _day_type_for(d: date) -> str:
@@ -33,6 +35,7 @@ class Planner:
         self.logs = logs
         self.context = context or Context()
         self.baseline = Baseline(logs.log_dir)
+        self.insights = Insights(logs.log_dir)
 
     async def propose(
         self, calendar_events: str = "", existing_summary: str = ""
@@ -114,6 +117,9 @@ class Planner:
         baseline_text = self.baseline.format_for_prompt()
         if baseline_text:
             user_content += f"{baseline_text}\n\n"
+        ledger_text = self.insights.format_for_prompt()
+        if ledger_text:
+            user_content += f"{ledger_text}\n\n"
         daily_summaries = self._read_daily_digests(days=days)
         if daily_summaries:
             user_content += f"Daily summaries (this week):\n{daily_summaries}"
@@ -147,7 +153,8 @@ class Planner:
                         "- Shabbat (Saturday) is intentionally offline — habits are never tracked on Shabbat. The maximum possible habit logging frequency is 6 days per week, not 7. Never flag Shabbat as a missed day or treat a 6/6 week as anything other than perfect.\n"
                         "- Step counts on Friday and Saturday are structurally low due to Shabbat — do not use raw step averages. The metrics include a pre-computed average excluding Fri/Sat; use that figure when referencing step activity.\n"
                         "- Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused and remove those days from the denominator for affected habits — they are not misses.\n"
-                        "- The historical baseline includes weekly average Mood (1-5) and Energy (1-3). Use these for longitudinal context: if mood or energy is trending down (or up) across multiple weeks/months, that is a real, citable pattern — surface it. A single low week is not a trend; a multi-week drift is. Do not diagnose causes you can't see — state the trend and connect it to logged events only when the link is explicit."
+                        "- The historical baseline includes weekly average Mood (1-5) and Energy (1-3). Use these for longitudinal context: if mood or energy is trending down (or up) across multiple weeks/months, that is a real, citable pattern — surface it. A single low week is not a trend; a multi-week drift is. Do not diagnose causes you can't see — state the trend and connect it to logged events only when the link is explicit.\n"
+                        "- If an insight ledger is provided, it holds the user's own recurring reflections (hypotheses, ideas, concerns) distilled from past logs, with a 'raised N×' recurrence count. A reflection the user keeps returning to — especially a concern or a hypothesis with a rising count — is exactly the kind of non-obvious, durable pattern the Insight line should surface. Reflect it back as their own observation; never relabel, therapize, or moralize it."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -340,6 +347,113 @@ class Planner:
             messages=[{"role": "user", "content": user_content}],
         )
         return response.content[0].text.strip()
+
+    async def extract_insights(self, days: int = 7) -> dict:
+        """Read the recent logs, distil durable reflections, and persist them.
+
+        The edge of the "AI at the edges" design for the insight ledger: this call reads the
+        raw free-form logs the user wrote and decides which sentences are durable reflections
+        worth keeping (vs. status/logistics noise), categorising each and matching it against
+        the existing ledger so recurrences are linked rather than duplicated. Storage is
+        handled deterministically by Insights.merge — this method only proposes.
+
+        Returns the merge summary ({"added", "recurred", "total"}).
+        """
+        logs_text = self.logs.read_recent(days=days)
+        existing = self.insights.open_items()
+        existing_block = (
+            "\n".join(f"  [{it['id']}] ({it['kind']}) {it['text']}" for it in existing)
+            or "  (none yet)"
+        )
+
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        response = await client.messages.create(
+            model=self.model,
+            # Generous: a week of logs can yield many reflections, and a forced
+            # tool call that runs out of tokens returns truncated (empty) JSON.
+            max_tokens=4096,
+            tools=[
+                {
+                    "name": "record_reflections",
+                    "description": (
+                        "Record durable personal reflections distilled from the user's raw logs."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "new_items": {
+                                "type": "array",
+                                "description": "Reflections not already in the existing ledger.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": list(INSIGHT_KINDS),
+                                        },
+                                        "text": {
+                                            "type": "string",
+                                            "description": "The reflection in the user's own framing, one sentence, faithful to what they wrote.",
+                                        },
+                                    },
+                                    "required": ["kind", "text"],
+                                },
+                            },
+                            "recurrences": {
+                                "type": "array",
+                                "description": "IDs of existing ledger items the logs touch on again.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "integer"}},
+                                    "required": ["id"],
+                                },
+                            },
+                        },
+                        "required": ["new_items", "recurrences"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "record_reflections"},
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You distil a personal-ops user's raw logs into a durable ledger of their own "
+                        "recurring reflections. Read the logs and extract only DURABLE reflections — the "
+                        "things worth remembering weeks later:\n"
+                        "- insight: a realisation about themselves, their patterns, or their work.\n"
+                        "- hypothesis: a tentative causal or predictive claim ('Friday anxiety comes from Shabbat-prep stress').\n"
+                        "- idea: something to build, try, or change (a feature, a system change, an experiment).\n"
+                        "- concern: a recurring struggle or worry worth tracking ('I keep missing Shacharit').\n\n"
+                        "STRICT RULES:\n"
+                        "- Use the user's OWN framing and words. Do not editorialise, diagnose, or improve their wording. Store what they said.\n"
+                        "- Extract only what is genuinely in the logs. Never invent, infer motives, or add reflections they didn't voice.\n"
+                        "- SKIP pure status, logistics, and activity logs (ate lunch, had a call, did Anki, drank water). Those are not reflections.\n"
+                        "- An existing ledger is provided with ids. If a log touches a reflection ALREADY in it, return its id under recurrences — do NOT create a near-duplicate new item.\n"
+                        "- Only add a new_item if it is genuinely new. When in doubt between new and recurrence, prefer recurrence.\n"
+                        "- It is correct to return empty lists if the logs contain nothing durable."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Existing ledger:\n{existing_block}\n\n"
+                        f"Recent logs (last {days} days):\n{logs_text}"
+                    ),
+                }
+            ],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                d = block.input
+                return self.insights.merge(
+                    d.get("new_items", []), d.get("recurrences", [])
+                )
+        return {"added": [], "recurred": [], "total": len(existing)}
 
     async def parse_event(self, text: str) -> dict | None:
         client = anthropic.AsyncAnthropic()

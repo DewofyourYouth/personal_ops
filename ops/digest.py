@@ -52,6 +52,7 @@ class DigestHandlers:
         app.add_handler(CommandHandler("digest", self.cmd_digest))
         app.add_handler(CommandHandler("daily", self.cmd_daily_digest))
         app.add_handler(CommandHandler("d", self.cmd_daily_digest))
+        app.add_handler(CommandHandler("insights", self.cmd_insights))
 
     # --- Rendering + persistence ---
 
@@ -106,6 +107,7 @@ class DigestHandlers:
             return
         await update.message.reply_text("🔍 Generating digest…")
         try:
+            await self.planner.extract_insights(days=7)
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()
             self._save(text, label="digest")
@@ -133,6 +135,32 @@ class DigestHandlers:
         except Exception as e:
             await update.message.reply_text(f"Daily digest failed: {e}")
 
+    async def cmd_insights(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """On-demand: distil the recent logs into the ledger, then show it."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        arg = " ".join(context.args).strip().lower() if context.args else ""
+        if arg == "show":
+            # Just display the current ledger without re-running extraction.
+            await update.message.reply_text(
+                self.planner.insights.format_for_telegram(), parse_mode="HTML"
+            )
+            return
+        await update.message.reply_text("🔍 Distilling insights from your logs…")
+        try:
+            summary = await self.planner.extract_insights(days=7)
+            header = (
+                f"📓 <b>Insight ledger</b> "
+                f"(+{len(summary['added'])} new, {len(summary['recurred'])} recurred, "
+                f"{summary['total']} total)\n"
+            )
+            await update.message.reply_text(
+                header + self.planner.insights.format_for_telegram(),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Insight extraction failed: {e}")
+
     # --- Scheduled runs (wrapped by bot.py for the scheduler) ---
 
     async def run_scheduled_daily(self) -> None:
@@ -153,6 +181,7 @@ class DigestHandlers:
         if self.shabbat.quiet_now():
             return
         try:
+            await self.planner.extract_insights(days=7)
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()
             self._save(text, label="weekly-digest")
