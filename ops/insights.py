@@ -138,7 +138,9 @@ class Insights:
             group = [it for it in items if it["kind"] == kind]
             if not group:
                 continue
-            group.sort(key=lambda it: (len(it["occurrences"]), it["last_seen"]), reverse=True)
+            group.sort(
+                key=lambda it: (len(it["occurrences"]), it["last_seen"]), reverse=True
+            )
             lines.append(f"### {_PLURAL[kind]}")
             for it in group:
                 n = len(it["occurrences"])
@@ -165,7 +167,9 @@ class Insights:
             group = [it for it in items if it["kind"] == kind]
             if not group:
                 continue
-            group.sort(key=lambda it: (len(it["occurrences"]), it["last_seen"]), reverse=True)
+            group.sort(
+                key=lambda it: (len(it["occurrences"]), it["last_seen"]), reverse=True
+            )
             out.append(f"\n{icons[kind]} <b>{_PLURAL[kind]}</b>")
             for it in group:
                 n = len(it["occurrences"])

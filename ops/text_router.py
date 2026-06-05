@@ -195,7 +195,9 @@ def _food_log_content(raw: str, estimate: dict) -> str:
         f"{t['fat_g']}g fat, {t['carbs_g']}g carbs"
     ]
     for i in estimate["items"]:
-        lines.append(f"  • {i['name']} ({i.get('portion', '')}): {round(i.get('kcal', 0))} kcal")
+        lines.append(
+            f"  • {i['name']} ({i.get('portion', '')}): {round(i.get('kcal', 0))} kcal"
+        )
     return "\n".join(lines)
 
 

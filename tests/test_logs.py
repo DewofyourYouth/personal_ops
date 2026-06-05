@@ -191,15 +191,25 @@ def test_mood_energy_by_time_of_day(tmp_path):
     logs = Logs(str(tmp_path))
     today = date.today()
     rows = [
-        ("08:00:00", "mood", 4), ("08:01:00", "energy", 3),   # morning
-        ("14:00:00", "mood", 2), ("14:01:00", "energy", 1),   # afternoon
-        ("20:00:00", "mood", 3), ("20:01:00", "energy", 2),   # evening
+        ("08:00:00", "mood", 4),
+        ("08:01:00", "energy", 3),  # morning
+        ("14:00:00", "mood", 2),
+        ("14:01:00", "energy", 1),  # afternoon
+        ("20:00:00", "mood", 3),
+        ("20:01:00", "energy", 2),  # evening
     ]
     jsonl = tmp_path / f"{today}.jsonl"
     jsonl.write_text(
         "\n".join(
-            json.dumps({"ts": f"{today}T{t}+03:00", "tag": "metric",
-                        "key": k, "value": v, "content": f"{k} {v}"})
+            json.dumps(
+                {
+                    "ts": f"{today}T{t}+03:00",
+                    "tag": "metric",
+                    "key": k,
+                    "value": v,
+                    "content": f"{k} {v}",
+                }
+            )
             for t, k, v in rows
         )
         + "\n"
