@@ -29,15 +29,18 @@ jobs:
     concurrency:
       group: deploy-vps     # never run two deploys at once
       cancel-in-progress: false
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
     steps:
+      # Skips cleanly (green) until the VPS secrets are configured.
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script_stop: true   # abort on the first failing command
-          script: |
+        if: env.VPS_HOST != ''
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$VPS_USER@$VPS_HOST" '
             set -e
             cd /opt/personal_ops
             git fetch --all
@@ -46,10 +49,9 @@ jobs:
             sleep 10
             docker compose ps
             cid="$(docker compose ps -q bot)"
-            status="$(docker inspect -f '{{.State.Status}}' "$cid")"
+            status="$(docker inspect -f "{{.State.Status}}" "$cid")"
             if [ "$status" != "running" ]; then
-              echo "::error::bot is '$status' after deploy — see logs below"
-              docker compose logs --tail=80 bot
-              exit 1
+              echo "bot is $status after deploy"; docker compose logs --tail=80 bot; exit 1
             fi
             echo "Deployed. Bot is running."
+          '
