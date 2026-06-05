@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from types import SimpleNamespace
@@ -345,6 +346,15 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+# Drug names to strip from shareable /weight output (the data/digests keep them).
+_PRIVATE_TERMS = re.compile(r"\s*\b(?:wegovy|semaglutide|ozempic)\b", re.IGNORECASE)
+
+
+def _scrub_private(text: str) -> str:
+    """Remove medication names so /weight output can be shown to others."""
+    return _PRIVATE_TERMS.sub("", text)
+
+
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -355,6 +365,9 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"📝 {html.escape(synopsis)}\n\n{text}"
     except Exception:
         pass  # the figures stand on their own if the synopsis call fails
+    # Privacy scrub: the /weight output is shareable, so strip the drug name (the synopsis
+    # may name it). Digests and stored data keep it — only this command's output is scrubbed.
+    text = _scrub_private(text)
     await update.message.reply_text(text, parse_mode="HTML")
 
     # Chart as a follow-up photo (rendering is offloaded so the bot loop isn't blocked).

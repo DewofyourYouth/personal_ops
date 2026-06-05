@@ -204,7 +204,7 @@ class Weight:
             trend = f"trend: {arrow} {abs(r)} kg/week (last 4 wks)"
 
         lines = [
-            "⚖️ <b>Weight — Wegovy progress</b>",
+            "⚖️ <b>Weight progress</b>",
             f"{s['start_week_avg_kg']} kg (start wk) → {s['current_7day_avg_kg']} kg (7-day avg)",
             f"<b>Lost {s['lost_kg']} kg</b> ({s['lost_lb']} lb) · {s['pct_of_bodyweight']}% of body weight",
             f"{trend}\n",
@@ -286,7 +286,7 @@ class Weight:
                 continue
             ax.axvline(x, color="#2ca02c", alpha=0.25, linewidth=1, zorder=1)
 
-        ax.set_title("Weight — Wegovy era")
+        ax.set_title("Weight over time")
         ax.set_ylabel("kg")
         ax.grid(True, alpha=0.2)
         ax.legend(loc="upper right", fontsize=8)
