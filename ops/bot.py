@@ -28,6 +28,7 @@ from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
+from weight import Weight
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
@@ -80,6 +81,7 @@ gcal_ = GCal()
 context_ = Context()
 planner_ = Planner(MODEL, logs, context_)
 baseline_ = Baseline(LOG_DIR)
+weight_ = Weight(logs.db)
 shabbat_ = Shabbat(LOG_DIR)
 
 
@@ -341,6 +343,14 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(text) > 4000:
         text = text[:4000] + "\n…"
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    await update.message.reply_text(
+        weight_.format_for_telegram(), parse_mode="HTML"
+    )
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -728,6 +738,7 @@ def main():
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("metrics", cmd_metrics))
+    app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("backlog", cmd_backlog))
     app.add_handler(CommandHandler("values", cmd_values))

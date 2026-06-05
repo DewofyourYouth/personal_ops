@@ -80,6 +80,7 @@ HELP_TEXT = """<b>Planning</b>
 /digest — weekly AI review of the last 7 days (also runs every Sunday at 20:00)
 /insights — distil recurring insights/hypotheses/ideas/concerns from your logs (/insights show to view without re-running)
 /metrics — tracked metrics with trend (last 14 days)
+/weight — Wegovy weight-loss progress (total lost, weekly averages)
 /logs — view today's log entries
 
 <b>Context</b>
