@@ -85,3 +85,40 @@ def test_injections(tmp_path):
     db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "note", "not an injection")
     injections = Weight(db).injections()
     assert injections == [("2025-11-11", "0.25mg"), ("2025-12-09", "0.5mg")]
+
+
+def test_weight_cache(tmp_path):
+    # Figures and synopsis are cached on one row per weigh-in date, updated independently.
+    db = Database(str(tmp_path / "ops.db"))
+    assert db.latest_weight_synopsis() is None
+    db.cache_weight_figures("2026-06-05", "2026-06-05T19:00:00+03:00", '{"lost_kg": 7.8}')
+    db.cache_weight_synopsis("2026-06-05", "2026-06-05T19:00:00+03:00", "steady loss")
+    row = db.weight_cache_get("2026-06-05")
+    assert row["figures"] == '{"lost_kg": 7.8}'  # figures survive the synopsis upsert
+    assert row["synopsis"] == "steady loss"
+    assert db.latest_weight_synopsis() == "steady loss"
+    assert db.weight_cache_get("2026-06-06") is None
+    # Updating the synopsis must not clobber the cached figures.
+    db.cache_weight_synopsis("2026-06-05", "2026-06-05T20:00:00+03:00", "updated")
+    row = db.weight_cache_get("2026-06-05")
+    assert row["synopsis"] == "updated" and row["figures"] == '{"lost_kg": 7.8}'
+
+
+def test_summary_is_cached(tmp_path):
+    # Second summary() call returns the stored figures without recomputing.
+    db = Database(str(tmp_path / "ops.db"))
+    for i in range(10):
+        d = (date.today() - timedelta(days=9 - i)).isoformat()
+        db.insert_metric(f"{d}T07:00:00+02:00", d, "weight", str(100 - i * 0.2), "kg")
+    w = Weight(db)
+    first = w.summary()
+    assert db.weight_cache_get(db.max_weight_date())["figures"] is not None
+    # Mutating raw rows for the SAME latest date does not change the cached result.
+    db.insert_metric(
+        f"{date.today().isoformat()}T23:00:00+02:00",
+        date.today().isoformat(),
+        "weight",
+        "50.0",
+        "kg",
+    )
+    assert w.summary() == first  # served from cache, not recomputed

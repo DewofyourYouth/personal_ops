@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS reminders (
 """
 
 
+_CREATE_WEIGHT_CACHE = """
+CREATE TABLE IF NOT EXISTS weight_cache (
+    basis_date TEXT PRIMARY KEY,
+    ts         TEXT NOT NULL,
+    figures    TEXT,
+    synopsis   TEXT
+);
+"""
+
+
 class Database:
     def __init__(self, db_path: str):
         self.path = db_path
@@ -85,7 +95,47 @@ class Database:
         conn.executescript(_CREATE_ENTRIES)
         conn.executescript(_CREATE_METRICS)
         conn.executescript(_CREATE_REMINDERS)
+        conn.executescript(_CREATE_WEIGHT_CACHE)
         conn.commit()
+
+    # --- Weight cache ---
+    # Both the computed figures and the LLM synopsis are cached keyed on the latest
+    # weigh-in date they were derived from: reused until a new weight is logged, then
+    # recomputed. So nothing is recalculated on repeat /weight calls or digest runs, and
+    # the cache invalidates itself the moment the underlying data changes.
+
+    def max_weight_date(self) -> str | None:
+        """The most recent date with a weight reading (cheap, index-backed)."""
+        rows = self.query("SELECT MAX(date) AS d FROM metrics WHERE key = 'weight'")
+        return rows[0]["d"] if rows and rows[0]["d"] else None
+
+    def weight_cache_get(self, basis_date: str) -> sqlite3.Row | None:
+        rows = self.query(
+            "SELECT figures, synopsis FROM weight_cache WHERE basis_date = ?",
+            (basis_date,),
+        )
+        return rows[0] if rows else None
+
+    def cache_weight_figures(self, basis_date: str, ts: str, figures: str) -> None:
+        self.execute(
+            "INSERT INTO weight_cache (basis_date, ts, figures) VALUES (?, ?, ?) "
+            "ON CONFLICT(basis_date) DO UPDATE SET ts = excluded.ts, figures = excluded.figures",
+            (basis_date, ts, figures),
+        )
+
+    def cache_weight_synopsis(self, basis_date: str, ts: str, synopsis: str) -> None:
+        self.execute(
+            "INSERT INTO weight_cache (basis_date, ts, synopsis) VALUES (?, ?, ?) "
+            "ON CONFLICT(basis_date) DO UPDATE SET ts = excluded.ts, synopsis = excluded.synopsis",
+            (basis_date, ts, synopsis),
+        )
+
+    def latest_weight_synopsis(self) -> str | None:
+        rows = self.query(
+            "SELECT synopsis FROM weight_cache WHERE synopsis IS NOT NULL "
+            "ORDER BY basis_date DESC LIMIT 1"
+        )
+        return rows[0]["synopsis"] if rows else None
 
     # --- Plugin-owned schema ---
     # Core doesn't know what plugins exist, so it can't own their tables. A plugin

@@ -11,6 +11,7 @@ from logs import Logs
 from baseline_tracker import Baseline
 from insights import KINDS as INSIGHT_KINDS
 from insights import Insights
+from weight import Weight
 
 
 def _day_type_for(d: date) -> str:
@@ -36,6 +37,7 @@ class Planner:
         self.context = context or Context()
         self.baseline = Baseline(logs.log_dir)
         self.insights = Insights(logs.log_dir)
+        self.weight = Weight(logs.db)
 
     async def propose(
         self, calendar_events: str = "", existing_summary: str = ""
@@ -123,6 +125,9 @@ class Planner:
         ledger_text = self.insights.format_for_prompt()
         if ledger_text:
             user_content += f"{ledger_text}\n\n"
+        weight_synopsis = await self.weight_synopsis_cached()
+        if weight_synopsis:
+            user_content += f"Weight progress: {weight_synopsis}\n\n"
         daily_summaries = self._read_daily_digests(days=days)
         if daily_summaries:
             user_content += f"Daily summaries (this week):\n{daily_summaries}"
@@ -220,6 +225,9 @@ class Planner:
             user_content += f"{stats_text}\n\n"
         if history:
             user_content += f"{history}\n\n"
+        weight_synopsis = await self.weight_synopsis_cached()
+        if weight_synopsis:
+            user_content += f"Weight progress: {weight_synopsis}\n\n"
         user_content += "Generate today's end-of-day digest."
 
         response = await client.messages.create(
@@ -354,6 +362,28 @@ class Planner:
             messages=[{"role": "user", "content": user_content}],
         )
         return response.content[0].text.strip()
+
+    async def weight_synopsis_cached(self) -> str | None:
+        """The weight synopsis, generated once per weigh-in and reused thereafter.
+
+        Keyed on the latest weigh-in date: returns the saved text if it already covers
+        the current data, otherwise generates a fresh synopsis, persists it (the saved
+        record + the text fed into digests), and returns it. None if there's no weight data.
+        """
+        summary = self.weight.summary()
+        if not summary:
+            return None
+        basis = summary["latest_date"]
+        cached = self.logs.db.weight_cache_get(basis)
+        if cached and cached["synopsis"]:
+            return cached["synopsis"]
+        synopsis = await self.weight_synopsis(summary)
+        self.logs.db.cache_weight_synopsis(
+            basis,
+            datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
+            synopsis,
+        )
+        return synopsis
 
     async def weight_synopsis(self, data: dict) -> str:
         """1-3 plain sentences on what the weight figures show. Interpretation at the edge."""

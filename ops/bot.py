@@ -349,13 +349,12 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
     text = weight_.format_for_telegram()
-    summary = weight_.summary()
-    if summary:
-        try:
-            synopsis = await planner_.weight_synopsis(summary)
+    try:
+        synopsis = await planner_.weight_synopsis_cached()
+        if synopsis:
             text = f"📝 {html.escape(synopsis)}\n\n{text}"
-        except Exception:
-            pass  # the figures stand on their own if the synopsis call fails
+    except Exception:
+        pass  # the figures stand on their own if the synopsis call fails
     await update.message.reply_text(text, parse_mode="HTML")
 
     # Chart as a follow-up photo (rendering is offloaded so the bot loop isn't blocked).

@@ -9,7 +9,9 @@ The Wegovy baseline (start weight + date) are constants here rather than config 
 a personal tool and they are fixed historical facts. Change them here if they ever need to.
 """
 
-from datetime import date, timedelta
+import json
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 WEGOVY_START_WEIGHT = 103.5  # kg, the documented weigh-in at the first injection
 WEGOVY_START_DATE = date(2025, 11, 11)
@@ -137,7 +139,29 @@ class Weight:
         return (cov / var) * 7  # slope per day → per week
 
     def summary(self) -> dict | None:
-        """Smoothed, methodologically-honest figures for the report and the synopsis.
+        """Smoothed figures for the report and synopsis — cached per weigh-in date.
+
+        The cache key is the latest weigh-in date, fetched cheaply. If figures were already
+        computed for it they're returned as-is (no rescan/recompute); otherwise they're
+        computed once and stored. Logging a new weight changes the key and invalidates it.
+        """
+        basis = self.db.max_weight_date()
+        if not basis:
+            return None
+        cached = self.db.weight_cache_get(basis)
+        if cached and cached["figures"]:
+            return json.loads(cached["figures"])
+        figures = self._compute_summary()
+        if figures:
+            self.db.cache_weight_figures(
+                basis,
+                datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
+                json.dumps(figures),
+            )
+        return figures
+
+    def _compute_summary(self) -> dict | None:
+        """Compute the smoothed figures from raw readings (the cached payload).
 
         Endpoints are 7-day averages (not single noisy days); loss is anchored to the
         first-week average; rate is a trailing regression slope; loss is also expressed
