@@ -82,7 +82,9 @@ def test_injections(tmp_path):
     db = Database(str(tmp_path / "ops.db"))
     db.insert_entry("2025-11-11T09:00:00+02:00", "2025-11-11", "injection", "0.25mg")
     db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "injection", "0.5mg")
-    db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "note", "not an injection")
+    db.insert_entry(
+        "2025-12-09T09:00:00+02:00", "2025-12-09", "note", "not an injection"
+    )
     injections = Weight(db).injections()
     assert injections == [("2025-11-11", "0.25mg"), ("2025-12-09", "0.5mg")]
 
@@ -91,7 +93,9 @@ def test_weight_cache(tmp_path):
     # Figures and synopsis are cached on one row per weigh-in date, updated independently.
     db = Database(str(tmp_path / "ops.db"))
     assert db.latest_weight_synopsis() is None
-    db.cache_weight_figures("2026-06-05", "2026-06-05T19:00:00+03:00", '{"lost_kg": 7.8}')
+    db.cache_weight_figures(
+        "2026-06-05", "2026-06-05T19:00:00+03:00", '{"lost_kg": 7.8}'
+    )
     db.cache_weight_synopsis("2026-06-05", "2026-06-05T19:00:00+03:00", "steady loss")
     row = db.weight_cache_get("2026-06-05")
     assert row["figures"] == '{"lost_kg": 7.8}'  # figures survive the synopsis upsert

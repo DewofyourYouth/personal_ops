@@ -264,7 +264,9 @@ class Weight:
         roll = []
         for i, d in enumerate(xs):
             window = [
-                kg for x, kg in zip(xs, ys) if timedelta(0) <= (d - x) <= timedelta(days=6)
+                kg
+                for x, kg in zip(xs, ys)
+                if timedelta(0) <= (d - x) <= timedelta(days=6)
             ]
             roll.append(sum(window) / len(window))
 
