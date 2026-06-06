@@ -137,7 +137,11 @@ class Planner:
                 f"{' (cue: ' + s['cue'] + ')' if s['cue'] else ''}"
                 for s in strugglers
             ]
-            user_content += "Struggling habits (low recent completion):\n" + "\n".join(lines) + "\n\n"
+            user_content += (
+                "Struggling habits (low recent completion):\n"
+                + "\n".join(lines)
+                + "\n\n"
+            )
         daily_summaries = self._read_daily_digests(days=days)
         if daily_summaries:
             user_content += f"Daily summaries (this week):\n{daily_summaries}"

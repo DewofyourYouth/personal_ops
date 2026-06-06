@@ -24,7 +24,9 @@ def _write_habit_days(logs: Logs, name: str, days_back: range) -> None:
         path = Path(logs.log_dir) / f"{d}.jsonl"
         with open(path, "a") as f:
             f.write(
-                json.dumps({"ts": f"{d}T09:00:00+03:00", "tag": "habit", "content": name})
+                json.dumps(
+                    {"ts": f"{d}T09:00:00+03:00", "tag": "habit", "content": name}
+                )
                 + "\n"
             )
 
@@ -85,14 +87,20 @@ def test_struggling_habits(tmp_path):
 
     logs = Logs(str(tmp_path))
     logs.db.execute(_HABITS_TABLE)
-    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Daily walk',1)")
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('S','Daily walk',1)"
+    )
     logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Anki',1)")
-    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Stretch',1)")
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('S','Stretch',1)"
+    )
     today = date.today()
     # Daily walk: done every recent day → healthy, not struggling.
     for i in range(0, 20):
         d = today - timedelta(days=i)
-        logs.db.insert_entry(f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Daily walk")
+        logs.db.insert_entry(
+            f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Daily walk"
+        )
     # Anki: done only 25–34 days ago → has a past streak but missed the recent window.
     for i in range(25, 35):
         d = today - timedelta(days=i)

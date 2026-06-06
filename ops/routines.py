@@ -81,7 +81,9 @@ class RoutineStore:
 
 
 class RoutineHandlers:
-    def __init__(self, bot: Bot, logs: Logs, context: Context, allowed_user: int) -> None:
+    def __init__(
+        self, bot: Bot, logs: Logs, context: Context, allowed_user: int
+    ) -> None:
         self.bot = bot
         self.logs = logs
         self.context = context
@@ -123,7 +125,11 @@ class RoutineHandlers:
     def _render(self, routine: dict) -> str:
         habits = self._tracked_habits()
         logged_by_day = load_habit_logs(self.logs)
-        anchor = f"  <i>(by {html.escape(routine['anchor'])})</i>" if routine["anchor"] else ""
+        anchor = (
+            f"  <i>(by {html.escape(routine['anchor'])})</i>"
+            if routine["anchor"]
+            else ""
+        )
         lines = [f"🌅 <b>{html.escape(routine['name'])}</b>{anchor}\n"]
         for i, step in enumerate(routine["steps"], 1):
             badge = self._streak_for_step(step, habits, logged_by_day)

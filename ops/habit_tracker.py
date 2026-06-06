@@ -134,7 +134,9 @@ def struggling_habits(
     """
     if logged_by_day is None:
         logged_by_day = load_habit_logs(logs)
-    rows = logs.db.query("SELECT name, days, cue, identity FROM habits WHERE tracked = 1")
+    rows = logs.db.query(
+        "SELECT name, days, cue, identity FROM habits WHERE tracked = 1"
+    )
     out = []
     for r in rows:
         due = [int(d) for d in r["days"].split(",") if d != ""] or None
