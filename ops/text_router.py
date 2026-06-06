@@ -36,6 +36,7 @@ from telegram.ext import (
 from bot_constants import PREFIXES
 from habit_handlers import match_habit
 from llm import parse_queue_entry, transcribe
+from media import send_sticker
 from tg_common import encourage, safe_answer
 
 
@@ -330,6 +331,7 @@ class TextRouter:
             os.unlink(tmp_path)
 
         chat_id = update.effective_chat.id
+        await send_sticker(self.bot, chat_id, "voice")
         self._awaiting_voice_edit[chat_id] = text
         keyboard = InlineKeyboardMarkup(
             [
@@ -769,6 +771,9 @@ class TextRouter:
         # backup. Writing the file directly here bypassed the DB — the bug that made
         # prefix entries (values, insight, note, …) invisible to /values and other readers.
         self.logs.write(tag, content)
+
+        if tag in ("insight", "hypothesis"):
+            await send_sticker(self.bot, chat_id, "idea")
 
         if tag == "checkin":
             await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())

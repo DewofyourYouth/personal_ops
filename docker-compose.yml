@@ -16,6 +16,8 @@ services:
       - ./ops/log:/app/ops/log
       # Context files — inside the repo on Mac; override with absolute path on VPS.
       - ./ops/context:/app/ops/context
+      # Stickers + startup video (swap them without a rebuild)
+      - ./telegram_stickers:/app/telegram_stickers:ro
       # Google Calendar OAuth credentials
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json

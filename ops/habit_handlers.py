@@ -25,6 +25,7 @@ from habit_tracker import (
     recent_chain,
 )
 from logs import Logs
+from media import send_sticker
 from shabbat import Shabbat
 from tg_common import safe_answer
 
@@ -452,6 +453,7 @@ class HabitHandlers:
         text, keyboard = self._eod_message()
         if text is None:
             return
+        await send_sticker(self.bot, self.allowed_user, "winddown")
         await self.bot.send_message(
             chat_id=self.allowed_user,
             text=text,
@@ -478,6 +480,11 @@ class HabitHandlers:
         await safe_answer(query)
         action, name = query.data.split(":", 1)
         self.logs.write("habit" if action == "hbq_done" else "habit_missed", name)
+        await send_sticker(
+            self.bot,
+            update.effective_chat.id,
+            "done" if action == "hbq_done" else "missed",
+        )
         text, keyboard = self._eod_message()
         if text is None:
             await query.edit_message_text(
@@ -507,6 +514,10 @@ class HabitHandlers:
         await safe_answer(query)
         habit_name = query.data.split(":", 1)[1]
         self.logs.write("habit", habit_name)
+        # Celebrate milestones on the checklist (not every tap — that'd be spam).
+        cur, _ = compute_streak(self.logs, habit_name)
+        if cur in (7, 30, 100, 365):
+            await send_sticker(self.bot, update.effective_chat.id, "streak")
         text, keyboard = self._message()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 

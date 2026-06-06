@@ -22,6 +22,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from logs import Logs
+from media import send_sticker
 from reminders import Reminders
 from text_router import _parse_time
 from tg_common import safe_answer
@@ -250,6 +251,7 @@ class ReminderHandlers:
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("✓ Dismiss", callback_data=cb)]]
             )
+            await send_sticker(self.bot, self.allowed_user, "reminder")
             await self.bot.send_message(
                 chat_id=self.allowed_user,
                 text=f"⏰ <b>{html.escape(r['text'])}</b>",

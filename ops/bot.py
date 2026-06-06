@@ -24,6 +24,7 @@ from context import Context
 from digest import DigestHandlers
 from gcal import GCal
 from logs import Logs
+from media import send_sticker, send_startup_video
 from planner import Planner
 from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
@@ -222,6 +223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def morning_plan():
     if shabbat_.quiet_now():
         return
+    await send_sticker(_bot, ALLOWED_USER, "plan")
     await agenda_feature.send_proposal(ALLOWED_USER)
     # Friday: ask for candle lighting time
     if datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() == 4:
@@ -661,6 +663,7 @@ async def _post_init(application):
             chat_id=ALLOWED_USER,
             text=f"🔄 Bot back online. If you sent anything in the last minute, please resend it.{note}",
         )
+        await send_startup_video(application.bot, ALLOWED_USER)
     except Exception:
         logging.getLogger(__name__).exception("Failed to send back-online ping")
     global _scheduler
