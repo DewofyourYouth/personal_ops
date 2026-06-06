@@ -19,7 +19,13 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
     """Construct the active plugins. `services` carries the shared domain
     singletons; a domain is active iff it's in this list."""
     return [
-        HabitHandlers(bot, services.logs, services.context, services.allowed_user),
+        HabitHandlers(
+            bot,
+            services.logs,
+            services.context,
+            services.allowed_user,
+            services.planner,
+        ),
         FoodHandlers(bot, services.logs, services.allowed_user),
     ]
 

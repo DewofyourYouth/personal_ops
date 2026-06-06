@@ -36,9 +36,13 @@ CREATE TABLE IF NOT EXISTS habits (
     days     TEXT NOT NULL DEFAULT '',   -- CSV of weekday ints (0=Mon..6=Sun); '' = every day
     tracked  INTEGER NOT NULL DEFAULT 1, -- 0 = kept for context only (e.g. "Always off")
     position INTEGER NOT NULL DEFAULT 0,
-    cue      TEXT NOT NULL DEFAULT ''    -- implementation intention / habit-stack anchor
+    cue      TEXT NOT NULL DEFAULT '',   -- implementation intention / habit-stack anchor
+    identity TEXT NOT NULL DEFAULT ''    -- the identity this habit casts a vote for
 );
 """
+
+# Columns added after the table's original shape; backfilled idempotently on startup.
+_ADDED_COLUMNS = {"cue": "''", "identity": "''"}
 
 _INT_TO_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
@@ -65,10 +69,13 @@ class HabitStore:
         self._project_markdown()
 
     def _migrate_cue_column(self) -> None:
-        """Add the `cue` column to pre-existing habits tables (idempotent)."""
+        """Backfill columns added after the original habits table shape (idempotent)."""
         cols = {r["name"] for r in self.db.query("PRAGMA table_info(habits)")}
-        if "cue" not in cols:
-            self.db.execute("ALTER TABLE habits ADD COLUMN cue TEXT NOT NULL DEFAULT ''")
+        for col, default in _ADDED_COLUMNS.items():
+            if col not in cols:
+                self.db.execute(
+                    f"ALTER TABLE habits ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                )
 
     # --- Reads ---
 
@@ -86,6 +93,7 @@ class HabitStore:
                     "days": _csv_to_days(r["days"]),
                     "tracked": bool(r["tracked"]),
                     "cue": (r["cue"] if "cue" in r.keys() else "") or "",
+                    "identity": (r["identity"] if "identity" in r.keys() else "") or "",
                 }
             )
         return out
@@ -122,18 +130,25 @@ class HabitStore:
         )
         self._project_markdown()
 
-    def set_cue_by_name(self, name: str, cue: str) -> str | None:
-        """Set the cue (implementation intention / stack anchor) on the habit whose
-        display name matches `name` (case-insensitive). Returns the matched name or None."""
+    def _set_field_by_name(self, field: str, name: str, value: str) -> str | None:
+        """Set `field` on the habit whose display/raw name matches (case-insensitive)."""
         target = name.strip().lower()
         for h in self.list_habits(tracked_only=False):
             display = self.context.habit_display_name(h["name"])
             if display.strip().lower() == target or h["name"].strip().lower() == target:
                 self.db.execute(
-                    "UPDATE habits SET cue = ? WHERE id = ?", (cue.strip(), h["id"])
+                    f"UPDATE habits SET {field} = ? WHERE id = ?", (value.strip(), h["id"])
                 )
                 return display
         return None
+
+    def set_cue_by_name(self, name: str, cue: str) -> str | None:
+        """Set the cue (implementation intention / stack anchor). Returns matched name or None."""
+        return self._set_field_by_name("cue", name, cue)
+
+    def set_identity_by_name(self, name: str, identity: str) -> str | None:
+        """Set the identity this habit votes for. Returns matched name or None."""
+        return self._set_field_by_name("identity", name, identity)
 
     # --- Seed + projection (table <-> habits.md) ---
 
@@ -248,12 +263,13 @@ async def match_habit(content: str, db) -> str | None:
 
 class HabitHandlers:
     def __init__(
-        self, bot: Bot, logs: Logs, context: Context, allowed_user: int
+        self, bot: Bot, logs: Logs, context: Context, allowed_user: int, planner=None
     ) -> None:
         self.bot = bot
         self.logs = logs
         self.context = context
         self.allowed_user = allowed_user
+        self.planner = planner  # for the failing-habit strategy (4-Laws) call
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
@@ -271,6 +287,8 @@ class HabitHandlers:
         app.add_handler(CommandHandler("habitlog", self.cmd_habit_log))
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
         app.add_handler(CommandHandler("habitcue", self.cmd_habit_cue))
+        app.add_handler(CommandHandler("identity", self.cmd_identity))
+        app.add_handler(CommandHandler("habitstrategy", self.cmd_habit_strategy))
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
         app.add_handler(CommandHandler("habitcheck", self.cmd_habit_check))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^hb_done:"))
@@ -309,7 +327,15 @@ class HabitHandlers:
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
 
+        from habit_tracker import SHABBAT
+
         today_weekday = _date.today().weekday()
+        if today_weekday == SHABBAT:
+            return (
+                "🕯 <b>Shabbat</b> — habits aren't tracked today, and today never counts "
+                "against a streak. Rest.",
+                InlineKeyboardMarkup([]),
+            )
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
@@ -572,6 +598,84 @@ class HabitHandlers:
             await update.message.reply_text(
                 f"No habit matching “{html.escape(name.strip())}”. Try /habits to see names."
             )
+
+    async def cmd_identity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/identity — show habits grouped by the identity they vote for.
+        /identity <habit>: <identity> — tag a habit (e.g. 'Daf Yomi: Ben Torah')."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if ":" in raw:
+            name, ident = raw.split(":", 1)
+            matched = self.store.set_identity_by_name(name.strip(), ident.strip())
+            if matched:
+                await update.message.reply_text(
+                    f"🪪 <b>{html.escape(matched)}</b> votes for "
+                    f"<i>{html.escape(ident.strip())}</i>",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(name.strip())}”. Try /habits."
+                )
+            return
+
+        # Grouped "votes" view.
+        logged_by_day = load_habit_logs(self.logs)
+        by_identity: dict[str, list[str]] = {}
+        untagged: list[str] = []
+        for h in self.store.list_habits(tracked_only=True):
+            disp = self.context.habit_display_name(h["name"])
+            cur, _ = compute_streak(
+                self.logs, h["name"], due_weekdays=h["days"], logged_by_day=logged_by_day
+            )
+            label = f"{disp} 🔥{cur}" if cur else disp
+            if h["identity"]:
+                by_identity.setdefault(h["identity"], []).append(label)
+            else:
+                untagged.append(disp)
+
+        if not by_identity:
+            await update.message.reply_text(
+                "No identities tagged yet. Every habit is a vote for who you're becoming —\n"
+                "tag one: <code>/identity Daf Yomi: Ben Torah</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = ["🪪 <b>Identities</b> — every rep is a vote\n"]
+        for ident, habits in by_identity.items():
+            votes = sum(int(h.split("🔥")[-1]) for h in habits if "🔥" in h)
+            lines.append(f"<b>{html.escape(ident)}</b>  ({votes} active)")
+            for h in habits:
+                lines.append(f"  • {html.escape(h)}")
+            lines.append("")
+        if untagged:
+            lines.append(f"<i>Untagged: {html.escape(', '.join(untagged))}</i>")
+        await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
+
+    async def cmd_habit_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/habitstrategy — run a 4-Laws strategy session on chronically-missed habits."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        from habit_tracker import struggling_habits
+
+        strugglers = struggling_habits(self.logs)
+        if not strugglers:
+            await update.message.reply_text(
+                "Nothing chronically slipping — your chains look healthy. 🟩"
+            )
+            return
+        if not self.planner:
+            names = ", ".join(s["name"] for s in strugglers)
+            await update.message.reply_text(f"Struggling: {html.escape(names)}")
+            return
+        await update.message.reply_text("🧭 Strategizing…")
+        try:
+            text = await self.planner.habit_strategy(strugglers)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Strategy failed: {e}")
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []

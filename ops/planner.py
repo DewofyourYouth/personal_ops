@@ -128,6 +128,16 @@ class Planner:
         weight_synopsis = await self.weight_synopsis_cached()
         if weight_synopsis:
             user_content += f"Weight progress: {weight_synopsis}\n\n"
+        from habit_tracker import struggling_habits
+
+        strugglers = struggling_habits(self.logs)
+        if strugglers:
+            lines = [
+                f"- {s['name']}: {s['done']}/{s['of']} recent due days"
+                f"{' (cue: ' + s['cue'] + ')' if s['cue'] else ''}"
+                for s in strugglers
+            ]
+            user_content += "Struggling habits (low recent completion):\n" + "\n".join(lines) + "\n\n"
         daily_summaries = self._read_daily_digests(days=days)
         if daily_summaries:
             user_content += f"Daily summaries (this week):\n{daily_summaries}"
@@ -163,6 +173,7 @@ class Planner:
                         "- Days with a skip entry (visible in the stats as '⚠️ skip: <reason>') had an external constraint that made certain habits impossible or irrelevant. Use the reason to infer which habits are excused and remove those days from the denominator for affected habits — they are not misses.\n"
                         "- The historical baseline includes weekly average Mood (1-5) and Energy (1-3). Use these for longitudinal context: if mood or energy is trending down (or up) across multiple weeks/months, that is a real, citable pattern — surface it. A single low week is not a trend; a multi-week drift is. Do not diagnose causes you can't see — state the trend and connect it to logged events only when the link is explicit.\n"
                         "- If a 'Mood/energy by time of day' breakdown is provided, use it to surface diurnal patterns the user explicitly wants to understand — e.g. whether mornings, afternoons, or evenings run reliably lower or higher. Only call a time-of-day difference real if the gap is meaningful and the n is not tiny. Where the logs show a recurring event around a low-mood window (e.g. Friday Shabbat-prep stress, a flaky chavrusa, a bad night's sleep), name the likely trigger — but only when the log makes the link explicit, never as invented psychology.\n"
+                        "- If 'Struggling habits' are listed, the Suggested adjustment may target the worst one with ONE small, concrete fix in the Atomic Habits spirit — shrink it to a two-minute version, or give it a clear cue / habit-stack ('after [existing habit]'). Keep it tiny and practical; never moralize about discipline or tell them the habit matters.\n"
                         "- If an insight ledger is provided, it holds the user's own recurring reflections (hypotheses, ideas, concerns) distilled from past logs, with a 'raised N×' recurrence count. A reflection the user keeps returning to — especially a concern or a hypothesis with a rising count — is exactly the kind of non-obvious, durable pattern the Insight line should surface. Reflect it back as their own observation; never relabel, therapize, or moralize it."
                     ),
                     "cache_control": {"type": "ephemeral"},
@@ -360,6 +371,41 @@ class Planner:
                 },
             ],
             messages=[{"role": "user", "content": user_content}],
+        )
+        return response.content[0].text.strip()
+
+    async def habit_strategy(self, strugglers: list[dict]) -> str:
+        """A 4-Laws strategy for chronically-missed habits — one concrete fix each."""
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=500,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You help the user get unstuck on habits they keep missing, using James "
+                        "Clear's Atomic Habits Four Laws: make it Obvious (a clear cue / habit "
+                        "stack — 'after [existing habit]'), Attractive, Easy (the two-minute rule "
+                        "— shrink it to a version that takes two minutes), and Satisfying.\n\n"
+                        "For EACH struggling habit given, output one short block:\n"
+                        "• <b>Habit</b> — the likely friction in one phrase, then ONE concrete, "
+                        "tiny next step (usually a two-minute version or a specific cue/stack).\n\n"
+                        "Rules: be concrete and small — the goal is the smallest change that "
+                        "restarts the chain, not a grand plan. If a habit already has a cue, build "
+                        "on it. No shame, no moralizing, no lectures about discipline. Don't tell "
+                        "them the habit matters — they know. Two-minute versions over willpower. "
+                        "Keep the whole reply short; a tired person is reading it on a phone."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            messages=[{"role": "user", "content": json.dumps(strugglers)}],
         )
         return response.content[0].text.strip()
 

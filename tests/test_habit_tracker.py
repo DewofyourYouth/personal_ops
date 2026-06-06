@@ -69,3 +69,36 @@ def test_compute_streak_respects_due_days(tmp_path):
     _write_habit_days(logs, "Daily walk", range(0, 30))
     current, longest = compute_streak(logs, "Daily walk", due_weekdays=None)
     assert current >= 20 and longest >= current
+
+
+_HABITS_TABLE = """
+CREATE TABLE habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, section TEXT, name TEXT,
+    days TEXT DEFAULT '', tracked INTEGER DEFAULT 1, position INTEGER DEFAULT 0,
+    cue TEXT DEFAULT '', identity TEXT DEFAULT ''
+)
+"""
+
+
+def test_struggling_habits(tmp_path):
+    from habit_tracker import struggling_habits
+
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Daily walk',1)")
+    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Anki',1)")
+    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Stretch',1)")
+    today = date.today()
+    # Daily walk: done every recent day → healthy, not struggling.
+    for i in range(0, 20):
+        d = today - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Daily walk")
+    # Anki: done only 25–34 days ago → has a past streak but missed the recent window.
+    for i in range(25, 35):
+        d = today - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Anki")
+    # Stretch: never done → excluded (not-yet-started, not failing).
+    names = [s["name"] for s in struggling_habits(logs, window=14, threshold=0.5)]
+    assert "Anki" in names
+    assert "Daily walk" not in names
+    assert "Stretch" not in names

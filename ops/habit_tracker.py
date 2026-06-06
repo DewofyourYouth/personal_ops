@@ -120,6 +120,53 @@ def recent_chain(
     return chain
 
 
+def struggling_habits(
+    logs: Logs,
+    window: int = 14,
+    threshold: float = 0.5,
+    logged_by_day: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Tracked habits whose completion over the last `window` due days is below
+    `threshold` — the 'these need a strategy' set. Reads the habits table directly.
+
+    Excludes habits never once done (longest streak 0): those are not-yet-started,
+    not failing. Returns worst-first dicts with the stats the strategy call needs.
+    """
+    if logged_by_day is None:
+        logged_by_day = load_habit_logs(logs)
+    rows = logs.db.query("SELECT name, days, cue, identity FROM habits WHERE tracked = 1")
+    out = []
+    for r in rows:
+        due = [int(d) for d in r["days"].split(",") if d != ""] or None
+        chain = recent_chain(
+            logs, r["name"], due, n=window, logged_by_day=logged_by_day
+        )
+        if not chain:
+            continue
+        rate = sum(chain) / len(chain)
+        if rate >= threshold:
+            continue
+        cur, longest = compute_streak(
+            logs, r["name"], due_weekdays=due, logged_by_day=logged_by_day
+        )
+        if longest == 0:  # never started — not a failing habit, just an unbegun one
+            continue
+        out.append(
+            {
+                "name": r["name"],
+                "done": sum(chain),
+                "of": len(chain),
+                "rate": round(rate, 2),
+                "current_streak": cur,
+                "best_streak": longest,
+                "cue": r["cue"] or "",
+                "identity": r["identity"] or "",
+            }
+        )
+    out.sort(key=lambda x: x["rate"])
+    return out
+
+
 def missed_last_due_day(
     logs: Logs,
     habit_name: str,
