@@ -272,7 +272,9 @@ class HabitHandlers:
         self.context = context
         self.allowed_user = allowed_user
         self.planner = planner  # for the failing-habit strategy (4-Laws) call
-        self.shabbat = Shabbat(logs.log_dir)  # to know when it's actually Shabbat vs motzei
+        self.shabbat = Shabbat(
+            logs.log_dir
+        )  # to know when it's actually Shabbat vs motzei
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
