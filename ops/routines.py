@@ -221,7 +221,9 @@ class RoutineHandlers:
             self._render(self.store.get(name)), parse_mode="HTML"
         )
 
-    async def cmd_routine_step(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_routine_step(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Edit one step without retyping the whole routine.
         /routinestep Morning: add 3 weigh myself   — insert at position 3
         /routinestep Morning: rm 3                  — remove step 3
@@ -249,7 +251,9 @@ class RoutineHandlers:
                 await update.message.reply_text("Add what? Give the step text.")
                 return
             if self.store.insert_step(name.strip(), pos, step) is None:
-                await update.message.reply_text(f"No routine “{html.escape(name.strip())}”.")
+                await update.message.reply_text(
+                    f"No routine “{html.escape(name.strip())}”."
+                )
                 return
         else:  # rm
             removed = self.store.remove_step(name.strip(), pos)

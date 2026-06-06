@@ -167,7 +167,12 @@ class HabitStore:
         now = datetime.now(ZoneInfo("Asia/Jerusalem"))
         self.db.execute(
             "INSERT INTO habit_notes (ts, date, habit, note) VALUES (?, ?, ?, ?)",
-            (now.isoformat(timespec="seconds"), now.date().isoformat(), habit_name, note.strip()),
+            (
+                now.isoformat(timespec="seconds"),
+                now.date().isoformat(),
+                habit_name,
+                note.strip(),
+            ),
         )
 
     def notes_for(self, habit_name: str, limit: int = 10) -> list[dict]:
@@ -186,7 +191,9 @@ class HabitStore:
             "SELECT date, habit, note FROM habit_notes WHERE date >= ? ORDER BY id",
             (start,),
         )
-        return [{"date": r["date"], "habit": r["habit"], "note": r["note"]} for r in rows]
+        return [
+            {"date": r["date"], "habit": r["habit"], "note": r["note"]} for r in rows
+        ]
 
 
 async def match_habit(content: str, db) -> str | None:
@@ -552,10 +559,14 @@ class HabitHandlers:
                 return
             notes = self.store.notes_for(display)
             if not notes:
-                await update.message.reply_text(f"No notes yet for {html.escape(display)}.")
+                await update.message.reply_text(
+                    f"No notes yet for {html.escape(display)}."
+                )
                 return
             lines = [f"📝 <b>{html.escape(display)}</b> — recent notes\n"]
-            lines += [f"<code>{n['date']}</code> {html.escape(n['note'])}" for n in notes]
+            lines += [
+                f"<code>{n['date']}</code> {html.escape(n['note'])}" for n in notes
+            ]
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
 
