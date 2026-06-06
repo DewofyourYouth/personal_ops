@@ -79,6 +79,27 @@ class RoutineStore:
         self.db.execute("DELETE FROM routines WHERE id = ?", (existing["id"],))
         return True
 
+    def insert_step(self, name: str, position: int, step: str) -> list[str] | None:
+        """Insert `step` at 1-based `position` (clamped); position past the end appends.
+        Returns the new step list, or None if the routine doesn't exist."""
+        routine = self.get(name)
+        if not routine:
+            return None
+        steps = routine["steps"]
+        idx = max(0, min(position - 1, len(steps)))
+        steps.insert(idx, step.strip())
+        self.upsert(routine["name"], steps, routine["anchor"])
+        return steps
+
+    def remove_step(self, name: str, position: int) -> str | None:
+        """Remove the step at 1-based `position`. Returns the removed step text, or None."""
+        routine = self.get(name)
+        if not routine or not (1 <= position <= len(routine["steps"])):
+            return None
+        removed = routine["steps"].pop(position - 1)
+        self.upsert(routine["name"], routine["steps"], routine["anchor"])
+        return removed
+
 
 class RoutineHandlers:
     def __init__(
@@ -95,6 +116,7 @@ class RoutineHandlers:
         app.add_handler(CommandHandler("routine", self.cmd_routine))
         app.add_handler(CommandHandler("addroutine", self.cmd_add_routine))
         app.add_handler(CommandHandler("delroutine", self.cmd_del_routine))
+        app.add_handler(CommandHandler("routinestep", self.cmd_routine_step))
 
     # --- Habit linking ---
 
@@ -197,6 +219,47 @@ class RoutineHandlers:
         self.store.upsert(name, steps, anchor.strip())
         await update.message.reply_text(
             self._render(self.store.get(name)), parse_mode="HTML"
+        )
+
+    async def cmd_routine_step(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Edit one step without retyping the whole routine.
+        /routinestep Morning: add 3 weigh myself   — insert at position 3
+        /routinestep Morning: rm 3                  — remove step 3
+        (positions are the numbers shown by /routine)"""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        usage = (
+            "Usage:\n<code>/routinestep Morning: add 3 weigh myself</code>\n"
+            "<code>/routinestep Morning: rm 3</code>\n(positions are the numbers in /routine)"
+        )
+        if ":" not in raw:
+            await update.message.reply_text(usage, parse_mode="HTML")
+            return
+        name, rest = raw.split(":", 1)
+        parts = rest.split()
+        if len(parts) < 2 or parts[0] not in ("add", "rm") or not parts[1].isdigit():
+            await update.message.reply_text(usage, parse_mode="HTML")
+            return
+        verb, pos = parts[0], int(parts[1])
+
+        if verb == "add":
+            step = rest.split(None, 2)[2] if len(parts) >= 3 else ""
+            if not step:
+                await update.message.reply_text("Add what? Give the step text.")
+                return
+            if self.store.insert_step(name.strip(), pos, step) is None:
+                await update.message.reply_text(f"No routine “{html.escape(name.strip())}”.")
+                return
+        else:  # rm
+            removed = self.store.remove_step(name.strip(), pos)
+            if removed is None:
+                await update.message.reply_text(
+                    f"No step {pos} in “{html.escape(name.strip())}” (or no such routine)."
+                )
+                return
+        await update.message.reply_text(
+            self._render(self.store.get(name.strip())), parse_mode="HTML"
         )
 
     async def cmd_del_routine(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -40,3 +40,25 @@ def test_remove(store):
     assert store.remove("morning") is True
     assert store.get("Morning") is None
     assert store.remove("nope") is False
+
+
+def test_insert_step(store):
+    store.upsert("Morning", ["wake", "get dressed", "shul"])
+    steps = store.insert_step("Morning", 2, "weigh myself")  # before "get dressed"
+    assert steps == ["wake", "weigh myself", "get dressed", "shul"]
+    assert store.get("Morning")["steps"] == steps
+
+
+def test_insert_step_clamps_and_appends(store):
+    store.upsert("Morning", ["a", "b"])
+    store.insert_step("Morning", 99, "z")  # past end -> append
+    store.insert_step("Morning", 0, "first")  # below 1 -> front
+    assert store.get("Morning")["steps"] == ["first", "a", "b", "z"]
+    assert store.insert_step("Nope", 1, "x") is None  # missing routine
+
+
+def test_remove_step(store):
+    store.upsert("Morning", ["a", "b", "c"])
+    assert store.remove_step("Morning", 2) == "b"
+    assert store.get("Morning")["steps"] == ["a", "c"]
+    assert store.remove_step("Morning", 9) is None  # out of range
