@@ -73,7 +73,8 @@ HELP_TEXT = """<b>Planning</b>
 <code>edit &lt;N&gt; &lt;new text&gt;</code> — edit an agenda item
 
 <b>Habits</b>
-/habits — today's habit checklist (from habits.md)
+/habits — today's checklist with streaks 🔥, the chain 🟩⬜, and ⚠️ don't-miss-twice flags
+/habitcue — set a habit's cue / implementation intention (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
 /habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
 <code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
 <code>skip: &lt;reason&gt;</code> — log an external constraint that excused habits today (e.g. <i>skip: chavrusa cancelled</i>)

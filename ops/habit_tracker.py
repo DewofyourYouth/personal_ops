@@ -29,8 +29,48 @@ def _logged_on(logs: Logs, d: date) -> list[str]:
     return result
 
 
-def compute_streak(logs: Logs, habit_name: str, lookback: int = 365) -> tuple[int, int]:
-    """Return (current_streak, longest_streak), skipping Shabbat."""
+def load_habit_logs(logs: Logs, days: int = 400) -> dict[str, list[str]]:
+    """All habit-log contents per day from SQLite in one query.
+
+    Pass the result as `logged_by_day` to compute_streak / recent_chain /
+    missed_last_due_day to batch many habits' lookbacks into a single read instead
+    of one file open per day per habit.
+    """
+    start = date.today() - timedelta(days=days)
+    by_day: dict[str, list[str]] = {}
+    for r in logs.db.entries_for_range(start, date.today()):
+        if r["tag"] == "habit":
+            by_day.setdefault(r["date"], []).append(r["content"].strip().lower())
+    return by_day
+
+
+def _logged_for(
+    logs: Logs, d: date, logged_by_day: dict[str, list[str]] | None
+) -> list[str]:
+    if logged_by_day is not None:
+        return logged_by_day.get(d.isoformat(), [])
+    return _logged_on(logs, d)
+
+
+def _is_due(d: date, due_weekdays: list[int] | None) -> bool:
+    """A day counts toward a habit only if it's not Shabbat and is a scheduled weekday."""
+    if d.weekday() == SHABBAT:
+        return False
+    return due_weekdays is None or d.weekday() in due_weekdays
+
+
+def compute_streak(
+    logs: Logs,
+    habit_name: str,
+    lookback: int = 365,
+    due_weekdays: list[int] | None = None,
+    logged_by_day: dict[str, list[str]] | None = None,
+) -> tuple[int, int]:
+    """Return (current_streak, longest_streak), counting only due (non-Shabbat) days.
+
+    `due_weekdays` (0=Mon..6=Sun) restricts which days count; None = every non-Shabbat
+    day. A day the habit isn't scheduled for is neither a hit nor a break.
+    """
     today = date.today()
     current = 0
     longest = 0
@@ -39,9 +79,9 @@ def compute_streak(logs: Logs, habit_name: str, lookback: int = 365) -> tuple[in
 
     for i in range(lookback):
         d = today - timedelta(days=i)
-        if d.weekday() == SHABBAT:
+        if not _is_due(d, due_weekdays):
             continue
-        done = any(_matches(habit_name, h) for h in _logged_on(logs, d))
+        done = any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
         if done:
             run += 1
             if in_current:
@@ -53,6 +93,50 @@ def compute_streak(logs: Logs, habit_name: str, lookback: int = 365) -> tuple[in
             run = 0
 
     return current, max(longest, run)
+
+
+def recent_chain(
+    logs: Logs,
+    habit_name: str,
+    due_weekdays: list[int] | None = None,
+    n: int = 14,
+    lookback: int = 400,
+    logged_by_day: dict[str, list[str]] | None = None,
+) -> list[bool]:
+    """Done/not-done for the last `n` DUE days, oldest→newest — the 'don't break the
+    chain' visual. Off/Shabbat days are skipped so the chain is pure hits and misses."""
+    today = date.today()
+    chain: list[bool] = []
+    for i in range(lookback):
+        if len(chain) >= n:
+            break
+        d = today - timedelta(days=i)
+        if not _is_due(d, due_weekdays):
+            continue
+        chain.append(
+            any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
+        )
+    chain.reverse()
+    return chain
+
+
+def missed_last_due_day(
+    logs: Logs,
+    habit_name: str,
+    due_weekdays: list[int] | None = None,
+    lookback: int = 400,
+    logged_by_day: dict[str, list[str]] | None = None,
+) -> bool:
+    """True if the most recent prior due day was missed — the 'never miss twice' trigger."""
+    today = date.today()
+    for i in range(1, lookback):
+        d = today - timedelta(days=i)
+        if not _is_due(d, due_weekdays):
+            continue
+        return not any(
+            _matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day)
+        )
+    return False
 
 
 def _is_separator(line: str) -> bool:

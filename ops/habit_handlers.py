@@ -18,7 +18,13 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from context import Context
-from habit_tracker import compute_streak, generate_habit_log
+from habit_tracker import (
+    compute_streak,
+    generate_habit_log,
+    load_habit_logs,
+    missed_last_due_day,
+    recent_chain,
+)
 from logs import Logs
 from tg_common import safe_answer
 
@@ -29,7 +35,8 @@ CREATE TABLE IF NOT EXISTS habits (
     name     TEXT NOT NULL,
     days     TEXT NOT NULL DEFAULT '',   -- CSV of weekday ints (0=Mon..6=Sun); '' = every day
     tracked  INTEGER NOT NULL DEFAULT 1, -- 0 = kept for context only (e.g. "Always off")
-    position INTEGER NOT NULL DEFAULT 0
+    position INTEGER NOT NULL DEFAULT 0,
+    cue      TEXT NOT NULL DEFAULT ''    -- implementation intention / habit-stack anchor
 );
 """
 
@@ -52,9 +59,16 @@ class HabitStore:
         self.db = db
         self.context = context
         self.db.ensure_schema(_HABITS_DDL)
+        self._migrate_cue_column()
         if not self.db.query("SELECT 1 FROM habits LIMIT 1"):
             self._seed_from_markdown()
         self._project_markdown()
+
+    def _migrate_cue_column(self) -> None:
+        """Add the `cue` column to pre-existing habits tables (idempotent)."""
+        cols = {r["name"] for r in self.db.query("PRAGMA table_info(habits)")}
+        if "cue" not in cols:
+            self.db.execute("ALTER TABLE habits ADD COLUMN cue TEXT NOT NULL DEFAULT ''")
 
     # --- Reads ---
 
@@ -71,6 +85,7 @@ class HabitStore:
                     "name": r["name"],
                     "days": _csv_to_days(r["days"]),
                     "tracked": bool(r["tracked"]),
+                    "cue": (r["cue"] if "cue" in r.keys() else "") or "",
                 }
             )
         return out
@@ -106,6 +121,19 @@ class HabitStore:
             (1 if tracked else 0, habit_id),
         )
         self._project_markdown()
+
+    def set_cue_by_name(self, name: str, cue: str) -> str | None:
+        """Set the cue (implementation intention / stack anchor) on the habit whose
+        display name matches `name` (case-insensitive). Returns the matched name or None."""
+        target = name.strip().lower()
+        for h in self.list_habits(tracked_only=False):
+            display = self.context.habit_display_name(h["name"])
+            if display.strip().lower() == target or h["name"].strip().lower() == target:
+                self.db.execute(
+                    "UPDATE habits SET cue = ? WHERE id = ?", (cue.strip(), h["id"])
+                )
+                return display
+        return None
 
     # --- Seed + projection (table <-> habits.md) ---
 
@@ -242,6 +270,7 @@ class HabitHandlers:
         app.add_handler(CommandHandler("h", self.cmd_habits))
         app.add_handler(CommandHandler("habitlog", self.cmd_habit_log))
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
+        app.add_handler(CommandHandler("habitcue", self.cmd_habit_cue))
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
         app.add_handler(CommandHandler("habitcheck", self.cmd_habit_check))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^hb_done:"))
@@ -299,8 +328,11 @@ class HabitHandlers:
             if h:
                 done_ids.add(h["id"])
 
+        logged_by_day = load_habit_logs(self.logs)  # one DB read, shared by all habits
+
         lines = ["📋 <b>Habits</b>\n"]
         rows = []
+        at_risk_any = False
         for section, habits in sections.items():
             visible = [
                 h for h in habits if h["days"] is None or today_weekday in h["days"]
@@ -311,17 +343,39 @@ class HabitHandlers:
             for h in visible:
                 name = self.context.habit_display_name(h["name"])
                 done = h["id"] in done_ids
-                lines.append(f"{'✅' if done else '⬜'} {html.escape(name)}")
+                cur, _ = compute_streak(
+                    self.logs, h["name"], due_weekdays=h["days"], logged_by_day=logged_by_day
+                )
+                chain = "".join(
+                    "🟩" if x else "⬜"
+                    for x in recent_chain(
+                        self.logs, h["name"], h["days"], n=10, logged_by_day=logged_by_day
+                    )
+                )
+                at_risk = (not done) and missed_last_due_day(
+                    self.logs, h["name"], h["days"], logged_by_day=logged_by_day
+                )
+                at_risk_any = at_risk_any or at_risk
+                flame = f"  🔥{cur}" if cur else ""
+                warn = "  ⚠️ don't miss twice" if at_risk else ""
+                lines.append(
+                    f"{'✅' if done else '⬜'} {html.escape(name)}{flame}{warn}"
+                )
+                sub = chain
+                if h["cue"]:
+                    sub += f"  ↳ {html.escape(h['cue'])}"
+                if sub:
+                    lines.append(sub)
                 if not done:
                     key = name[:52]  # callback_data max 64 bytes; "hb_done:" = 8
+                    label = ("⚠️ " if at_risk else "✅ ") + name
                     rows.append(
-                        [
-                            InlineKeyboardButton(
-                                f"✅ {name}", callback_data=f"hb_done:{key}"
-                            )
-                        ]
+                        [InlineKeyboardButton(label, callback_data=f"hb_done:{key}")]
                     )
             lines.append("")
+
+        if at_risk_any:
+            lines.append("⚠️ = missed last time. Don't miss twice — that's how chains die.")
 
         return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
 
@@ -486,6 +540,38 @@ class HabitHandlers:
         await update.message.reply_text(
             f"➕ Added habit: <b>{html.escape(raw)}</b>", parse_mode="HTML"
         )
+
+    async def cmd_habit_cue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/habitcue <habit>: <cue> — set an implementation intention / stack anchor.
+
+        e.g. /habitcue Daf Yomi: after Maariv, 21:00 at the beis
+        With no args (or no colon) it lists each habit's current cue.
+        """
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if ":" not in raw:
+            lines = ["🔗 <b>Habit cues</b> (when/where/after)\n"]
+            for h in self.store.list_habits(tracked_only=False):
+                disp = self.context.habit_display_name(h["name"])
+                cue = h["cue"] or "—"
+                lines.append(f"• {html.escape(disp)}: {html.escape(cue)}")
+            lines.append(
+                "\nSet one: <code>/habitcue Daf Yomi: after Maariv, 21:00</code>"
+            )
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+        name, cue = raw.split(":", 1)
+        matched = self.store.set_cue_by_name(name.strip(), cue.strip())
+        if matched:
+            await update.message.reply_text(
+                f"🔗 <b>{html.escape(matched)}</b> → <i>{html.escape(cue.strip())}</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                f"No habit matching “{html.escape(name.strip())}”. Try /habits to see names."
+            )
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []
