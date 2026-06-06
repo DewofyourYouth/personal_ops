@@ -26,6 +26,7 @@ from habit_tracker import (
     recent_chain,
 )
 from logs import Logs
+from shabbat import Shabbat
 from tg_common import safe_answer
 
 _HABITS_DDL = """
@@ -137,7 +138,8 @@ class HabitStore:
             display = self.context.habit_display_name(h["name"])
             if display.strip().lower() == target or h["name"].strip().lower() == target:
                 self.db.execute(
-                    f"UPDATE habits SET {field} = ? WHERE id = ?", (value.strip(), h["id"])
+                    f"UPDATE habits SET {field} = ? WHERE id = ?",
+                    (value.strip(), h["id"]),
                 )
                 return display
         return None
@@ -270,6 +272,7 @@ class HabitHandlers:
         self.context = context
         self.allowed_user = allowed_user
         self.planner = planner  # for the failing-habit strategy (4-Laws) call
+        self.shabbat = Shabbat(logs.log_dir)  # to know when it's actually Shabbat vs motzei
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
@@ -327,15 +330,15 @@ class HabitHandlers:
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
 
-        from habit_tracker import SHABBAT
-
-        today_weekday = _date.today().weekday()
-        if today_weekday == SHABBAT:
+        # Only suppress the list while it's actually Shabbat — once it's out (motzei
+        # shabbat, Saturday night), the list comes back so the week can start.
+        if self.shabbat.quiet_now():
             return (
-                "🕯 <b>Shabbat</b> — habits aren't tracked today, and today never counts "
+                "🕯 <b>Shabbat</b> — habits aren't tracked now, and Shabbat never counts "
                 "against a streak. Rest.",
                 InlineKeyboardMarkup([]),
             )
+        today_weekday = _date.today().weekday()
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
@@ -370,12 +373,19 @@ class HabitHandlers:
                 name = self.context.habit_display_name(h["name"])
                 done = h["id"] in done_ids
                 cur, _ = compute_streak(
-                    self.logs, h["name"], due_weekdays=h["days"], logged_by_day=logged_by_day
+                    self.logs,
+                    h["name"],
+                    due_weekdays=h["days"],
+                    logged_by_day=logged_by_day,
                 )
                 chain = "".join(
                     "🟩" if x else "⬜"
                     for x in recent_chain(
-                        self.logs, h["name"], h["days"], n=10, logged_by_day=logged_by_day
+                        self.logs,
+                        h["name"],
+                        h["days"],
+                        n=10,
+                        logged_by_day=logged_by_day,
                     )
                 )
                 at_risk = (not done) and missed_last_due_day(
@@ -401,7 +411,9 @@ class HabitHandlers:
             lines.append("")
 
         if at_risk_any:
-            lines.append("⚠️ = missed last time. Don't miss twice — that's how chains die.")
+            lines.append(
+                "⚠️ = missed last time. Don't miss twice — that's how chains die."
+            )
 
         return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
 
@@ -627,7 +639,10 @@ class HabitHandlers:
         for h in self.store.list_habits(tracked_only=True):
             disp = self.context.habit_display_name(h["name"])
             cur, _ = compute_streak(
-                self.logs, h["name"], due_weekdays=h["days"], logged_by_day=logged_by_day
+                self.logs,
+                h["name"],
+                due_weekdays=h["days"],
+                logged_by_day=logged_by_day,
             )
             label = f"{disp} 🔥{cur}" if cur else disp
             if h["identity"]:
@@ -654,7 +669,9 @@ class HabitHandlers:
             lines.append(f"<i>Untagged: {html.escape(', '.join(untagged))}</i>")
         await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
-    async def cmd_habit_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_habit_strategy(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """/habitstrategy — run a 4-Laws strategy session on chronically-missed habits."""
         if update.effective_user.id != self.allowed_user:
             return
