@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from food_handlers import FoodHandlers
 from habit_handlers import HabitHandlers
+from routines import RoutineHandlers
 
 
 def build_plugins(bot, services: SimpleNamespace) -> list:
@@ -27,6 +28,9 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
             services.planner,
         ),
         FoodHandlers(bot, services.logs, services.allowed_user),
+        RoutineHandlers(
+            bot, services.logs, services.context, services.allowed_user
+        ),
     ]
 
 

@@ -77,6 +77,8 @@ HELP_TEXT = """<b>Planning</b>
 /habitcue — set a habit's cue / implementation intention (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
 /identity — habits grouped by the identity they vote for (<code>/identity Daf Yomi: Ben Torah</code> to tag)
 /habitstrategy — a 4-Laws plan for habits you keep missing
+/routines — your habit-stack routines; /routine &lt;name&gt; to view one
+<code>/addroutine Morning @06:15: step | step | step</code> — create/edit a routine (linked habits show streaks)
 /habitlog — generate today's habit log file for Obsidian (done + streaks pre-filled, add notes manually)
 <code>habit: &lt;name&gt;</code> — log a completed habit (e.g. <i>habit: walk</i>, <i>habit: daf yomi</i>)
 <code>skip: &lt;reason&gt;</code> — log an external constraint that excused habits today (e.g. <i>skip: chavrusa cancelled</i>)
