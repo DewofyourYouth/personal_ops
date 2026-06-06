@@ -24,7 +24,7 @@ from context import Context
 from digest import DigestHandlers
 from gcal import GCal
 from logs import Logs
-from media import send_sticker, send_startup_video
+from media import send_sticker, send_startup_animation
 from planner import Planner
 from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
@@ -102,8 +102,16 @@ _awaiting_queue_day: dict = {}  # chat_id -> {"step": "bl_day", "data": {...}} b
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if isinstance(context.error, (NetworkError, BadRequest)):
-        return  # transient — swallow silently
+    if isinstance(context.error, NetworkError):
+        return  # transient connectivity blips — genuinely noisy, swallow
+    if isinstance(context.error, BadRequest):
+        # A malformed reply (bad HTML, a GIF sent via send_video, an unchanged
+        # edit). It LOOKS like the bot ignored the user, so log it loudly with the
+        # offending update rather than swallowing — silence here is undebuggable.
+        logging.getLogger(__name__).warning(
+            "BadRequest while handling update: %s | update=%s", context.error, update
+        )
+        return
     # Never fail silently on a real error: log it AND tell the user their
     # message wasn't handled, so a dropped entry can't disappear unnoticed.
     logging.getLogger(__name__).exception(
@@ -663,7 +671,7 @@ async def _post_init(application):
             chat_id=ALLOWED_USER,
             text=f"🔄 Bot back online. If you sent anything in the last minute, please resend it.{note}",
         )
-        await send_startup_video(application.bot, ALLOWED_USER)
+        await send_startup_animation(application.bot, ALLOWED_USER)
     except Exception:
         logging.getLogger(__name__).exception("Failed to send back-online ping")
     global _scheduler

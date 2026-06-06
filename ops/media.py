@@ -23,7 +23,7 @@ _STICKERS = {
     "voice": "po_voice.webm",
     "winddown": "po_winddown.webm",
 }
-_STARTUP_VIDEO = "back-up.mp4"
+_STARTUP_ANIMATION = "restart.gif"
 
 
 async def send_sticker(bot, chat_id: int, kind: str) -> None:
@@ -41,15 +41,19 @@ async def send_sticker(bot, chat_id: int, kind: str) -> None:
         logger.exception("Failed to send '%s' sticker", kind)
 
 
-async def send_startup_video(bot, chat_id: int) -> None:
-    """Send the 'back up' video once on startup. Best-effort."""
-    path = _DIR / _STARTUP_VIDEO
+async def send_startup_animation(bot, chat_id: int) -> None:
+    """Send the 'back up' GIF once on startup. Best-effort.
+
+    GIFs render on Telegram only via sendAnimation (sendVideo rejects them with a
+    BadRequest), so this uses send_animation.
+    """
+    path = _DIR / _STARTUP_ANIMATION
     if not path.exists():
         return
     try:
         with open(path, "rb") as f:
-            await bot.send_video(
-                chat_id=chat_id, video=f, caption="🟢 personal_ops is back up."
+            await bot.send_animation(
+                chat_id=chat_id, animation=f, caption="🟢 personal_ops is back up."
             )
     except Exception:
-        logger.exception("Failed to send startup video")
+        logger.exception("Failed to send startup animation")
