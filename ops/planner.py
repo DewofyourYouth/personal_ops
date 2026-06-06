@@ -39,6 +39,15 @@ class Planner:
         self.insights = Insights(logs.log_dir)
         self.weight = Weight(logs.db)
 
+    def _context_block(self) -> str:
+        """The `## User context` system block: the context files plus the habit
+        schedule rendered live from the DB (the single source of truth, no habits.md)."""
+        from habit_tracker import format_habits_for_prompt
+
+        ctx = self.context.load_all()
+        habits = format_habits_for_prompt(self.logs.db)
+        return f"## User context\n\n{ctx}" + (f"\n\n{habits}" if habits else "")
+
     async def propose(
         self, calendar_events: str = "", existing_summary: str = ""
     ) -> list[str]:
@@ -70,7 +79,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
@@ -142,6 +151,19 @@ class Planner:
                 + "\n".join(lines)
                 + "\n\n"
             )
+        try:
+            cutoff = (date.today() - timedelta(days=days)).isoformat()
+            note_rows = self.logs.db.query(
+                "SELECT date, habit, note FROM habit_notes WHERE date >= ? ORDER BY id",
+                (cutoff,),
+            )
+            if note_rows:
+                notes = "\n".join(
+                    f"- {r['date']} {r['habit']}: {r['note']}" for r in note_rows
+                )
+                user_content += f"Habit notes (this week):\n{notes}\n\n"
+        except Exception:
+            pass  # habit_notes table may not exist in minimal/test setups
         daily_summaries = self._read_daily_digests(days=days)
         if daily_summaries:
             user_content += f"Daily summaries (this week):\n{daily_summaries}"
@@ -170,7 +192,7 @@ class Planner:
                         "- Early log entries may contain bot-test noise (short fragments, repeated command words). Do not read these as real activity signals.\n"
                         "- A missed agenda item caused by an external constraint (e.g. chavrusa canceled, appointment ran over) is not a behavioral pattern. Classify it correctly.\n"
                         "- Log entries tagged #wrong are explicit user-flagged prompt failures — the bot proposed or did something it shouldn't have. Surface these in the digest and suggest which context file (agenda-rules.md, review-rules.md, etc.) should be updated to prevent recurrence.\n"
-                        "- Habits (defined in habits.md) are NOT tracked via the agenda. Do not infer whether habits were completed or missed from agenda data. If a habit appears in the agenda history, ignore its completion status — it proves nothing about whether the habit was actually done.\n"
+                        "- Habits (listed in the Habits section of the user context) are NOT tracked via the agenda. Do not infer whether habits were completed or missed from agenda data. If a habit appears in the agenda history, ignore its completion status — it proves nothing about whether the habit was actually done.\n"
                         "- Habit completion IS tracked via explicit `habit:` log entries. The stats include a Habit log table showing which habits were logged and on how many days. Use this as the authoritative source for habit adherence. Absence from the habit log on a given day means the habit was not logged — not necessarily that it wasn't done.\n"
                         "- Shabbat (Saturday) is intentionally offline — habits are never tracked on Shabbat. The maximum possible habit logging frequency is 6 days per week, not 7. Never flag Shabbat as a missed day or treat a 6/6 week as anything other than perfect.\n"
                         "- Step counts on Friday and Saturday are structurally low due to Shabbat — do not use raw step averages. The metrics include a pre-computed average excluding Fri/Sat; use that figure when referencing step activity.\n"
@@ -184,7 +206,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
@@ -286,7 +308,7 @@ class Planner:
                         "working on this very system — that is their call, not a lapse to correct. Do not tell them what they "
                         "should or shouldn't have worked on.\n\n"
                         "RESPECT THE CLOCK, AND RESPECT ITEM TIMING. The current time is provided. Many anchors have a "
-                        "SCHEDULED TIME defined in the user context (habits.md) — e.g. Daf Yomi is 21:00, Yerushalmi 06:15, "
+                        "SCHEDULED TIME defined in the user context (the Habits section) — e.g. Daf Yomi is 21:00, Yerushalmi 06:15, "
                         "Yoma 10:00–11:00. An item is NOT missed if its scheduled time has not yet passed relative to the "
                         "current time. Daf Yomi is never 'slipped' before 21:00. "
                         "Other items have NO fixed time and can be done any time before the day genuinely ends — the daily "
@@ -323,7 +345,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
@@ -370,7 +392,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
@@ -405,7 +427,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],
@@ -803,7 +825,7 @@ class Planner:
                 },
                 {
                     "type": "text",
-                    "text": f"## User context\n\n{self.context.load_all()}",
+                    "text": self._context_block(),
                     "cache_control": {"type": "ephemeral"},
                 },
             ],

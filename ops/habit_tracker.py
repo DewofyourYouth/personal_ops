@@ -1,11 +1,38 @@
 import json
 import re
 from datetime import date, timedelta
-from pathlib import Path
 
 from logs import Logs
 
 SHABBAT = 5  # Saturday
+
+_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
+
+
+def format_habits_for_prompt(db) -> str:
+    """Render tracked habits (grouped by section) for the planner context, from the DB.
+
+    Replaces the old habits.md projection: the habits table is the single source of
+    truth, and this is generated fresh at prompt time rather than via a file on disk.
+    """
+    rows = db.query(
+        "SELECT section, name, days, cue FROM habits WHERE tracked = 1 ORDER BY position, id"
+    )
+    if not rows:
+        return ""
+    # Group by section (first-appearance order) so each header appears once even if a
+    # habit's position sorts it apart from its section-mates.
+    sections: dict[str, list[str]] = {}
+    for r in rows:
+        days = [int(d) for d in r["days"].split(",") if d != ""]
+        tag = f" [{','.join(_ABBR[d] for d in sorted(days))}]" if days else ""
+        cue = f" — cue: {r['cue']}" if r["cue"] else ""
+        sections.setdefault(r["section"], []).append(f"- {r['name']}{tag}{cue}")
+    out = ["## Habits (schedule — source of truth is the habits table)"]
+    for section, items in sections.items():
+        out.append(f"\n### {section}")
+        out.extend(items)
+    return "\n".join(out)
 
 
 def _matches(template_name: str, logged: str) -> bool:
@@ -186,69 +213,3 @@ def missed_last_due_day(
             _matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day)
         )
     return False
-
-
-def _is_separator(line: str) -> bool:
-    return bool(re.match(r"^\|[\s\-:|]+\|", line.strip()))
-
-
-def _fill_table(template_text: str, logs: Logs, target_date: date) -> str:
-    lines = template_text.splitlines()
-    result = []
-    past_separator = False
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            past_separator = False
-            result.append(line)
-            continue
-
-        if _is_separator(stripped):
-            past_separator = True
-            result.append(line)
-            continue
-
-        if not past_separator:
-            result.append(line)
-            continue
-
-        # data row
-        cells = stripped.strip("|").split("|")
-        if len(cells) < 5:
-            result.append(line)
-            continue
-
-        habit_name = cells[0].strip()
-        streak_req = cells[4].strip() if len(cells) > 4 else ""
-        notes = cells[5].strip() if len(cells) > 5 else ""
-
-        logged_today = _logged_on(logs, target_date)
-        done = 1 if any(_matches(habit_name, h) for h in logged_today) else 0
-        cur, lon = compute_streak(logs, habit_name)
-
-        new_cells = [
-            f" {habit_name} ",
-            f" {done} ",
-            f" {cur} ",
-            f" {lon} ",
-            f" {streak_req} ",
-            f" {notes} ",
-        ]
-        result.append("|" + "|".join(new_cells) + "|")
-
-    return "\n".join(result)
-
-
-def generate_habit_log(
-    logs: Logs, template_path: Path, output_dir: Path, target_date: date
-) -> Path:
-    if not template_path.exists():
-        raise FileNotFoundError(f"Habit template not found: {template_path}")
-    template = template_path.read_text()
-    filled = template.replace("{{DATE}}", str(target_date))
-    filled = _fill_table(filled, logs, target_date)
-    output_dir.mkdir(exist_ok=True)
-    out = output_dir / f"{target_date}-habits.md"
-    out.write_text(filled)
-    return out

@@ -110,3 +110,45 @@ def test_struggling_habits(tmp_path):
     assert "Anki" in names
     assert "Daily walk" not in names
     assert "Stretch" not in names
+
+
+def test_format_habits_for_prompt(tmp_path):
+    from habit_tracker import format_habits_for_prompt
+
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,days,tracked,cue) VALUES "
+        "('Anchors','06:15 Yerushalmi chavrusa','',1,'solo-first')"
+    )
+    logs.db.execute(
+        "INSERT INTO habits (section,name,days,tracked) VALUES ('Anchors','21:00 Daf Yomi','',1)"
+    )
+    logs.db.execute(
+        "INSERT INTO habits (section,name,days,tracked) VALUES ('Off','Hidden',',',0)"
+    )
+    out = format_habits_for_prompt(logs.db)
+    assert "### Anchors" in out
+    assert "06:15 Yerushalmi chavrusa" in out
+    assert "cue: solo-first" in out
+    assert "Hidden" not in out  # untracked habits are excluded
+
+
+def test_habit_notes(tmp_path):
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_P(__file__).parent.parent / "ops"))
+    from context import Context
+    from habit_handlers import HabitStore
+
+    logs = Logs(str(tmp_path))
+    store = HabitStore(logs.db, Context(tmp_path))
+    store.add_note("Strength training", "shoulder felt off, went light")
+    store.add_note("Strength training", "back to normal")
+    store.add_note("Daf Yomi", "finished the masechta")
+
+    s_notes = store.notes_for("strength training")  # case-insensitive
+    assert len(s_notes) == 2
+    assert s_notes[0]["note"] == "back to normal"  # newest first
+    assert len(store.recent_notes(days=7)) == 3

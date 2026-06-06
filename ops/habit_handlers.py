@@ -4,10 +4,10 @@ Owns the whole vertical: its own SQLite table (plugins own their schema — the
 table is created here, not in core db.py), its data access, the Telegram
 checklist + CRUD, and semantic free-text matching.
 
-Source of truth is the `habits` table. On first run it seeds from the legacy
-`habits.md`, then projects a read-only `habits.md` back out so the planner's
-context bundle (`Context.load_all`) still sees habit scheduling info — the table
-is the mutable source, the markdown is a generated view.
+The `habits` table is the single source of truth — no markdown round-trip. The
+planner gets the schedule via `habit_tracker.format_habits_for_prompt(db)`,
+generated fresh from the table at prompt time. Notes are added from Telegram
+(`/habitnote`) into the `habit_notes` table, not edited in Obsidian files.
 """
 
 import html
@@ -20,7 +20,6 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from context import Context
 from habit_tracker import (
     compute_streak,
-    generate_habit_log,
     load_habit_logs,
     missed_last_due_day,
     recent_chain,
@@ -45,6 +44,17 @@ CREATE TABLE IF NOT EXISTS habits (
 # Columns added after the table's original shape; backfilled idempotently on startup.
 _ADDED_COLUMNS = {"cue": "''", "identity": "''"}
 
+_HABIT_NOTES_DDL = """
+CREATE TABLE IF NOT EXISTS habit_notes (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts    TEXT NOT NULL,
+    date  TEXT NOT NULL,
+    habit TEXT NOT NULL,   -- canonical habit name the note is about
+    note  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_habit_notes_habit ON habit_notes(habit);
+"""
+
 _INT_TO_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
 
@@ -64,10 +74,8 @@ class HabitStore:
         self.db = db
         self.context = context
         self.db.ensure_schema(_HABITS_DDL)
+        self.db.ensure_schema(_HABIT_NOTES_DDL)
         self._migrate_cue_column()
-        if not self.db.query("SELECT 1 FROM habits LIMIT 1"):
-            self._seed_from_markdown()
-        self._project_markdown()
 
     def _migrate_cue_column(self) -> None:
         """Backfill columns added after the original habits table shape (idempotent)."""
@@ -118,18 +126,15 @@ class HabitStore:
             "INSERT INTO habits (section, name, days, tracked, position) VALUES (?, ?, ?, 1, ?)",
             (section, name.strip(), _days_to_csv(days), nxt),
         )
-        self._project_markdown()
 
     def remove(self, habit_id: int) -> None:
         self.db.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
-        self._project_markdown()
 
     def set_tracked(self, habit_id: int, tracked: bool) -> None:
         self.db.execute(
             "UPDATE habits SET tracked = ? WHERE id = ?",
             (1 if tracked else 0, habit_id),
         )
-        self._project_markdown()
 
     def _set_field_by_name(self, field: str, name: str, value: str) -> str | None:
         """Set `field` on the habit whose display/raw name matches (case-insensitive)."""
@@ -152,64 +157,35 @@ class HabitStore:
         """Set the identity this habit votes for. Returns matched name or None."""
         return self._set_field_by_name("identity", name, identity)
 
-    # --- Seed + projection (table <-> habits.md) ---
+    # --- Notes (added via the bot, stored in the DB) ---
 
-    def _seed_from_markdown(self) -> None:
-        text = self.context.read("habits.md")
-        if not text:
-            return
-        pos, current, tracked = 0, None, True
-        for line in text.splitlines():
-            if line.startswith("## "):
-                current = line[3:].strip()
-                tracked = "always off" not in current.lower()
-            elif re.match(r"^\s*- ", line) and current is not None:
-                raw = re.sub(r"^\s*- ", "", line).strip()
-                tag_m = re.search(r"\[([^\]]+)\]$", raw)
-                if tag_m:
-                    days = [
-                        Context._DAY_NAMES[d.strip()]
-                        for d in tag_m.group(1).split(",")
-                        if d.strip() in Context._DAY_NAMES
-                    ]
-                    name = raw[: tag_m.start()].strip().rstrip("—").strip()
-                else:
-                    days, name = [], raw
-                pos += 1
-                self.db.execute(
-                    "INSERT INTO habits (section, name, days, tracked, position) VALUES (?, ?, ?, ?, ?)",
-                    (current, name, _days_to_csv(days), 1 if tracked else 0, pos),
-                )
+    def add_note(self, habit_name: str, note: str) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
-    def _project_markdown(self) -> None:
-        """Regenerate habits.md from the table so Context.load_all (planner context) and
-        Obsidian keep working. Source of truth is the table; this file is a derived view."""
-        rows = self.db.query(
-            "SELECT section, name, days, tracked FROM habits ORDER BY position, id"
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        self.db.execute(
+            "INSERT INTO habit_notes (ts, date, habit, note) VALUES (?, ?, ?, ?)",
+            (now.isoformat(timespec="seconds"), now.date().isoformat(), habit_name, note.strip()),
         )
-        order: list[str] = []
-        by_section: dict[str, list] = {}
-        for r in rows:
-            if r["section"] not in by_section:
-                by_section[r["section"]] = []
-                order.append(r["section"])
-            by_section[r["section"]].append(r)
-        lines = [
-            "<!-- generated from the habits table; manage habits via Telegram, not here -->",
-            "",
-        ]
-        for section in order:
-            lines.append(f"## {section}\n")
-            for r in by_section[section]:
-                days = _csv_to_days(r["days"])
-                tag = (
-                    f" [{','.join(_INT_TO_ABBR[d] for d in sorted(days))}]"
-                    if days
-                    else ""
-                )
-                lines.append(f"  - {r['name']}{tag}")
-            lines.append("")
-        self.context.write("habits.md", "\n".join(lines).rstrip() + "\n")
+
+    def notes_for(self, habit_name: str, limit: int = 10) -> list[dict]:
+        rows = self.db.query(
+            "SELECT date, note FROM habit_notes WHERE LOWER(habit) = LOWER(?) "
+            "ORDER BY id DESC LIMIT ?",
+            (habit_name.strip(), limit),
+        )
+        return [{"date": r["date"], "note": r["note"]} for r in rows]
+
+    def recent_notes(self, days: int = 7) -> list[dict]:
+        from datetime import date as _date, timedelta as _td
+
+        start = (_date.today() - _td(days=days)).isoformat()
+        rows = self.db.query(
+            "SELECT date, habit, note FROM habit_notes WHERE date >= ? ORDER BY id",
+            (start,),
+        )
+        return [{"date": r["date"], "habit": r["habit"], "note": r["note"]} for r in rows]
 
 
 async def match_habit(content: str, db) -> str | None:
@@ -289,9 +265,9 @@ class HabitHandlers:
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))
         app.add_handler(CommandHandler("h", self.cmd_habits))
-        app.add_handler(CommandHandler("habitlog", self.cmd_habit_log))
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
         app.add_handler(CommandHandler("habitcue", self.cmd_habit_cue))
+        app.add_handler(CommandHandler("habitnote", self.cmd_habit_note))
         app.add_handler(CommandHandler("identity", self.cmd_identity))
         app.add_handler(CommandHandler("habitstrategy", self.cmd_habit_strategy))
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
@@ -534,25 +510,67 @@ class HabitHandlers:
         text, keyboard = self._message()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
-    async def cmd_habit_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_habit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/habitnote <habit>: <note> — attach a dated note to a habit.
+        /habitnote <habit> — show that habit's recent notes. /habitnote — all recent."""
         if update.effective_user.id != self.allowed_user:
             return
-        from datetime import date as _date, timedelta as _td
+        raw = " ".join(context.args).strip() if context.args else ""
 
-        arg = " ".join(context.args).strip().lower() if context.args else ""
-        target = (
-            _date.today() - _td(days=1) if arg in ("yesterday", "y") else _date.today()
-        )
-        template = self.context.dir / "templates" / "habit-template.md"
-        output_dir = self.context.dir / "habits"
-        try:
-            path = generate_habit_log(self.logs, template, output_dir, target)
+        if ":" in raw:  # add a note
+            name, note = raw.split(":", 1)
+            display = self._resolve_habit_name(name.strip())
+            if not display:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(name.strip())}”. /habits to see names."
+                )
+                return
+            self.store.add_note(display, note.strip())
             await update.message.reply_text(
-                f"✅ Habit log saved: <code>{html.escape(path.name)}</code>\nOpen in Obsidian to add notes.",
+                f"📝 Noted on <b>{html.escape(display)}</b>: {html.escape(note.strip())}",
                 parse_mode="HTML",
             )
-        except Exception as e:
-            await update.message.reply_text(f"Failed: {e}")
+            return
+
+        if raw:  # show one habit's notes
+            display = self._resolve_habit_name(raw)
+            if not display:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(raw)}”. /habits to see names."
+                )
+                return
+            notes = self.store.notes_for(display)
+            if not notes:
+                await update.message.reply_text(f"No notes yet for {html.escape(display)}.")
+                return
+            lines = [f"📝 <b>{html.escape(display)}</b> — recent notes\n"]
+            lines += [f"<code>{n['date']}</code> {html.escape(n['note'])}" for n in notes]
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
+        # no args — recent notes across all habits
+        notes = self.store.recent_notes(days=14)
+        if not notes:
+            await update.message.reply_text(
+                "No habit notes yet. Add one: <code>/habitnote Strength: shoulder felt off</code>",
+                parse_mode="HTML",
+            )
+            return
+        lines = ["📝 <b>Recent habit notes</b>\n"]
+        lines += [
+            f"<code>{n['date']}</code> {html.escape(n['habit'])}: {html.escape(n['note'])}"
+            for n in notes[-15:]
+        ]
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    def _resolve_habit_name(self, name: str) -> str | None:
+        """Display name of the tracked/untracked habit matching `name`, or None."""
+        target = name.strip().lower()
+        for h in self.store.list_habits(tracked_only=False):
+            display = self.context.habit_display_name(h["name"])
+            if display.strip().lower() == target or h["name"].strip().lower() == target:
+                return display
+        return None
 
     # --- Handlers: CRUD ---
 
