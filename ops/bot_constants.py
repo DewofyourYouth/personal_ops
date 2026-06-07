@@ -98,7 +98,7 @@ HELP_TEXT = """<b>Planning</b>
 /context — view and edit your goals, priorities, constraints, projects, principles
 
 <b>Logging</b>
-<code>food: &lt;what you ate&gt;</code> — itemised nutrition estimate to confirm/adjust, then log (/food shows today's food log)
+<code>food: &lt;what you ate&gt;</code> — itemised nutrition estimate to confirm/adjust, then log (/food or /foodlog shows today's food with macro totals)
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric (e.g. <i>metric: steps 8000</i>)
 <code>did: &lt;text&gt;</code> — log a spontaneous win (tagged <code>#win</code>)
 <code>values: &lt;impression&gt;</code> — log a value/impression about the project (/values shows the evolution)
