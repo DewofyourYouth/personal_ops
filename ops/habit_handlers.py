@@ -29,6 +29,20 @@ from media import send_sticker
 from shabbat import Shabbat
 from tg_common import safe_answer
 
+
+def _match_key(s: str) -> str:
+    """Normalise a habit name for forgiving exact-match: lowercase, drop parenthetical
+    schedule annotations like "(07:00–08:00)", and strip surrounding punctuation/space.
+
+    Lets `/identity` and `/habitcue` match what a person naturally types ("Shacharit",
+    "eat at least 100 grams of protein") against the stored name ("Shacharit (07:00–08:00)",
+    "Eat at least 100 grams of protein.") without an LLM. Transliterations the model still
+    handles ("Shachris" → "Shacharit") fall through to match_habit.
+    """
+    s = re.sub(r"\s*\([^)]*\)", "", s.lower())
+    return s.strip(" \t.,!?;:—–-")
+
+
 _HABITS_DDL = """
 CREATE TABLE IF NOT EXISTS habits (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,10 +153,10 @@ class HabitStore:
 
     def _set_field_by_name(self, field: str, name: str, value: str) -> str | None:
         """Set `field` on the habit whose display/raw name matches (case-insensitive)."""
-        target = name.strip().lower()
+        target = _match_key(name)
         for h in self.list_habits(tracked_only=False):
             display = self.context.habit_display_name(h["name"])
-            if display.strip().lower() == target or h["name"].strip().lower() == target:
+            if _match_key(display) == target or _match_key(h["name"]) == target:
                 self.db.execute(
                     f"UPDATE habits SET {field} = ? WHERE id = ?",
                     (value.strip(), h["id"]),
@@ -587,12 +601,24 @@ class HabitHandlers:
 
     def _resolve_habit_name(self, name: str) -> str | None:
         """Display name of the tracked/untracked habit matching `name`, or None."""
-        target = name.strip().lower()
+        target = _match_key(name)
         for h in self.store.list_habits(tracked_only=False):
             display = self.context.habit_display_name(h["name"])
-            if display.strip().lower() == target or h["name"].strip().lower() == target:
+            if _match_key(display) == target or _match_key(h["name"]) == target:
                 return display
         return None
+
+    async def _resolve_or_match(self, name: str) -> str | None:
+        """Typed habit name → canonical display name. Forgiving exact match first (no
+        LLM), then the semantic match_habit resolver for transliterations/paraphrases
+        ("Shachris" → "Shacharit (07:00–08:00)") — the same resolver habit logging uses."""
+        direct = self._resolve_habit_name(name)
+        if direct:
+            return direct
+        try:
+            return await match_habit(name, self.logs.db)
+        except Exception:
+            return None
 
     # --- Handlers: CRUD ---
 
@@ -642,8 +668,9 @@ class HabitHandlers:
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
         name, cue = raw.split(":", 1)
-        matched = self.store.set_cue_by_name(name.strip(), cue.strip())
+        matched = await self._resolve_or_match(name.strip())
         if matched:
+            self.store.set_cue_by_name(matched, cue.strip())
             await update.message.reply_text(
                 f"🔗 <b>{html.escape(matched)}</b> → <i>{html.escape(cue.strip())}</i>",
                 parse_mode="HTML",
@@ -661,8 +688,9 @@ class HabitHandlers:
         raw = " ".join(context.args).strip() if context.args else ""
         if ":" in raw:
             name, ident = raw.split(":", 1)
-            matched = self.store.set_identity_by_name(name.strip(), ident.strip())
+            matched = await self._resolve_or_match(name.strip())
             if matched:
+                self.store.set_identity_by_name(matched, ident.strip())
                 await update.message.reply_text(
                     f"🪪 <b>{html.escape(matched)}</b> votes for "
                     f"<i>{html.escape(ident.strip())}</i>",
