@@ -622,9 +622,10 @@ class HabitHandlers:
         await safe_answer(query)
         habit_name = query.data.split(":", 1)[1]
         self.logs.write("habit", habit_name)
-        # Celebrate milestones on the checklist (not every tap — that'd be spam).
+        # Celebrate milestones on the checklist (not every tap — that'd be spam). 3 is the
+        # early "don't break the chain" win; then the usual 1/4/15-week-ish marks.
         cur, _ = compute_streak(self.logs, habit_name)
-        if cur in (7, 30, 100, 365):
+        if cur in (3, 7, 30, 100, 365):
             await send_sticker(self.bot, update.effective_chat.id, "streak")
         text, keyboard = self._message()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -783,8 +784,16 @@ class HabitHandlers:
                 )
                 return
             # Comma-separated identities; a leading '-' on a token removes it.
-            adds = [t.strip() for t in rest.split(",") if t.strip() and not t.strip().startswith("-")]
-            removes = [t.strip()[1:].strip() for t in rest.split(",") if t.strip().startswith("-")]
+            adds = [
+                t.strip()
+                for t in rest.split(",")
+                if t.strip() and not t.strip().startswith("-")
+            ]
+            removes = [
+                t.strip()[1:].strip()
+                for t in rest.split(",")
+                if t.strip().startswith("-")
+            ]
             if adds:
                 self.store.add_identities(matched, adds)
             for ident in removes:

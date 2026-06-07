@@ -20,6 +20,7 @@ from agenda_queue import AgendaQueue
 from bot_constants import STATUS_ICONS
 from gcal import GCal
 from logs import Logs
+from media import send_sticker
 from planner import Planner, day_type
 from tg_common import encourage, safe_answer
 
@@ -164,6 +165,8 @@ class AgendaHandlers:
         self.agenda.mark_status(item_id, status)
 
         await safe_answer(query, encourage() if status == "done" else "Marked missed.")
+        # Same celebratory/commiseration sticker as the habit check-in uses.
+        await send_sticker(self.bot, update.effective_chat.id, status)
 
         open_items = self.agenda.get_open()
         if not open_items:
@@ -312,6 +315,9 @@ class AgendaHandlers:
         selected = set(range(len(items)))
         self._pending[chat_id] = {"items": items, "selected": selected}
 
+        # Fired here (the shared path) so both the scheduled morning plan and a manual
+        # /plan show the sticker, right before the proposal lands.
+        await send_sticker(self.bot, chat_id, "plan")
         await self.bot.send_message(
             chat_id=chat_id,
             text=self._proposal_text(items, selected),

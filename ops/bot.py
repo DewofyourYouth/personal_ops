@@ -24,7 +24,7 @@ from context import Context
 from digest import DigestHandlers
 from gcal import GCal
 from logs import Logs
-from media import send_sticker, send_startup_animation
+from media import send_startup_animation
 from planner import Planner
 from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
@@ -231,7 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def morning_plan():
     if shabbat_.quiet_now():
         return
-    await send_sticker(_bot, ALLOWED_USER, "plan")
+    # The "plan" sticker now fires inside send_proposal (so manual /plan shows it too).
     await agenda_feature.send_proposal(ALLOWED_USER)
     # Friday: ask for candle lighting time
     if datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() == 4:
