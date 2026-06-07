@@ -93,6 +93,62 @@ class Planner:
             if re.match(r"^\d+\.", line.strip())
         ]
 
+    async def dedupe(self, existing: list[str], proposed: list[str]) -> list[str]:
+        """Collapse semantically-duplicate agenda items in `proposed`.
+
+        Returns the proposed list with (a) internal duplicates merged to one line and
+        (b) any item that just restates an `existing` open agenda item dropped — those
+        are already on the agenda. This is the fuzzy "is this the same task?" judgment
+        the exact-match guard in Agenda can't make (e.g. "3 p.m. set call Rev Galai" vs
+        "Complete the 3 p.m. call with Rev Galai"). Pure dedup: it never adds tasks and
+        keeps the clearest surviving phrasing verbatim. On any error it falls back to the
+        proposed list unchanged — dedup is a convenience, never a gate on planning.
+        """
+        if not proposed:
+            return []
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        existing_block = "\n".join(f"- {t}" for t in existing) or "(none)"
+        proposed_block = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(proposed))
+        try:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=512,
+                system=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "You deduplicate a proposed to-do list. Two items are duplicates "
+                            "if they describe the SAME concrete task, even if worded "
+                            "differently or at different specificity. Return the proposed items "
+                            "to KEEP, as a plain numbered list, with: duplicate clusters "
+                            "collapsed to a single item (keep the clearest existing wording "
+                            "verbatim — do not invent new wording), and any proposed item that "
+                            "duplicates one already on the agenda omitted entirely. Never add, "
+                            "split, or reword tasks. Output only the numbered list, nothing else."
+                        ),
+                    }
+                ],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Already on today's agenda:\n{existing_block}\n\n"
+                            f"Proposed items:\n{proposed_block}\n\n"
+                            "Return the deduplicated proposed items to keep."
+                        ),
+                    }
+                ],
+            )
+            raw = response.content[0].text.strip()
+            deduped = [
+                re.sub(r"^\d+\.\s*", "", line.strip())
+                for line in raw.splitlines()
+                if re.match(r"^\d+\.", line.strip())
+            ]
+            return deduped if deduped else proposed
+        except Exception:
+            return proposed  # never block the proposal on a dedup hiccup
+
     async def digest(self, days: int = 7) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
         history = self._completion_history(days=days)

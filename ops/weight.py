@@ -17,6 +17,8 @@ WEGOVY_START_WEIGHT = 103.5  # kg, the documented weigh-in at the first injectio
 WEGOVY_START_DATE = date(2025, 11, 11)
 KG_TO_LB = 2.20462
 RATE_WINDOW_DAYS = 28  # trailing window for the kg/week trend slope
+TARGET_WEIGHT = 82.0  # kg, the end-of-year goal
+TARGET_DATE = date(2026, 12, 31)  # the goal deadline the chart runs out to
 
 
 class Weight:
@@ -270,16 +272,50 @@ class Weight:
             ]
             roll.append(sum(window) / len(window))
 
+        start_avg = self._window_avg(days, first=True)
+
         fig, ax = plt.subplots(figsize=(8, 4.5))
         ax.scatter(xs, ys, s=12, color="#c9c9c9", label="daily", zorder=2)
         ax.plot(xs, roll, color="#1f77b4", linewidth=2, label="7-day avg", zorder=3)
         ax.axhline(
-            self._window_avg(days, first=True),
+            start_avg,
             color="#999",
             linestyle="--",
             linewidth=1,
             label="start-week avg",
         )
+
+        # Goal: a horizontal line at the target weight and a star at the deadline, so
+        # the runway (how far is left, and how long is left) is always in frame.
+        ax.axhline(
+            TARGET_WEIGHT,
+            color="#d62728",
+            linestyle="-",
+            linewidth=1.2,
+            alpha=0.7,
+            label=f"target {TARGET_WEIGHT:g} kg",
+        )
+        ax.scatter(
+            [TARGET_DATE], [TARGET_WEIGHT], marker="*", s=120, color="#d62728", zorder=4
+        )
+
+        # Projection: extend the current trailing trend from the latest rolling-average
+        # point out to the deadline, so it's readable whether the present pace lands
+        # above or below the goal line by Dec 31.
+        rate = self._rate_per_week(days)
+        if rate is not None:
+            weeks_left = (TARGET_DATE - xs[-1]).days / 7
+            proj_end = roll[-1] + rate * weeks_left
+            ax.plot(
+                [xs[-1], TARGET_DATE],
+                [roll[-1], proj_end],
+                color="#1f77b4",
+                linestyle=":",
+                linewidth=1.5,
+                alpha=0.8,
+                label="projected (current pace)",
+                zorder=3,
+            )
 
         for inj_date, dose in self.injections():
             try:
@@ -288,11 +324,20 @@ class Weight:
                 continue
             ax.axvline(x, color="#2ca02c", alpha=0.25, linewidth=1, zorder=1)
 
+        # Stretch the frame to include the goal in both axes without letting the real
+        # readings collapse into a corner: a little headroom above the start weight,
+        # a little below the target.
+        ax.set_xlim(xs[0], TARGET_DATE)
+        top = max(max(ys), start_avg) + 1
+        bottom = min(min(ys), TARGET_WEIGHT) - 1
+        ax.set_ylim(bottom, top)
+
         ax.set_title("Weight over time")
         ax.set_ylabel("kg")
         ax.grid(True, alpha=0.2)
         ax.legend(loc="upper right", fontsize=8)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         fig.autofmt_xdate()
         fig.tight_layout()
 

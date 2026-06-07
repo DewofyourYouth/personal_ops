@@ -296,6 +296,19 @@ class AgendaHandlers:
             )
             return
 
+        # Collapse semantic duplicates the exact-match guard can't catch: items that
+        # restate each other, or restate something already open (e.g. a queued item the
+        # LLM re-proposed in different words). Existing open items are passed as context
+        # so their duplicates drop out of the proposal entirely.
+        existing_open = [it["text"] for it in self.agenda.get_open()]
+        items = await self.planner.dedupe(existing_open, items)
+        if not items:
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text="Nothing new to propose — today's agenda already covers it.",
+            )
+            return
+
         selected = set(range(len(items)))
         self._pending[chat_id] = {"items": items, "selected": selected}
 
