@@ -70,6 +70,19 @@ CREATE TABLE IF NOT EXISTS habit_notes (
 CREATE INDEX IF NOT EXISTS idx_habit_notes_habit ON habit_notes(habit);
 """
 
+# Identity is many-to-many: a habit can vote for several identities, and an identity is
+# reinforced by several habits. This join table is the source of truth; the dormant
+# habits.identity column is kept in sync as a denormalised comma-joined cache so existing
+# string readers (struggling_habits, the strategy prompt) keep working untouched.
+_HABIT_IDENTITIES_DDL = """
+CREATE TABLE IF NOT EXISTS habit_identities (
+    habit_id INTEGER NOT NULL,
+    identity TEXT NOT NULL,
+    PRIMARY KEY (habit_id, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_habit_identities_identity ON habit_identities(identity);
+"""
+
 _INT_TO_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
 
@@ -90,7 +103,9 @@ class HabitStore:
         self.context = context
         self.db.ensure_schema(_HABITS_DDL)
         self.db.ensure_schema(_HABIT_NOTES_DDL)
+        self.db.ensure_schema(_HABIT_IDENTITIES_DDL)
         self._migrate_cue_column()
+        self._migrate_identities_to_join()
 
     def _migrate_cue_column(self) -> None:
         """Backfill columns added after the original habits table shape (idempotent)."""
@@ -100,6 +115,22 @@ class HabitStore:
                 self.db.execute(
                     f"ALTER TABLE habits ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
                 )
+
+    def _migrate_identities_to_join(self) -> None:
+        """One-time backfill of the single-identity column into the M2M join table.
+
+        Idempotent: INSERT OR IGNORE, and any value is split on commas so a previously
+        comma-joined cache round-trips cleanly. The column itself is left in place (it
+        becomes the denormalised cache `_sync_identity_cache` maintains).
+        """
+        for r in self.db.query("SELECT id, identity FROM habits WHERE identity != ''"):
+            for ident in (p.strip() for p in r["identity"].split(",")):
+                if ident:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO habit_identities (habit_id, identity) "
+                        "VALUES (?, ?)",
+                        (r["id"], ident),
+                    )
 
     # --- Reads ---
 
@@ -118,6 +149,7 @@ class HabitStore:
                     "tracked": bool(r["tracked"]),
                     "cue": (r["cue"] if "cue" in r.keys() else "") or "",
                     "identity": (r["identity"] if "identity" in r.keys() else "") or "",
+                    "identities": self._identities(r["id"]),
                 }
             )
         return out
@@ -143,6 +175,7 @@ class HabitStore:
         )
 
     def remove(self, habit_id: int) -> None:
+        self.db.execute("DELETE FROM habit_identities WHERE habit_id = ?", (habit_id,))
         self.db.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
 
     def set_tracked(self, habit_id: int, tracked: bool) -> None:
@@ -168,9 +201,63 @@ class HabitStore:
         """Set the cue (implementation intention / stack anchor). Returns matched name or None."""
         return self._set_field_by_name("cue", name, cue)
 
-    def set_identity_by_name(self, name: str, identity: str) -> str | None:
-        """Set the identity this habit votes for. Returns matched name or None."""
-        return self._set_field_by_name("identity", name, identity)
+    # --- Identity (many-to-many: a habit votes for several identities) ---
+
+    def _habit_by_name(self, name: str) -> dict | None:
+        """The habit whose display/raw name matches `name` (forgiving), or None."""
+        target = _match_key(name)
+        for h in self.list_habits(tracked_only=False):
+            display = self.context.habit_display_name(h["name"])
+            if _match_key(display) == target or _match_key(h["name"]) == target:
+                return h
+        return None
+
+    def _identities(self, habit_id: int) -> list[str]:
+        rows = self.db.query(
+            "SELECT identity FROM habit_identities WHERE habit_id = ? ORDER BY identity",
+            (habit_id,),
+        )
+        return [r["identity"] for r in rows]
+
+    def _sync_identity_cache(self, habit_id: int) -> None:
+        """Rewrite the denormalised habits.identity cache from the join table."""
+        joined = ", ".join(self._identities(habit_id))
+        self.db.execute(
+            "UPDATE habits SET identity = ? WHERE id = ?", (joined, habit_id)
+        )
+
+    def add_identities(self, name: str, identities: list[str]) -> str | None:
+        """Add (accumulate) identities a habit votes for. Returns matched name or None."""
+        h = self._habit_by_name(name)
+        if not h:
+            return None
+        for ident in identities:
+            ident = ident.strip()
+            if ident:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO habit_identities (habit_id, identity) "
+                    "VALUES (?, ?)",
+                    (h["id"], ident),
+                )
+        self._sync_identity_cache(h["id"])
+        return self.context.habit_display_name(h["name"])
+
+    def remove_identity(self, name: str, identity: str) -> str | None:
+        """Remove one identity from a habit. Returns matched name or None (no-op if absent)."""
+        h = self._habit_by_name(name)
+        if not h:
+            return None
+        self.db.execute(
+            "DELETE FROM habit_identities WHERE habit_id = ? AND LOWER(identity) = LOWER(?)",
+            (h["id"], identity.strip()),
+        )
+        self._sync_identity_cache(h["id"])
+        return self.context.habit_display_name(h["name"])
+
+    def identities_of(self, name: str) -> list[str] | None:
+        """A habit's current identities, or None if the name doesn't match a habit."""
+        h = self._habit_by_name(name)
+        return self._identities(h["id"]) if h else None
 
     # --- Notes (added via the bot, stored in the DB) ---
 
@@ -681,28 +768,42 @@ class HabitHandlers:
             )
 
     async def cmd_identity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/identity — show habits grouped by the identity they vote for.
-        /identity <habit>: <identity> — tag a habit (e.g. 'Daf Yomi: Ben Torah')."""
+        """/identity — show habits grouped by the identities they vote for.
+        /identity <habit>: <id1>, <id2> — add identities (a habit can vote for several);
+        prefix one with '-' to remove it (e.g. 'Strength: -disciplined')."""
         if update.effective_user.id != self.allowed_user:
             return
         raw = " ".join(context.args).strip() if context.args else ""
         if ":" in raw:
-            name, ident = raw.split(":", 1)
+            name, rest = raw.split(":", 1)
             matched = await self._resolve_or_match(name.strip())
-            if matched:
-                self.store.set_identity_by_name(matched, ident.strip())
+            if not matched:
                 await update.message.reply_text(
-                    f"🪪 <b>{html.escape(matched)}</b> votes for "
-                    f"<i>{html.escape(ident.strip())}</i>",
+                    f"No habit matching “{html.escape(name.strip())}”. Try /habits."
+                )
+                return
+            # Comma-separated identities; a leading '-' on a token removes it.
+            adds = [t.strip() for t in rest.split(",") if t.strip() and not t.strip().startswith("-")]
+            removes = [t.strip()[1:].strip() for t in rest.split(",") if t.strip().startswith("-")]
+            if adds:
+                self.store.add_identities(matched, adds)
+            for ident in removes:
+                self.store.remove_identity(matched, ident)
+            current = self.store.identities_of(matched) or []
+            if current:
+                votes = ", ".join(html.escape(i) for i in current)
+                await update.message.reply_text(
+                    f"🪪 <b>{html.escape(matched)}</b> votes for <i>{votes}</i>",
                     parse_mode="HTML",
                 )
             else:
                 await update.message.reply_text(
-                    f"No habit matching “{html.escape(name.strip())}”. Try /habits."
+                    f"🪪 <b>{html.escape(matched)}</b> votes for no identity yet.",
+                    parse_mode="HTML",
                 )
             return
 
-        # Grouped "votes" view.
+        # Grouped "votes" view — a habit appears under each identity it votes for.
         logged_by_day = load_habit_logs(self.logs)
         by_identity: dict[str, list[str]] = {}
         untagged: list[str] = []
@@ -715,8 +816,9 @@ class HabitHandlers:
                 logged_by_day=logged_by_day,
             )
             label = f"{disp} 🔥{cur}" if cur else disp
-            if h["identity"]:
-                by_identity.setdefault(h["identity"], []).append(label)
+            if h["identities"]:
+                for ident in h["identities"]:
+                    by_identity.setdefault(ident, []).append(label)
             else:
                 untagged.append(disp)
 

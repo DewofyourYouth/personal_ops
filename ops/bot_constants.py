@@ -75,7 +75,7 @@ HELP_TEXT = """<b>Planning</b>
 <b>Habits</b>
 /habits — today's checklist with streaks 🔥, the chain 🟩⬜, and ⚠️ don't-miss-twice flags
 /habitcue — set a habit's cue / implementation intention (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
-/identity — habits grouped by the identity they vote for (<code>/identity Daf Yomi: Ben Torah</code> to tag)
+/identity — habits grouped by the identities they vote for; a habit can vote for several (<code>/identity Strength: healthy, disciplined</code>; prefix <code>-</code> to remove)
 /habitstrategy — a 4-Laws plan for habits you keep missing
 /habitnote — note on a habit (<code>/habitnote Strength: shoulder felt off</code>); no args shows recent notes
 /routines — your habit-stack routines; /routine &lt;name&gt; to view one
