@@ -23,11 +23,8 @@ jobs:
 
   deploy:
     needs: test
-    # DISABLED: the bot currently runs locally ("local is home"). Auto-deploying would
-    # `docker compose up` on the VPS and revive a second Telegram poller, which conflicts
-    # with the local instance. Re-enable by restoring the condition below when migrating.
-    if: false
-    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only deploy on a real push to main, never on PRs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-vps     # never run two deploys at once
