@@ -93,10 +93,12 @@ def compute_streak(
     due_weekdays: list[int] | None = None,
     logged_by_day: dict[str, list[str]] | None = None,
 ) -> tuple[int, int]:
-    """Return (current_streak, longest_streak), counting only due (non-Shabbat) days.
+    """Return (current_streak, longest_streak).
 
-    `due_weekdays` (0=Mon..6=Sun) restricts which days count; None = every non-Shabbat
-    day. A day the habit isn't scheduled for is neither a hit nor a break.
+    `due_weekdays` (0=Mon..6=Sun) lists the scheduled days; None = every non-Shabbat day.
+    Non-due days (Shabbat, or unscheduled weekdays) are *bonus*: doing the habit on one
+    extends the streak, but skipping it never breaks the streak. Only a missed DUE day
+    breaks the run.
     """
     today = date.today()
     current = 0
@@ -106,9 +108,12 @@ def compute_streak(
 
     for i in range(lookback):
         d = today - timedelta(days=i)
-        if not _is_due(d, due_weekdays):
-            continue
         done = any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
+        # Non-due days (Shabbat, or weekdays the habit isn't scheduled for) are *bonus*:
+        # doing the habit on one extends the streak, but a quiet one never breaks it. So a
+        # bonus day with nothing logged is transparent — only a missed DUE day is a break.
+        if not _is_due(d, due_weekdays) and not done:
+            continue
         if done:
             run += 1
             if in_current:

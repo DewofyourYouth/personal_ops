@@ -21,13 +21,14 @@ import html
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -130,6 +131,76 @@ def _parse_queue_date(day_str: str):
     return None
 
 
+_BACKDATE_WEEKDAYS = {
+    "monday": 0,
+    "mon": 0,
+    "tuesday": 1,
+    "tue": 1,
+    "tues": 1,
+    "wednesday": 2,
+    "wed": 2,
+    "thursday": 3,
+    "thu": 3,
+    "thurs": 3,
+    "friday": 4,
+    "fri": 4,
+    "saturday": 5,
+    "sat": 5,
+    "sunday": 6,
+    "sun": 6,
+}
+
+
+def _parse_backdate(text: str) -> tuple[date | None, str]:
+    """Pull a leading past-date token off `text` for the /backdate command.
+
+    Returns (resolved_date, remaining_entry_text). Recognises ISO dates, "yesterday",
+    "today", "-N" / "N days ago", and weekday names ("friday" / "last friday" → the most
+    recent past occurrence). Returns (None, text) when no date is recognised or it would
+    resolve to the future — backdating only ever points at today or earlier.
+    """
+    s = text.strip()
+    low = s.lower()
+    today = date.today()
+
+    def past_weekday(num: int) -> date:
+        return today - timedelta(days=(today.weekday() - num) % 7)
+
+    def iso(token: str) -> date | None:
+        try:
+            return date.fromisoformat(token)
+        except ValueError:
+            return None
+
+    def weekday(token: str) -> date | None:
+        return (
+            past_weekday(_BACKDATE_WEEKDAYS[token])
+            if token in _BACKDATE_WEEKDAYS
+            else None
+        )
+
+    rules = [
+        (r"(\d{4}-\d{2}-\d{2})", lambda m: iso(m.group(1))),
+        (r"(\d+)\s+days?\s+ago", lambda m: today - timedelta(days=int(m.group(1)))),
+        (r"-(\d+)", lambda m: today - timedelta(days=int(m.group(1)))),
+        (r"yesterday|yest", lambda m: today - timedelta(days=1)),
+        (r"today", lambda m: today),
+        (r"last\s+(\w+)", lambda m: weekday(m.group(1))),
+        (r"(\w+)", lambda m: weekday(m.group(1))),
+    ]
+    for pattern, resolve in rules:
+        m = re.match(pattern, low)
+        if not m:
+            continue
+        d = resolve(m)
+        if d is None:
+            continue
+        if d > today:
+            return None, s
+        return d, s[m.end() :].strip()
+    return None, s
+
+
 MOOD_OPTIONS = [
     ("😄", "great"),
     ("😊", "good"),
@@ -226,6 +297,7 @@ class TextRouter:
 
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
+        app.add_handler(CommandHandler("backdate", self.cmd_backdate))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
         )
@@ -433,6 +505,86 @@ class TextRouter:
         return True
 
     # --- The dispatcher ---
+
+    @staticmethod
+    def _classify_entry(text: str) -> tuple[str, str]:
+        """Map a raw message to (tag, content) using the prefix rules: a check-in, a
+        known prefix (insight:, habit:, injection: …), or a bare #log. Shared by the live
+        dispatcher and /backdate so both classify entries identically."""
+        lower = _normalize(text.lower()).strip(".,!?;: ")
+        checkin_m = _CHECKIN_RE.match(text)
+        if checkin_m:
+            return "checkin", (checkin_m.group(1) or "").strip()
+        first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
+        first_word = first_word_m.group(1) if first_word_m else ""
+        for prefix, t in PREFIXES.items():
+            keyword = prefix.rstrip(": ")
+            if first_word == keyword or lower.startswith(prefix):
+                content = re.sub(
+                    r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE
+                ).strip()
+                return t.lstrip("#"), content
+        return "log", text
+
+    async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
+        Daf Yomi that never got logged). The remainder is parsed exactly like a normal
+        message, but written with the resolved date so streaks and daily logs see it."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        reply = update.message.reply_text
+        usage = (
+            "Usage: <code>/backdate &lt;when&gt; &lt;entry&gt;</code>\n"
+            "e.g. <code>/backdate yesterday habit: daf yomi</code>\n"
+            "when can be: yesterday, today, a weekday (fri / last fri), "
+            "<code>2 days ago</code>, <code>-1</code>, or an ISO date "
+            "(<code>2026-06-06</code>)."
+        )
+
+        args = (update.message.text or "").split(maxsplit=1)
+        if len(args) < 2 or not args[1].strip():
+            await reply(usage, parse_mode="HTML")
+            return
+
+        when_date, entry_text = _parse_backdate(args[1])
+        if when_date is None:
+            await reply(
+                "Couldn't read a past date there.\n\n" + usage, parse_mode="HTML"
+            )
+            return
+        if not entry_text:
+            await reply(
+                "Got the date, but nothing to log.\n\n" + usage, parse_mode="HTML"
+            )
+            return
+
+        tag, content = self._classify_entry(entry_text)
+
+        # Resolve free-text habit logs to a defined habit name, same as the live path, so
+        # the backfilled day matches the checklist exactly and counts toward the streak.
+        if tag == "habit":
+            try:
+                matched = await match_habit(content, self.logs.db)
+                if matched:
+                    content = matched
+            except Exception:
+                pass
+
+        # Stamp the entry at the current time-of-day on the target date — habits/logs only
+        # use the day, and a plausible time keeps within-day ordering sane.
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        when = datetime.combine(when_date, now.timetz())
+        try:
+            self.logs.write(tag, content, when=when)
+        except Exception as e:
+            await reply(f"Couldn't save that: {e}")
+            return
+
+        await reply(
+            f"⏪ Logged #{html.escape(tag)} for "
+            f"<b>{when_date.strftime('%a %b %d')}</b>: {html.escape(content)}",
+            parse_mode="HTML",
+        )
 
     async def process_text(self, text: str, reply, chat_id: int = 0) -> None:
         text = _UNICODE_JUNK.sub("", text).strip()
@@ -712,24 +864,7 @@ class TextRouter:
             return
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
-        tag = "log"
-        content = text
-
-        checkin_m = _CHECKIN_RE.match(text)
-        if checkin_m:
-            tag = "checkin"
-            content = (checkin_m.group(1) or "").strip()
-        else:
-            first_word_m = re.match(r"^(\w+)[,:.\s]\s*(.*)", lower, re.DOTALL)
-            first_word = first_word_m.group(1) if first_word_m else ""
-            for prefix, t in PREFIXES.items():
-                keyword = prefix.rstrip(": ")
-                if first_word == keyword or lower.startswith(prefix):
-                    tag = t.lstrip("#")
-                    content = re.sub(
-                        r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE
-                    ).strip()
-                    break
+        tag, content = self._classify_entry(text)
 
         # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
         # logged. We hold the entry until they tap "Log it" rather than writing immediately.

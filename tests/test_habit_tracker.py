@@ -152,3 +152,26 @@ def test_habit_notes(tmp_path):
     assert len(s_notes) == 2
     assert s_notes[0]["note"] == "back to normal"  # newest first
     assert len(store.recent_notes(days=7)) == 3
+
+
+def test_bonus_day_done_counts_toward_streak(tmp_path):
+    # Regression: doing a habit on a non-due day (Shabbat) should *extend* the streak,
+    # not be skipped. Logging every day for two weeks always spans at least one Shabbat,
+    # so all 14 days must count.
+    logs = Logs(str(tmp_path))
+    _write_habit_days(logs, "Daf Yomi", range(0, 14))
+    current, _ = compute_streak(logs, "Daf Yomi", due_weekdays=None)
+    assert current == 14
+
+
+def test_quiet_non_due_day_does_not_break_streak(tmp_path):
+    # The other half of the rule: a Shabbat with nothing logged is transparent — it
+    # neither counts nor breaks. Done on every non-Shabbat day → streak spans the gaps.
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    due_days = [
+        i for i in range(0, 21) if (today - timedelta(days=i)).weekday() != SHABBAT
+    ]
+    _write_habit_days(logs, "Daf Yomi", due_days)
+    current, _ = compute_streak(logs, "Daf Yomi", due_weekdays=None)
+    assert current == len(due_days)

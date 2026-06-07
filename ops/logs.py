@@ -51,8 +51,17 @@ class Logs:
 
     # --- Writing ---
 
-    def write(self, tag: str, content: str, extra: dict | None = None):
-        now = datetime.now(TZ)
+    def write(
+        self,
+        tag: str,
+        content: str,
+        extra: dict | None = None,
+        when: datetime | None = None,
+    ):
+        # `when` backdates the entry (e.g. logging yesterday's habit today). It drives the
+        # ts, the day bucket, and the JSONL file alike, so the DB date (ts[:10] on replay)
+        # and the recovery log stay consistent with a normal same-day write.
+        now = when or datetime.now(TZ)
         ts = now.isoformat(timespec="seconds")
         date_str = (
             now.date().isoformat()
