@@ -458,10 +458,9 @@ class TextRouter:
             return
         name = doc.file_name or "document"
         lower = name.lower()
-        is_text = (
-            lower.endswith((".html", ".htm", ".txt", ".md"))
-            or (doc.mime_type or "").startswith("text")
-        )
+        is_text = lower.endswith((".html", ".htm", ".txt", ".md")) or (
+            doc.mime_type or ""
+        ).startswith("text")
         if not is_text:
             await update.message.reply_text(
                 f"I can only read HTML/text files right now (got <code>{html.escape(name)}</code>).",
@@ -478,7 +477,9 @@ class TextRouter:
         tg_file = await doc.get_file()
         raw = bytes(await tg_file.download_as_bytearray())
         markup = raw.decode("utf-8", errors="replace")
-        text = (_html_to_text(markup) if lower.endswith((".html", ".htm")) else markup).strip()
+        text = (
+            _html_to_text(markup) if lower.endswith((".html", ".htm")) else markup
+        ).strip()
         if not text:
             await update.message.reply_text("Couldn't extract any text from that file.")
             return
@@ -492,11 +493,10 @@ class TextRouter:
         tasks, insights = actions.get("tasks", []), actions.get("insights", [])
         for ins in insights:
             self.logs.write("insight", ins)
-        if tasks:
-            if self.agenda_feature:
-                self.agenda_feature.commit_agenda(tasks, source="document")
-            else:
-                self.agenda.accept_items(tasks, source="document")
+        # Tasks go to the someday/backlog, not today's agenda — an uploaded doc is usually
+        # planning material to review and pull from later, not today's to-dos.
+        for t in tasks:
+            self.backlog.add(t)
 
         if not tasks and not insights:
             await update.message.reply_text(
@@ -507,7 +507,7 @@ class TextRouter:
 
         lines = [f"📄 <b>From {html.escape(name)}:</b>"]
         if tasks:
-            lines.append("\n<b>Added to today's agenda</b>")
+            lines.append("\n<b>Added to your backlog</b> (review with /backlog)")
             lines += [f"• {html.escape(t)}" for t in tasks]
         if insights:
             lines.append("\n<b>Logged as insights</b>")

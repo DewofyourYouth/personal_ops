@@ -107,4 +107,4 @@ HELP_TEXT = """<b>Planning</b>
 Anything else is logged as <code>#log</code>
 
 Voice notes are transcribed automatically.
-Upload an HTML/text file → it extracts tasks (added to today's agenda) and insights."""
+Upload an HTML/text file → it extracts tasks (added to your /backlog) and insights."""
