@@ -149,6 +149,66 @@ class Planner:
         except Exception:
             return proposed  # never block the proposal on a dedup hiccup
 
+    async def extract_actions(self, text: str, source: str = "document") -> dict:
+        """Pull action items out of an uploaded document's text.
+
+        Returns {"tasks": [...], "insights": [...]}: concrete to-dos and notable
+        findings worth remembering. Selective — only real, specific items. Returns empty
+        lists on any error so the caller can report 'nothing actionable' rather than fail.
+        """
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        try:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=900,
+                tools=[
+                    {
+                        "name": "extract_actions",
+                        "description": "Extract concrete action items and insights from a document.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "tasks": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Concrete, actionable to-dos the document implies for the user. Short imperative phrases. Empty if none.",
+                                },
+                                "insights": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Findings/recommendations worth remembering that are NOT tasks. Empty if none.",
+                                },
+                            },
+                            "required": ["tasks", "insights"],
+                        },
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "extract_actions"},
+                system=(
+                    "You extract action items from a document the user wants their personal-ops "
+                    "bot to act on. Separate concrete tasks (things to do) from insights (things "
+                    "worth remembering). Be selective — only real, specific items, no filler. Keep "
+                    "each to one short line."
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Document ({source}):\n\n{text[:16000]}\n\nExtract tasks and insights.",
+                    }
+                ],
+            )
+            for block in response.content:
+                if block.type == "tool_use":
+                    return {
+                        "tasks": [t for t in block.input.get("tasks", []) if t.strip()],
+                        "insights": [
+                            i for i in block.input.get("insights", []) if i.strip()
+                        ],
+                    }
+        except Exception:
+            pass
+        return {"tasks": [], "insights": []}
+
     async def digest(self, days: int = 7) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
         history = self._completion_history(days=days)

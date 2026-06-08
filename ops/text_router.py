@@ -22,6 +22,7 @@ import os
 import re
 import tempfile
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -201,6 +202,37 @@ def _parse_backdate(text: str) -> tuple[date | None, str]:
     return None, s
 
 
+class _TextExtractor(HTMLParser):
+    """Collect visible text from HTML, skipping <script>/<style> contents."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._skip += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if not self._skip and (t := data.strip()):
+            self.parts.append(t)
+
+
+def _html_to_text(markup: str) -> str:
+    """Best-effort HTML → readable text (stdlib only; no bs4 dependency)."""
+    parser = _TextExtractor()
+    try:
+        parser.feed(markup)
+    except Exception:
+        pass
+    return "\n".join(parser.parts)
+
+
 MOOD_OPTIONS = [
     ("😄", "great"),
     ("😊", "good"),
@@ -297,6 +329,7 @@ class TextRouter:
 
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
+        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(CommandHandler("backdate", self.cmd_backdate))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
@@ -414,6 +447,72 @@ class TextRouter:
             ]
         )
         await update.message.reply_text(f'🎙 "{text}"', reply_markup=keyboard)
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ingest an uploaded HTML/text document: extract tasks + insights, add the
+        tasks to today's agenda, log the insights, and report what was captured."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        doc = update.message.document
+        if not doc:
+            return
+        name = doc.file_name or "document"
+        lower = name.lower()
+        is_text = (
+            lower.endswith((".html", ".htm", ".txt", ".md"))
+            or (doc.mime_type or "").startswith("text")
+        )
+        if not is_text:
+            await update.message.reply_text(
+                f"I can only read HTML/text files right now (got <code>{html.escape(name)}</code>).",
+                parse_mode="HTML",
+            )
+            return
+        if doc.file_size and doc.file_size > 2_000_000:
+            await update.message.reply_text(
+                "That file is over 2 MB — send a smaller export, please."
+            )
+            return
+
+        await update.message.reply_text("📄 Reading the document…")
+        tg_file = await doc.get_file()
+        raw = bytes(await tg_file.download_as_bytearray())
+        markup = raw.decode("utf-8", errors="replace")
+        text = (_html_to_text(markup) if lower.endswith((".html", ".htm")) else markup).strip()
+        if not text:
+            await update.message.reply_text("Couldn't extract any text from that file.")
+            return
+
+        try:
+            actions = await self.planner.extract_actions(text, source=name)
+        except Exception as e:
+            await update.message.reply_text(f"Couldn't process the document: {e}")
+            return
+
+        tasks, insights = actions.get("tasks", []), actions.get("insights", [])
+        for ins in insights:
+            self.logs.write("insight", ins)
+        if tasks:
+            if self.agenda_feature:
+                self.agenda_feature.commit_agenda(tasks, source="document")
+            else:
+                self.agenda.accept_items(tasks, source="document")
+
+        if not tasks and not insights:
+            await update.message.reply_text(
+                f"📄 Read <b>{html.escape(name)}</b>, but found no clear action items.",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = [f"📄 <b>From {html.escape(name)}:</b>"]
+        if tasks:
+            lines.append("\n<b>Added to today's agenda</b>")
+            lines += [f"• {html.escape(t)}" for t in tasks]
+        if insights:
+            lines.append("\n<b>Logged as insights</b>")
+            lines += [f"• {html.escape(i)}" for i in insights]
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
     async def handle_voice_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
