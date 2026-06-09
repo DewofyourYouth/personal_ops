@@ -19,12 +19,13 @@ class Backlog:
     def save(self, items: list[dict]):
         self.path.write_text(json.dumps(items, indent=2))
 
-    def add(self, text: str) -> dict:
+    def add(self, text: str, domain: str = "") -> dict:
         items = self.load()
         entry = {
             "id": str(uuid.uuid4())[:8],
             "text": text.strip(),
             "added": date.today().isoformat(),
+            "domain": domain.strip(),  # "" = unclassified; filled in lazily on /backlog
         }
         items.append(entry)
         self.save(items)

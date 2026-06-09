@@ -149,6 +149,67 @@ class Planner:
         except Exception:
             return proposed  # never block the proposal on a dedup hiccup
 
+    async def classify_backlog_domains(
+        self, texts: list[str], existing: list[str]
+    ) -> list[str]:
+        """Assign a short domain label to each backlog item, in order.
+
+        `existing` are domains already in use — reuse one verbatim when it fits, rather than
+        coining a near-duplicate ("Writing" vs "writing"). Returns one label per input text
+        (same length/order); falls back to "General" per item on any error.
+        """
+        if not texts:
+            return []
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+        existing_block = ", ".join(existing) if existing else "(none yet)"
+        try:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=600,
+                tools=[
+                    {
+                        "name": "classify",
+                        "description": "Assign a short domain/category to each backlog item.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "domains": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "One short domain label per item, in the same order. 1-3 words each.",
+                                }
+                            },
+                            "required": ["domains"],
+                        },
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "classify"},
+                system=(
+                    "Group personal backlog items by life domain (e.g. Tour guiding, Writing, "
+                    "Daily Derja, Marketing, Torah, Health, Family, Dev). Give each item ONE "
+                    "short label. Reuse an existing label verbatim whenever it fits; only coin "
+                    "a new one when none apply. Keep the total number of distinct domains small."
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Existing domains: {existing_block}\n\nItems:\n{numbered}\n\nLabel each item.",
+                    }
+                ],
+            )
+            for block in response.content:
+                if block.type == "tool_use":
+                    domains = block.input.get("domains", [])
+                    # Pad/truncate to exactly len(texts) so the caller can zip safely.
+                    domains = [(d or "General").strip() for d in domains]
+                    if len(domains) < len(texts):
+                        domains += ["General"] * (len(texts) - len(domains))
+                    return domains[: len(texts)]
+        except Exception:
+            pass
+        return ["General"] * len(texts)
+
     async def extract_actions(self, text: str, source: str = "document") -> dict:
         """Pull action items out of an uploaded document's text.
 
@@ -187,8 +248,10 @@ class Planner:
                 system=(
                     "You extract action items from a document the user wants their personal-ops "
                     "bot to act on. Separate concrete tasks (things to do) from insights (things "
-                    "worth remembering). Be selective — only real, specific items, no filler. Keep "
-                    "each to one short line."
+                    "worth remembering). Be highly selective: return only the highest-signal, "
+                    "near-term, concretely-actionable tasks — at most ~8. Skip vague aspirations, "
+                    "far-future/dated items (e.g. 'in 2028', 'at launch'), and anything that just "
+                    "restates a long-term goal. Fold related steps into one. Keep each to one short line."
                 ),
                 messages=[
                     {

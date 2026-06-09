@@ -491,16 +491,22 @@ async def cmd_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _backlog_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
-    rows = []
+    # Group by domain, each under a non-interactive header row. "General" sorts last.
+    groups: dict[str, list[dict]] = {}
     for item in items:
-        short = item["text"] if len(item["text"]) <= 30 else item["text"][:27] + "…"
-        rows.append(
-            [
-                InlineKeyboardButton(f"📋 {short}", callback_data="noop"),
-                InlineKeyboardButton("📅", callback_data=f"bl_queue:{item['id']}"),
-                InlineKeyboardButton("🗑", callback_data=f"bl_del:{item['id']}"),
-            ]
-        )
+        groups.setdefault(item.get("domain") or "General", []).append(item)
+    rows = []
+    for domain in sorted(groups, key=lambda d: (d == "General", d.lower())):
+        rows.append([InlineKeyboardButton(f"— {domain} —", callback_data="noop")])
+        for item in groups[domain]:
+            short = item["text"] if len(item["text"]) <= 30 else item["text"][:27] + "…"
+            rows.append(
+                [
+                    InlineKeyboardButton(f"📋 {short}", callback_data="noop"),
+                    InlineKeyboardButton("📅", callback_data=f"bl_queue:{item['id']}"),
+                    InlineKeyboardButton("🗑", callback_data=f"bl_del:{item['id']}"),
+                ]
+            )
     return InlineKeyboardMarkup(rows)
 
 
@@ -514,6 +520,17 @@ async def cmd_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         return
+    # Lazily classify any items without a domain (new adds, or pre-domain items), reusing
+    # the domains already in play, then persist so it's a one-time cost per item.
+    undomained = [it for it in items if not it.get("domain")]
+    if undomained:
+        existing = sorted({it["domain"] for it in items if it.get("domain")})
+        labels = await planner_.classify_backlog_domains(
+            [it["text"] for it in undomained], existing
+        )
+        for it, label in zip(undomained, labels):
+            it["domain"] = label
+        backlog_.save(items)
     text = f"📋 <b>Backlog ({len(items)} items):</b>"
     await update.message.reply_text(
         text, parse_mode="HTML", reply_markup=_backlog_keyboard(items)
