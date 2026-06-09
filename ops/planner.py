@@ -1017,7 +1017,12 @@ class Planner:
                                         "fat_g": {"type": "number"},
                                         "carbs_g": {"type": "number"},
                                     },
-                                    "required": ["name", "portion", "kcal", "protein_g"],
+                                    "required": [
+                                        "name",
+                                        "portion",
+                                        "kcal",
+                                        "protein_g",
+                                    ],
                                 },
                             }
                         },

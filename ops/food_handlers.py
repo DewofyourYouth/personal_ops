@@ -40,7 +40,9 @@ def _macro_totals(contents: list[str]) -> dict | None:
     parsed = [m for c in contents if (m := _parse_macros(c))]
     if not parsed:
         return None
-    return {k: sum(p[k] for p in parsed) for k in ("kcal", "protein_g", "fat_g", "carbs_g")}
+    return {
+        k: sum(p[k] for p in parsed) for k in ("kcal", "protein_g", "fat_g", "carbs_g")
+    }
 
 
 def _fmt(n: float) -> str:
