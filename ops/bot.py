@@ -1,6 +1,5 @@
 import asyncio
 import html
-import json
 import logging
 import os
 import re
@@ -19,6 +18,7 @@ from agenda_handlers import AgendaHandlers
 from agenda_queue import AgendaQueue
 from backlog import Backlog
 from baseline_tracker import Baseline
+from bot_constants import HELP_INTRO, HELP_SECTIONS, HELP_TEXT  # noqa: F401
 from config import Config
 from context import Context
 from digest import DigestHandlers
@@ -30,7 +30,6 @@ from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
-from weight import Weight
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
@@ -49,8 +48,7 @@ from text_router import (
     _parse_queue_date,
 )
 from tg_common import safe_answer
-
-from bot_constants import HELP_INTRO, HELP_SECTIONS, HELP_TEXT  # noqa: F401
+from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
 # from here rather than from scattered env reads or getcwd(). The globals below
@@ -222,6 +220,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await router.try_handle_food_adjust(update):
         return
 
+    # Plugin-owned natural-language captures, before the central router logs the text.
+    for plugin in plugins:
+        try_handle_text = getattr(plugin, "try_handle_text", None)
+        if try_handle_text and await try_handle_text(update, text):
+            return
+
     await router.process_text(text, update.message.reply_text, chat_id=chat_id)
 
 
@@ -356,12 +360,6 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📊 <b>Metrics (last 14 days):</b>\n"]
     for key, entries in sorted(data.items()):
         numeric = [v for _, v in entries if isinstance(v, (int, float))]
-        last_date, last_val = entries[-1]
-        unit = ""
-        # try to recover unit from last entry
-        for e in reversed(entries):
-            if isinstance(e[1], (int, float)):
-                break
         trend = ""
         if len(numeric) >= 3:
             if numeric[-1] > numeric[-3]:
@@ -427,29 +425,12 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    from datetime import date as _date
-
-    log_file = os.path.join(LOG_DIR, f"{_date.today()}.jsonl")
-    if not os.path.exists(log_file):
+    messages = logs.format_today_for_telegram()
+    if not messages:
         await update.message.reply_text("No log entries today.")
         return
-    lines = []
-    for line in open(log_file):
-        try:
-            e = json.loads(line)
-            t = e["ts"][11:16]  # HH:MM from ISO timestamp
-            lines.append(
-                f"<code>{t}</code> <b>#{e['tag']}</b> {html.escape(e['content'])}"
-            )
-        except Exception:
-            pass
-    if not lines:
-        await update.message.reply_text("No log entries today.")
-        return
-    text = f"📋 <b>Today's log ({len(lines)} entries):</b>\n\n" + "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:4000] + "\n…(truncated)"
-    await update.message.reply_text(text, parse_mode="HTML")
+    for text in messages:
+        await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -486,7 +467,7 @@ async def handle_mood_energy_callback(
     query = update.callback_query
     await safe_answer(query)
     parts = query.data.split(":")  # me_mood:😊:good  or  me_energy:⚡:high
-    kind, emoji, value = parts[0][3:], parts[1], parts[2]  # strip "me_"
+    kind, _, value = parts[0][3:], parts[1], parts[2]  # strip "me_"; ignore emoji
     _mood_scores = {"great": 5, "good": 4, "okay": 3, "low": 2, "bad": 1}
     _energy_scores = {"high": 3, "okay": 2, "drained": 1}
     numeric = _mood_scores.get(value) if kind == "mood" else _energy_scores.get(value)
@@ -804,6 +785,9 @@ def main():
     global router
     router = TextRouter(app.bot, services, shabbat_, ALLOWED_USER)
     router.agenda_feature = agenda_feature
+    # Hand the grocery plugin to the router so confirmed voice transcripts opening
+    # with "grocery"/"groceries" route into the list (the plugin owns the logic).
+    router.grocery = next((p for p in plugins if hasattr(p, "handle_voice_text")), None)
     router.register(app)
 
     # Digest feature (daily + weekly reviews). Its scheduled runs are wrapped by
@@ -822,21 +806,17 @@ def main():
     )
     reminders_feature.register(app)
 
-    app.add_handler(CommandHandler("help", cmd_help))
+    # app.add_handler(CommandHandler(, cmd_help))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help:"))
+    app.add_handler(CommandHandler({"help", "n", "nav"}, cmd_help))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("context", cmd_context))
-    app.add_handler(CommandHandler("logs", cmd_logs))
-    app.add_handler(CommandHandler("metrics", cmd_metrics))
-    app.add_handler(CommandHandler("weight", cmd_weight))
+    app.add_handler(CommandHandler({"logs", "l"}, cmd_logs))
+    app.add_handler(CommandHandler({"metrics", "m"}, cmd_metrics))
+    app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
-    app.add_handler(CommandHandler("backlog", cmd_backlog))
-    app.add_handler(CommandHandler("values", cmd_values))
-    # Short aliases
-    app.add_handler(CommandHandler("m", cmd_metrics))
-    app.add_handler(CommandHandler("l", cmd_logs))
-    app.add_handler(CommandHandler("b", cmd_backlog))
-    app.add_handler(CommandHandler("v", cmd_values))
+    app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
+    app.add_handler(CommandHandler({"values", "v"}, cmd_values))
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))

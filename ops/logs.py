@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import html
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -150,7 +151,7 @@ class Logs:
     # --- Reading ---
 
     def read_today(self) -> list[dict]:
-        rows = self.db.entries_for_date(date.today())
+        rows = self.db.entries_for_date(datetime.now(TZ).date())
         return [dict(r) for r in rows]
 
     def read_day_as_text(self, d: date) -> str:
@@ -177,12 +178,21 @@ class Logs:
 
     def read_recent(self, days: int = 3) -> str:
         sections = []
+        today = datetime.now(TZ).date()
         for i in range(days, -1, -1):
-            d = date.today() - timedelta(days=i)
+            d = today - timedelta(days=i)
             lines = self._read_day(d)
             if lines:
                 sections.append(f"### {d}\n" + "\n".join(lines))
         return "\n\n".join(sections) if sections else "No recent logs."
+
+    def format_today_for_telegram(self, max_chars: int = 3900) -> list[str]:
+        """Format today's human log entries as safe Telegram HTML message chunks."""
+        today = datetime.now(TZ).date()
+        entries = self._read_day_entries(today)
+        if not entries:
+            return []
+        return self._format_entries_for_telegram(today, entries, max_chars=max_chars)
 
     # Metrics where multiple readings per day exist and the highest value is correct
     _MAX_PER_DAY_METRICS = {"steps"}
@@ -676,6 +686,89 @@ class Logs:
     # summaries, and `reminder` entries are bot-fired prompt noise (legacy auto-logged
     # check-in nudges) that should never count as activity context.
     _UNREADABLE_TAGS = {"metric", "reminder"}
+
+    def _read_day_entries(self, d: date) -> list[dict]:
+        """Structured entries for a day, using SQLite first and JSONL as fallback."""
+        rows = self.db.entries_for_date(d)
+        if rows:
+            return [dict(r) for r in rows if r["tag"] not in self._UNREADABLE_TAGS]
+
+        jsonl = self._jsonl_path(d)
+        if not jsonl.exists():
+            return []
+
+        entries = []
+        for line in jsonl.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if e.get("tag") in self._UNREADABLE_TAGS:
+                continue
+            entries.append(
+                {
+                    "ts": str(e.get("ts", "")),
+                    "tag": str(e.get("tag", "")),
+                    "content": str(e.get("content", "")),
+                }
+            )
+        return entries
+
+    @staticmethod
+    def _entry_html(entry: dict, max_chars: int | None = None) -> str:
+        ts = str(entry.get("ts", ""))
+        t = ts[11:16] if len(ts) >= 16 else "??:??"
+        tag = html.escape(str(entry.get("tag", "")))
+        prefix = f"<code>{t}</code> <b>#{tag}</b> "
+        content = str(entry.get("content", ""))
+
+        if max_chars is None:
+            return prefix + html.escape(content)
+
+        suffix = " …(entry truncated)"
+        if len(prefix + html.escape(content)) <= max_chars:
+            return prefix + html.escape(content)
+        if max_chars <= len(prefix) + len(suffix):
+            return (prefix + suffix).strip()[:max_chars]
+
+        lo, hi = 0, len(content)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            candidate = prefix + html.escape(content[:mid]) + suffix
+            if len(candidate) <= max_chars:
+                lo = mid
+            else:
+                hi = mid - 1
+        return prefix + html.escape(content[:lo]) + suffix
+
+    def _format_entries_for_telegram(
+        self, d: date, entries: list[dict], max_chars: int = 3900
+    ) -> list[str]:
+        header = f"📋 <b>Log for {d} ({len(entries)} entries):</b>\n\n"
+        chunks: list[str] = []
+        current = header
+
+        for entry in entries:
+            line = self._entry_html(entry)
+            sep = "" if current.endswith("\n\n") else "\n"
+            if len(current) + len(sep) + len(line) <= max_chars:
+                current += sep + line
+                continue
+
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+
+            if len(line) <= max_chars:
+                current = line
+                continue
+
+            chunks.append(self._entry_html(entry, max_chars=max_chars))
+            current = ""
+
+        if current:
+            chunks.append(current.rstrip())
+        return chunks
 
     def _read_day(self, d: date) -> list[str]:
         # Read from SQLite (primary). Fall back to JSONL then MD for pre-migration dates.

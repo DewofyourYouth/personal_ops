@@ -16,8 +16,7 @@ read/write logic and are small enough that SQLite doesn't add much there yet.
 
 import sqlite3
 import threading
-from datetime import date, timedelta
-from pathlib import Path
+from datetime import date
 
 
 _CREATE_ENTRIES = """

@@ -25,6 +25,7 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 | `/digest` | AI review of the last 7 days (also runs every Sunday at 20:00) |
 | `/metrics` | Tracked metrics with trend (last 14 days) |
 | `/logs` | View today's log entries |
+| `/grocery` | Shared grocery checklist with check-off buttons and copyable text |
 | `/context` | View and edit goals, priorities, constraints, projects, principles |
 | `/help` | Show all commands |
 
@@ -38,6 +39,8 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 | `edit <N> <new text>` | Edit an agenda item |
 | `event: <description>` / `new calendar event: …` / `add to calendar: …` | Create a Google Calendar event |
 | `remind me <...>` | Set a reminder (one-time, daily, or every N minutes) |
+| `pick up eggs and milk at the grocery` | Add `eggs` and `milk` to the grocery list |
+| 🎙 voice note starting with `grocery …` | Itemize the spoken list into the grocery list (falls back to a log if it isn't one) |
 | `metric: <key> <value>` | Log a structured metric (e.g. `metric: steps 8000`) |
 | `did: <text>` | Log a spontaneous win (tagged `#win`) |
 | `note: / insight: / task: / hypothesis: / checkin` | Log a structured entry |
@@ -63,10 +66,12 @@ OPS_BOT_TOKEN=your_telegram_bot_token
 OPS_CHAT_ID=your_telegram_user_id
 ANTHROPIC_API_KEY=your_anthropic_api_key
 OPENAI_API_KEY=your_openai_api_key
-OPS_MODEL=claude-haiku-4-5-20251001   # optional, default shown
+OPS_MODEL=claude-sonnet-4-6            # optional, default shown
 OPS_PLAN_HOUR=8                        # optional, default shown
 OPS_PLAN_MINUTE=0                      # optional
 ```
+
+See [MODEL_USAGE.md](MODEL_USAGE.md) for the current model usage audit.
 
 ### Google Calendar
 

@@ -1,7 +1,8 @@
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -95,6 +96,44 @@ def test_read_recent_includes_today(log_dir):
     log_dir.write("note", "today's entry")
     result = log_dir.read_recent(days=1)
     assert "today's entry" in result
+
+
+def test_format_today_for_telegram_reads_sqlite_without_jsonl(tmp_path):
+    """The /logs formatter shows entries even when only the SQLite row exists."""
+    logs = Logs(str(tmp_path))
+    today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+    logs.db.insert_entry(
+        f"{today}T10:15:00+03:00", today.isoformat(), "note", "sqlite-only entry"
+    )
+
+    messages = logs.format_today_for_telegram()
+
+    assert not (tmp_path / f"{today}.jsonl").exists()
+    assert len(messages) == 1
+    assert "sqlite-only entry" in messages[0]
+    assert "<code>10:15</code> <b>#note</b>" in messages[0]
+
+
+def test_format_today_for_telegram_chunks_long_escaped_entries(tmp_path):
+    """The /logs formatter chunks safely and still includes entries after long logs."""
+    logs = Logs(str(tmp_path))
+    today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+    logs.db.insert_entry(
+        f"{today}T10:00:00+03:00",
+        today.isoformat(),
+        "log",
+        "A & B < C " * 80,
+    )
+    logs.db.insert_entry(
+        f"{today}T10:05:00+03:00", today.isoformat(), "note", "later entry"
+    )
+
+    messages = logs.format_today_for_telegram(max_chars=180)
+
+    assert all(len(m) <= 180 for m in messages)
+    assert any("entry truncated" in m for m in messages)
+    assert any("A &amp; B &lt; C" in m for m in messages)
+    assert any("later entry" in m for m in messages)
 
 
 def test_compute_stats_completion(tmp_path):

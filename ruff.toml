@@ -1,0 +1,5 @@
+[lint.per-file-ignores]
+# bot.py is the entry point: it must call load_dotenv() before importing the
+# service modules, several of which read env vars at import time. That ordering
+# trips E402 (import-not-at-top), which is intentional here.
+"ops/bot.py" = ["E402"]

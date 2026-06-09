@@ -1,5 +1,3 @@
-import re
-
 STATUS_ICONS = {
     "open": "⌛",
     "done": "✅",
@@ -92,6 +90,7 @@ HELP_SECTIONS = {
 /metrics — tracked metrics with trend (last 14 days)
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals
+/grocery — shared grocery checklist
 /backlog — someday items, grouped by domain
 /logs — today's log entries
 <code>injection: &lt;dose&gt;</code> — log a Wegovy injection""",
@@ -100,8 +99,10 @@ HELP_SECTIONS = {
         "✍️ Capture & Logging",
         """<code>food: &lt;what you ate&gt;</code> — nutrition estimate, then log
 📷 send a food / nutrition-label <b>photo</b> → macros to confirm
+<code>pick up eggs and milk at the grocery</code> — add grocery items
 📎 upload an <b>HTML/text file</b> → tasks to /backlog + insights
 🎙 <b>voice notes</b> are transcribed automatically
+🎙 start a voice note with <b>"grocery …"</b> to add items to the list
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric
 <code>did: &lt;text&gt;</code> — log a win
 <code>values: &lt;impression&gt;</code> — a project impression

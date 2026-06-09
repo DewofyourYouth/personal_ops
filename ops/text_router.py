@@ -320,6 +320,9 @@ class TextRouter:
         # Set by bot.py once both features exist — process_text commits user-added
         # agenda items through the agenda feature.
         self.agenda_feature = None
+        # Set by bot.py — the grocery plugin, so confirmed voice transcripts opening
+        # with "grocery"/"groceries" route into the list instead of a plain log.
+        self.grocery = None
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -572,13 +575,15 @@ class TextRouter:
                 await query.edit_message_text("⚠️ No pending transcript.")
                 return
             await query.edit_message_text(f'🎙 "{text}"')
-            await self.process_text(
-                text,
-                lambda msg, **kw: context.bot.send_message(
-                    chat_id=chat_id, text=msg, **kw
-                ),
-                chat_id=chat_id,
-            )
+
+            def reply(msg, **kw):
+                return context.bot.send_message(chat_id=chat_id, text=msg, **kw)
+
+            # "grocery …" voice notes go to the grocery list; anything else (or a
+            # note that only looked like groceries) falls through to a normal log.
+            if self.grocery and await self.grocery.handle_voice_text(text, reply):
+                return
+            await self.process_text(text, reply, chat_id=chat_id)
 
         elif query.data == "voice_edit":
             current = self._awaiting_voice_edit.get(chat_id, "")

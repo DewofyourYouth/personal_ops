@@ -1,7 +1,6 @@
 import os
 import uuid
 from datetime import datetime, time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from db import Database
