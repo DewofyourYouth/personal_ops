@@ -1,616 +1,1862 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Personal Ops — Demo Deck</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Frank+Ruhl+Libre:wght@500&display=swap" rel="stylesheet" />
-<style>
-  :root{
-    --paper:#F3EFE4;
-    --paper-2:#ECE6D6;
-    --card:#FBF8F0;
-    --sage-deep:#3C4A30;
-    --sage:#6E7F5B;
-    --sage-mid:#8C9A78;
-    --sage-light:#D7DEC8;
-    --bubble:#CDD8BC;
-    --ink:#2A2D24;
-    --ink-soft:#5C604F;
-    --clay:#C2693F;
-    --clay-soft:#D08A5E;
-    --line:rgba(42,45,36,0.13);
-    --serif:'Fraunces',Georgia,serif;
-    --sans:'Inter',system-ui,sans-serif;
-    --mono:'IBM Plex Mono',ui-monospace,monospace;
-  }
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%;width:100%;overflow:hidden;background:var(--ink);}
-  body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal Ops — Demo Deck</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Frank+Ruhl+Libre:wght@500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --paper: #f3efe4;
+        --paper-2: #ece6d6;
+        --card: #fbf8f0;
+        --sage-deep: #3c4a30;
+        --sage: #6e7f5b;
+        --sage-mid: #8c9a78;
+        --sage-light: #d7dec8;
+        --bubble: #cdd8bc;
+        --ink: #2a2d24;
+        --ink-soft: #5c604f;
+        --clay: #c2693f;
+        --clay-soft: #d08a5e;
+        --line: rgba(42, 45, 36, 0.13);
+        --serif: "Fraunces", Georgia, serif;
+        --sans: "Inter", system-ui, sans-serif;
+        --mono: "IBM Plex Mono", ui-monospace, monospace;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        background: var(--ink);
+      }
+      body {
+        font-family: var(--sans);
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+      }
 
-  .deck{position:fixed;inset:0;}
-  .slide{
-    position:absolute;inset:0;
-    display:flex;align-items:center;justify-content:center;
-    padding:clamp(36px,6vw,96px);
-    background:var(--paper);
-    opacity:0;visibility:hidden;
-    transition:opacity .55s ease, visibility .55s ease;
-    overflow:hidden;
-  }
-  .slide.active{opacity:1;visibility:visible;z-index:2;}
-  .slide-inner{width:100%;max-width:1120px;position:relative;z-index:2;}
+      .deck {
+        position: fixed;
+        inset: 0;
+      }
+      .slide {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(36px, 6vw, 96px);
+        background: var(--paper);
+        opacity: 0;
+        visibility: hidden;
+        transition:
+          opacity 0.55s ease,
+          visibility 0.55s ease;
+        overflow: hidden;
+      }
+      .slide.active {
+        opacity: 1;
+        visibility: visible;
+        z-index: 2;
+      }
+      .slide-inner {
+        width: 100%;
+        max-width: 1120px;
+        position: relative;
+        z-index: 2;
+      }
 
-  /* faint paper grain + vignette */
-  .slide::after{
-    content:"";position:absolute;inset:0;pointer-events:none;z-index:1;
-    background:
-      radial-gradient(120% 120% at 50% 0%, rgba(255,255,255,.18), transparent 55%),
-      radial-gradient(130% 130% at 50% 120%, rgba(42,45,36,.10), transparent 60%);
-    mix-blend-mode:multiply;
-  }
-  .slide--dark{background:var(--sage-deep);color:var(--paper);}
-  .slide--dark .slide-inner{color:var(--paper);}
+      /* faint paper grain + vignette */
+      .slide::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        background:
+          radial-gradient(
+            120% 120% at 50% 0%,
+            rgba(255, 255, 255, 0.18),
+            transparent 55%
+          ),
+          radial-gradient(
+            130% 130% at 50% 120%,
+            rgba(42, 45, 36, 0.1),
+            transparent 60%
+          );
+        mix-blend-mode: multiply;
+      }
+      .slide--dark {
+        background: var(--sage-deep);
+        color: var(--paper);
+      }
+      .slide--dark .slide-inner {
+        color: var(--paper);
+      }
 
-  /* type */
-  .kicker{
-    font-family:var(--mono);font-size:clamp(11px,1.05vw,14px);
-    letter-spacing:.26em;text-transform:uppercase;color:var(--sage);
-    display:flex;align-items:center;gap:.7em;margin-bottom:clamp(18px,2.4vw,30px);
-  }
-  .kicker::before{content:"";width:26px;height:1px;background:var(--sage-mid);display:inline-block;}
-  .slide--dark .kicker{color:var(--sage-light);}
-  .slide--dark .kicker::before{background:var(--sage-mid);}
+      /* type */
+      .kicker {
+        font-family: var(--mono);
+        font-size: clamp(11px, 1.05vw, 14px);
+        letter-spacing: 0.26em;
+        text-transform: uppercase;
+        color: var(--sage);
+        display: flex;
+        align-items: center;
+        gap: 0.7em;
+        margin-bottom: clamp(18px, 2.4vw, 30px);
+      }
+      .kicker::before {
+        content: "";
+        width: 26px;
+        height: 1px;
+        background: var(--sage-mid);
+        display: inline-block;
+      }
+      .slide--dark .kicker {
+        color: var(--sage-light);
+      }
+      .slide--dark .kicker::before {
+        background: var(--sage-mid);
+      }
 
-  h1{font-family:var(--serif);font-weight:500;line-height:.98;letter-spacing:-.015em;
-     font-size:clamp(52px,9.4vw,128px);}
-  h2{font-family:var(--serif);font-weight:500;line-height:1.02;letter-spacing:-.012em;
-     font-size:clamp(34px,5.4vw,68px);}
-  .lead{font-size:clamp(17px,1.9vw,23px);line-height:1.5;color:var(--ink-soft);max-width:42ch;}
-  .slide--dark .lead{color:#D6DAC6;}
-  .sub{font-family:var(--sans);font-weight:400;font-size:clamp(18px,2.2vw,27px);
-       color:var(--ink-soft);margin-top:18px;letter-spacing:.01em;}
-  .pull{font-family:var(--serif);font-style:italic;font-weight:400;
-        font-size:clamp(22px,3.4vw,44px);line-height:1.22;letter-spacing:-.01em;}
-  .pull .mk{color:var(--clay);font-style:normal;font-weight:500;}
+      h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        line-height: 0.98;
+        letter-spacing: -0.015em;
+        font-size: clamp(52px, 9.4vw, 128px);
+      }
+      h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        line-height: 1.02;
+        letter-spacing: -0.012em;
+        font-size: clamp(34px, 5.4vw, 68px);
+      }
+      .lead {
+        font-size: clamp(17px, 1.9vw, 23px);
+        line-height: 1.5;
+        color: var(--ink-soft);
+        max-width: 42ch;
+      }
+      .slide--dark .lead {
+        color: #d6dac6;
+      }
+      .sub {
+        font-family: var(--sans);
+        font-weight: 400;
+        font-size: clamp(18px, 2.2vw, 27px);
+        color: var(--ink-soft);
+        margin-top: 18px;
+        letter-spacing: 0.01em;
+      }
+      .pull {
+        font-family: var(--serif);
+        font-style: italic;
+        font-weight: 400;
+        font-size: clamp(22px, 3.4vw, 44px);
+        line-height: 1.22;
+        letter-spacing: -0.01em;
+      }
+      .pull .mk {
+        color: var(--clay);
+        font-style: normal;
+        font-weight: 500;
+      }
 
-  .rule{height:1px;background:var(--line);margin:clamp(22px,3vw,34px) 0;}
-  .slide--dark .rule{background:rgba(243,239,228,.18);}
+      .rule {
+        height: 1px;
+        background: var(--line);
+        margin: clamp(22px, 3vw, 34px) 0;
+      }
+      .slide--dark .rule {
+        background: rgba(243, 239, 228, 0.18);
+      }
 
-  /* lists */
-  ul.points{list-style:none;display:flex;flex-direction:column;gap:clamp(12px,1.5vw,18px);margin-top:6px;}
-  ul.points li{position:relative;padding-left:30px;font-size:clamp(17px,1.95vw,24px);line-height:1.42;color:var(--ink);}
-  ul.points li::before{content:"";position:absolute;left:0;top:.62em;width:9px;height:9px;border-radius:50%;
-      background:var(--sage);}
-  ul.points li b{font-weight:600;color:var(--sage-deep);}
-  .slide--dark ul.points li{color:#EBE7D8;}
-  .slide--dark ul.points li::before{background:var(--clay-soft);}
+      /* lists */
+      ul.points {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: clamp(12px, 1.5vw, 18px);
+        margin-top: 6px;
+      }
+      ul.points li {
+        position: relative;
+        padding-left: 30px;
+        font-size: clamp(17px, 1.95vw, 24px);
+        line-height: 1.42;
+        color: var(--ink);
+      }
+      ul.points li::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.62em;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--sage);
+      }
+      ul.points li b {
+        font-weight: 600;
+        color: var(--sage-deep);
+      }
+      .slide--dark ul.points li {
+        color: #ebe7d8;
+      }
+      .slide--dark ul.points li::before {
+        background: var(--clay-soft);
+      }
 
-  .two{display:grid;grid-template-columns:1.05fr .95fr;gap:clamp(30px,5vw,72px);align-items:center;}
-  @media(max-width:820px){.two{grid-template-columns:1fr;gap:32px;}}
+      .two {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: clamp(30px, 5vw, 72px);
+        align-items: center;
+      }
+      @media (max-width: 820px) {
+        .two {
+          grid-template-columns: 1fr;
+          gap: 32px;
+        }
+      }
 
-  /* principle cards (slide 4) */
-  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(16px,2vw,26px);margin-top:8px;}
-  .pcard{background:var(--card);border:1px solid var(--line);border-radius:16px;
-         padding:clamp(20px,2.4vw,34px);display:flex;flex-direction:column;gap:14px;
-         box-shadow:0 1px 0 rgba(255,255,255,.6) inset, 0 14px 30px -22px rgba(42,45,36,.45);}
-  .pcard .num{font-family:var(--mono);font-size:13px;letter-spacing:.2em;color:var(--clay);}
-  .pcard h3{font-family:var(--serif);font-weight:500;font-size:clamp(20px,2.3vw,28px);line-height:1.08;}
-  .pcard p{font-size:clamp(13.5px,1.4vw,16px);line-height:1.45;color:var(--ink-soft);}
-  @media(max-width:820px){.cards{grid-template-columns:1fr;}}
+      /* principle cards (slide 4) */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(16px, 2vw, 26px);
+        margin-top: 8px;
+      }
+      .pcard {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: clamp(20px, 2.4vw, 34px);
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.6) inset,
+          0 14px 30px -22px rgba(42, 45, 36, 0.45);
+      }
+      .pcard .num {
+        font-family: var(--mono);
+        font-size: 13px;
+        letter-spacing: 0.2em;
+        color: var(--clay);
+      }
+      .pcard h3 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: clamp(20px, 2.3vw, 28px);
+        line-height: 1.08;
+      }
+      .pcard p {
+        font-size: clamp(13.5px, 1.4vw, 16px);
+        line-height: 1.45;
+        color: var(--ink-soft);
+      }
+      @media (max-width: 820px) {
+        .cards {
+          grid-template-columns: 1fr;
+        }
+      }
 
-  /* chat motif */
-  .chat{background:var(--paper-2);border:1px solid var(--line);border-radius:22px;
-        padding:clamp(16px,1.8vw,22px);display:flex;flex-direction:column;gap:12px;
-        box-shadow:0 22px 44px -30px rgba(42,45,36,.6);}
-  .chat-head{display:flex;align-items:center;gap:11px;padding:2px 4px 10px;border-bottom:1px solid var(--line);}
-  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(160deg,var(--sage),var(--sage-deep));
-          display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--serif);font-size:16px;}
-  .chat-head .nm{font-weight:600;font-size:14px;line-height:1.05;}
-  .chat-head .st{font-size:11px;color:var(--sage);font-family:var(--mono);letter-spacing:.04em;}
-  .bubble{max-width:84%;padding:11px 14px;border-radius:16px;font-size:14.5px;line-height:1.4;}
-  .bubble.me{align-self:flex-end;background:var(--bubble);border-bottom-right-radius:5px;color:#27301d;}
-  .bubble.bot{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:5px;}
-  .bubble.bot .heb{font-family:'Frank Ruhl Libre',serif;font-weight:500;}
-  .voice{display:flex;align-items:center;gap:10px;}
-  .play{width:26px;height:26px;border-radius:50%;background:var(--sage-deep);flex:0 0 auto;
-        display:flex;align-items:center;justify-content:center;}
-  .play::before{content:"";border-left:9px solid #fff;border-top:6px solid transparent;border-bottom:6px solid transparent;margin-left:3px;}
-  .wave{display:flex;align-items:center;gap:3px;height:22px;}
-  .wave i{width:3px;border-radius:2px;background:var(--sage-deep);opacity:.8;}
-  .dur{font-family:var(--mono);font-size:12px;color:#3a4530;margin-left:2px;}
-  .logged{align-self:flex-start;font-family:var(--mono);font-size:12px;color:var(--sage);
-          display:flex;align-items:center;gap:7px;letter-spacing:.03em;padding-left:4px;}
-  .logged b{color:var(--sage-deep);font-weight:500;}
-  .tick{color:var(--sage-deep);}
+      /* chat motif */
+      .chat {
+        background: var(--paper-2);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        padding: clamp(16px, 1.8vw, 22px);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        box-shadow: 0 22px 44px -30px rgba(42, 45, 36, 0.6);
+      }
+      .chat-head {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 2px 4px 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: linear-gradient(160deg, var(--sage), var(--sage-deep));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        font-family: var(--serif);
+        font-size: 16px;
+      }
+      .chat-head .nm {
+        font-weight: 600;
+        font-size: 14px;
+        line-height: 1.05;
+      }
+      .chat-head .st {
+        font-size: 11px;
+        color: var(--sage);
+        font-family: var(--mono);
+        letter-spacing: 0.04em;
+      }
+      .bubble {
+        max-width: 84%;
+        padding: 11px 14px;
+        border-radius: 16px;
+        font-size: 14.5px;
+        line-height: 1.4;
+      }
+      .bubble.me {
+        align-self: flex-end;
+        background: var(--bubble);
+        border-bottom-right-radius: 5px;
+        color: #27301d;
+      }
+      .bubble.bot {
+        align-self: flex-start;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-bottom-left-radius: 5px;
+      }
+      .bubble.bot .heb {
+        font-family: "Frank Ruhl Libre", serif;
+        font-weight: 500;
+      }
+      .voice {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .play {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--sage-deep);
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .play::before {
+        content: "";
+        border-left: 9px solid #fff;
+        border-top: 6px solid transparent;
+        border-bottom: 6px solid transparent;
+        margin-left: 3px;
+      }
+      .wave {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        height: 22px;
+      }
+      .wave i {
+        width: 3px;
+        border-radius: 2px;
+        background: var(--sage-deep);
+        opacity: 0.8;
+      }
+      .dur {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: #3a4530;
+        margin-left: 2px;
+      }
+      .logged {
+        align-self: flex-start;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--sage);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        letter-spacing: 0.03em;
+        padding-left: 4px;
+      }
+      .logged b {
+        color: var(--sage-deep);
+        font-weight: 500;
+      }
+      .tick {
+        color: var(--sage-deep);
+      }
 
-  /* mono date example (slide 7) */
-  .cmp{display:flex;flex-direction:column;gap:10px;margin-top:6px;}
-  .cmp .row{font-family:var(--mono);font-size:clamp(14px,1.6vw,18px);display:flex;align-items:center;gap:12px;}
-  .cmp .tag{font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:3px 8px;border-radius:6px;}
-  .cmp .good .tag{background:rgba(110,127,91,.28);color:#E7EAD6;}
-  .cmp .bad .tag{background:rgba(243,239,228,.12);color:#B9C0A6;}
-  .cmp .good .txt{color:#fff;}
-  .cmp .bad .txt{color:#9aa389;text-decoration:line-through;text-decoration-thickness:1px;}
-  .taglist{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;}
-  .taglist span{font-family:var(--mono);font-size:12.5px;letter-spacing:.02em;padding:5px 11px;border-radius:999px;
-      background:rgba(243,239,228,.1);border:1px solid rgba(243,239,228,.2);color:#E7EAD6;}
+      /* mono date example (slide 7) */
+      .cmp {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .cmp .row {
+        font-family: var(--mono);
+        font-size: clamp(14px, 1.6vw, 18px);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .cmp .tag {
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 6px;
+      }
+      .cmp .good .tag {
+        background: rgba(110, 127, 91, 0.28);
+        color: #e7ead6;
+      }
+      .cmp .bad .tag {
+        background: rgba(243, 239, 228, 0.12);
+        color: #b9c0a6;
+      }
+      .cmp .good .txt {
+        color: #fff;
+      }
+      .cmp .bad .txt {
+        color: #9aa389;
+        text-decoration: line-through;
+        text-decoration-thickness: 1px;
+      }
+      .taglist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .taglist span {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        letter-spacing: 0.02em;
+        padding: 5px 11px;
+        border-radius: 999px;
+        background: rgba(243, 239, 228, 0.1);
+        border: 1px solid rgba(243, 239, 228, 0.2);
+        color: #e7ead6;
+      }
 
-  /* arc (slide 9) */
-  .arc{display:flex;align-items:stretch;gap:0;margin-top:10px;flex-wrap:wrap;}
-  .stage{flex:1 1 0;min-width:150px;padding:clamp(16px,1.6vw,22px) clamp(12px,1.3vw,18px);position:relative;}
-  .stage .sn{font-family:var(--mono);font-size:12px;color:var(--clay);letter-spacing:.2em;}
-  .stage h4{font-family:var(--serif);font-weight:500;font-size:clamp(22px,2.7vw,34px);margin:8px 0 9px;letter-spacing:-.01em;}
-  .stage p{font-size:clamp(13px,1.35vw,15.5px);line-height:1.42;color:var(--ink-soft);}
-  .stage:not(:last-child)::after{content:"→";position:absolute;right:-9px;top:50%;transform:translateY(-50%);
-      color:var(--clay);font-size:22px;z-index:3;}
-  @media(max-width:820px){.stage:not(:last-child)::after{content:"↓";right:auto;left:50%;top:auto;bottom:-12px;transform:translateX(-50%);}}
-  .handoff{margin-top:clamp(26px,3.4vw,40px);font-family:var(--serif);font-style:italic;
-           font-size:clamp(20px,2.6vw,30px);color:var(--sage-deep);}
-  .handoff .mk{color:var(--clay);font-style:normal;}
+      /* arc (slide 9) */
+      .arc {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+      .stage {
+        flex: 1 1 0;
+        min-width: 150px;
+        padding: clamp(16px, 1.6vw, 22px) clamp(12px, 1.3vw, 18px);
+        position: relative;
+      }
+      .stage .sn {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--clay);
+        letter-spacing: 0.2em;
+      }
+      .stage h4 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: clamp(22px, 2.7vw, 34px);
+        margin: 8px 0 9px;
+        letter-spacing: -0.01em;
+      }
+      .stage p {
+        font-size: clamp(13px, 1.35vw, 15.5px);
+        line-height: 1.42;
+        color: var(--ink-soft);
+      }
+      .stage:not(:last-child)::after {
+        content: "→";
+        position: absolute;
+        right: -9px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--clay);
+        font-size: 22px;
+        z-index: 3;
+      }
+      @media (max-width: 820px) {
+        .stage:not(:last-child)::after {
+          content: "↓";
+          right: auto;
+          left: 50%;
+          top: auto;
+          bottom: -12px;
+          transform: translateX(-50%);
+        }
+      }
+      .handoff {
+        margin-top: clamp(26px, 3.4vw, 40px);
+        font-family: var(--serif);
+        font-style: italic;
+        font-size: clamp(20px, 2.6vw, 30px);
+        color: var(--sage-deep);
+      }
+      .handoff .mk {
+        color: var(--clay);
+        font-style: normal;
+      }
 
-  /* digest card (slide 10) */
-  .digest{background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;
-          box-shadow:0 26px 50px -32px rgba(42,45,36,.6);display:grid;grid-template-columns:1fr 1fr;}
-  .digest .col{padding:clamp(20px,2.3vw,30px);}
-  .digest .col.l{border-right:1px solid var(--line);background:linear-gradient(180deg,#FBF8F0,#F6F1E5);}
-  .dg-cmd{font-family:var(--mono);font-size:12px;color:var(--sage);letter-spacing:.08em;margin-bottom:14px;
-          display:flex;align-items:center;gap:8px;}
-  .dg-cmd::before{content:"⌘";color:var(--clay);}
-  .dg-quote{font-family:var(--serif);font-style:italic;font-size:clamp(16px,1.85vw,21px);line-height:1.34;color:var(--sage-deep);}
-  .dg-quote cite{display:block;font-style:normal;font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;
-                 color:var(--ink-soft);margin-top:10px;}
-  .dg-h{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--clay);margin:0 0 8px;}
-  .dg-sec{margin-top:16px;}
-  .dg-sec:first-child{margin-top:0;}
-  .dg-sec p{font-size:clamp(12.5px,1.32vw,15px);line-height:1.45;color:var(--ink);margin-bottom:7px;}
-  .dg-sec.win p{padding-left:15px;position:relative;}
-  .dg-sec.win p::before{content:"";position:absolute;left:0;top:.6em;width:6px;height:6px;border-radius:50%;background:var(--sage);}
-  .dg-sug{background:rgba(194,105,63,.09);border:1px solid rgba(194,105,63,.28);border-radius:12px;padding:14px 16px;}
-  .dg-sug .dg-h{color:var(--clay);}
-  .dg-sug p{color:#7a4225;font-weight:500;margin:0;}
-  @media(max-width:820px){.digest{grid-template-columns:1fr;}.digest .col.l{border-right:none;border-bottom:1px solid var(--line);}}
+      /* digest card (slide 10) */
+      .digest {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 26px 50px -32px rgba(42, 45, 36, 0.6);
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+      .digest .col {
+        padding: clamp(20px, 2.3vw, 30px);
+      }
+      .digest .col.l {
+        border-right: 1px solid var(--line);
+        background: linear-gradient(180deg, #fbf8f0, #f6f1e5);
+      }
+      .dg-cmd {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--sage);
+        letter-spacing: 0.08em;
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .dg-cmd::before {
+        content: "⌘";
+        color: var(--clay);
+      }
+      .dg-quote {
+        font-family: var(--serif);
+        font-style: italic;
+        font-size: clamp(16px, 1.85vw, 21px);
+        line-height: 1.34;
+        color: var(--sage-deep);
+      }
+      .dg-quote cite {
+        display: block;
+        font-style: normal;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.04em;
+        color: var(--ink-soft);
+        margin-top: 10px;
+      }
+      .dg-h {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--clay);
+        margin: 0 0 8px;
+      }
+      .dg-sec {
+        margin-top: 16px;
+      }
+      .dg-sec:first-child {
+        margin-top: 0;
+      }
+      .dg-sec p {
+        font-size: clamp(12.5px, 1.32vw, 15px);
+        line-height: 1.45;
+        color: var(--ink);
+        margin-bottom: 7px;
+      }
+      .dg-sec.win p {
+        padding-left: 15px;
+        position: relative;
+      }
+      .dg-sec.win p::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.6em;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--sage);
+      }
+      .dg-sug {
+        background: rgba(194, 105, 63, 0.09);
+        border: 1px solid rgba(194, 105, 63, 0.28);
+        border-radius: 12px;
+        padding: 14px 16px;
+      }
+      .dg-sug .dg-h {
+        color: var(--clay);
+      }
+      .dg-sug p {
+        color: #7a4225;
+        font-weight: 500;
+        margin: 0;
+      }
+      @media (max-width: 820px) {
+        .digest {
+          grid-template-columns: 1fr;
+        }
+        .digest .col.l {
+          border-right: none;
+          border-bottom: 1px solid var(--line);
+        }
+      }
 
-  .footnote{margin-top:clamp(18px,2.2vw,26px);font-size:14px;color:var(--ink-soft);font-style:italic;font-family:var(--serif);}
-  .slide--dark .footnote{color:#C8CDB6;}
+      .footnote {
+        margin-top: clamp(18px, 2.2vw, 26px);
+        font-size: 14px;
+        color: var(--ink-soft);
+        font-style: italic;
+        font-family: var(--serif);
+      }
+      .slide--dark .footnote {
+        color: #c8cdb6;
+      }
 
-  /* close slide */
-  .close-mark{font-family:var(--mono);font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:var(--sage-light);
-              margin-top:clamp(30px,4vw,46px);display:flex;align-items:center;gap:10px;}
-  .close-mark .dot{width:6px;height:6px;border-radius:50%;background:var(--clay-soft);}
+      /* close slide */
+      .close-mark {
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: var(--sage-light);
+        margin-top: clamp(30px, 4vw, 46px);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .close-mark .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--clay-soft);
+      }
 
-  /* contact slide socials */
-  .col-h{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--sage-light);margin-bottom:16px;}
-  .links{list-style:none;display:flex;flex-direction:column;gap:clamp(12px,1.5vw,18px);}
-  .links li a{display:flex;align-items:center;gap:13px;color:#fff;text-decoration:none;
-              font-size:clamp(17px,1.9vw,23px);line-height:1.1;transition:color .2s;}
-  .links li a:hover{color:var(--clay-soft);}
-  .links .ic{width:26px;height:26px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-             border-radius:7px;background:rgba(243,239,228,.1);color:var(--sage-light);}
-  .links .ic svg{width:16px;height:16px;}
-  .links .ic.web{font-family:var(--serif);font-size:15px;}
-  .links li a:hover .ic{background:rgba(208,138,94,.22);color:var(--clay-soft);}
-  .links .hd{display:flex;flex-direction:column;gap:1px;}
-  .links .hd .pl{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--sage-light);}
-  .links .hd .hn{font-size:clamp(15px,1.7vw,20px);}
+      /* contact slide socials */
+      .col-h {
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--sage-light);
+        margin-bottom: 16px;
+      }
+      .links {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: clamp(12px, 1.5vw, 18px);
+      }
+      .links li a {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        color: #fff;
+        text-decoration: none;
+        font-size: clamp(17px, 1.9vw, 23px);
+        line-height: 1.1;
+        transition: color 0.2s;
+      }
+      .links li a:hover {
+        color: var(--clay-soft);
+      }
+      .links .ic {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
+        background: rgba(243, 239, 228, 0.1);
+        color: var(--sage-light);
+      }
+      .links .ic svg {
+        width: 16px;
+        height: 16px;
+      }
+      .links .ic.web {
+        font-family: var(--serif);
+        font-size: 15px;
+      }
+      .links li a:hover .ic {
+        background: rgba(208, 138, 94, 0.22);
+        color: var(--clay-soft);
+      }
+      .links .hd {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .links .hd .pl {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--sage-light);
+      }
+      .links .hd .hn {
+        font-size: clamp(15px, 1.7vw, 20px);
+      }
 
-  /* chrome */
-  .chrome{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;align-items:center;justify-content:space-between;
-          padding:16px clamp(20px,3vw,40px);pointer-events:none;}
-  .dots{display:flex;gap:9px;pointer-events:auto;}
-  .dots button{width:8px;height:8px;border-radius:50%;border:none;cursor:pointer;padding:0;
-               background:rgba(42,45,36,.22);transition:all .25s;}
-  .dots button.on{background:var(--clay);transform:scale(1.35);}
-  .slide--dark ~ .chrome .dots button{background:rgba(243,239,228,.28);}
-  .ctr{display:flex;align-items:center;gap:14px;pointer-events:auto;}
-  .counter{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:var(--ink-soft);}
-  .nav-btn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:rgba(255,255,255,.5);
-           cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--ink);transition:all .2s;}
-  .nav-btn:hover{background:#fff;border-color:var(--sage-mid);}
-  .nav-btn svg{width:15px;height:15px;}
-  .hint{position:fixed;top:16px;right:clamp(20px,3vw,40px);z-index:40;font-family:var(--mono);font-size:11px;
-        letter-spacing:.06em;color:var(--ink-soft);opacity:.6;pointer-events:none;}
-  .progress{position:fixed;top:0;left:0;height:3px;background:var(--clay);z-index:50;transition:width .45s ease;}
+      /* intro / whoami slide */
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: clamp(18px, 2.4vw, 28px);
+      }
+      .brand .mark {
+        width: clamp(54px, 5.8vw, 74px);
+        height: clamp(54px, 5.8vw, 74px);
+        border-radius: 16px;
+        object-fit: cover;
+        background: rgba(243, 239, 228, 0.08);
+        border: 1px solid rgba(243, 239, 228, 0.22);
+        box-shadow: 0 18px 36px -22px rgba(0, 0, 0, 0.65);
+      }
+      .brand .wm {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .brand .wm .nm {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: clamp(22px, 2.5vw, 30px);
+        line-height: 1;
+        letter-spacing: -0.01em;
+        color: var(--paper);
+      }
+      .brand .wm .dm {
+        font-family: var(--mono);
+        font-size: clamp(11px, 1.1vw, 13px);
+        letter-spacing: 0.14em;
+        color: var(--sage-light);
+      }
+      .role {
+        border-left: 2px solid var(--clay);
+        padding-left: 16px;
+        margin-top: clamp(16px, 2.2vw, 24px);
+        font-size: clamp(15px, 1.7vw, 19px);
+        line-height: 1.46;
+        color: #e7ead6;
+        max-width: 38ch;
+      }
+      .role b {
+        color: #fff;
+        font-weight: 600;
+      }
+      .role .mono {
+        display: block;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--clay-soft);
+        margin-bottom: 7px;
+      }
+      .social-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 4px;
+      }
+      .social-row a {
+        width: 42px;
+        height: 42px;
+        border-radius: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--sage-light);
+        background: rgba(243, 239, 228, 0.08);
+        border: 1px solid rgba(243, 239, 228, 0.18);
+        transition:
+          color 0.2s,
+          background 0.2s,
+          border-color 0.2s;
+      }
+      .social-row a:hover {
+        color: var(--clay-soft);
+        border-color: rgba(208, 138, 94, 0.4);
+        background: rgba(208, 138, 94, 0.14);
+      }
+      .social-row a svg {
+        width: 18px;
+        height: 18px;
+      }
 
-  /* presenter notes */
-  .notes{position:fixed;left:0;right:0;bottom:0;z-index:60;transform:translateY(100%);
-         transition:transform .35s ease;background:rgba(28,32,22,.97);color:#E9E7D9;
-         padding:22px clamp(24px,5vw,90px) 30px;box-shadow:0 -20px 50px -20px rgba(0,0,0,.6);
-         border-top:2px solid var(--clay);}
-  .notes.open{transform:translateY(0);}
-  .notes .nh{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--clay-soft);margin-bottom:10px;}
-  .notes .nb{font-family:var(--serif);font-size:clamp(16px,1.9vw,22px);line-height:1.5;max-width:90ch;}
+      /* chrome */
+      .chrome {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px clamp(20px, 3vw, 40px);
+        pointer-events: none;
+      }
+      .dots {
+        display: flex;
+        gap: 9px;
+        pointer-events: auto;
+      }
+      .dots button {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        background: rgba(42, 45, 36, 0.22);
+        transition: all 0.25s;
+      }
+      .dots button.on {
+        background: var(--clay);
+        transform: scale(1.35);
+      }
+      .slide--dark ~ .chrome .dots button {
+        background: rgba(243, 239, 228, 0.28);
+      }
+      .ctr {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        pointer-events: auto;
+      }
+      .counter {
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        color: var(--ink-soft);
+      }
+      .nav-btn {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.5);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink);
+        transition: all 0.2s;
+      }
+      .nav-btn:hover {
+        background: #fff;
+        border-color: var(--sage-mid);
+      }
+      .nav-btn svg {
+        width: 15px;
+        height: 15px;
+      }
+      .hint {
+        position: fixed;
+        top: 16px;
+        right: clamp(20px, 3vw, 40px);
+        z-index: 40;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: var(--ink-soft);
+        opacity: 0.6;
+        pointer-events: none;
+      }
+      .progress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 3px;
+        background: var(--clay);
+        z-index: 50;
+        transition: width 0.45s ease;
+      }
 
-  .chrome,.hint{transition:opacity .3s;}
-  body.notes-on .chrome{opacity:.15;}
-</style>
-<style>
-.ha-img-placeholder{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;background:#f4f4f5;border:1px dashed #d4d4d8;border-radius:8px;color:#71717a;font-size:12px;font-family:system-ui,sans-serif;min-height:80px;padding:16px;box-sizing:border-box;animation:ha-img-pulse 1.5s ease-in-out infinite}
-.ha-img-placeholder.ha-failed{animation:none;opacity:.7}
-@keyframes ha-img-pulse{0%,100%{opacity:1}50%{opacity:.5}}
-@media(prefers-color-scheme:dark){.ha-img-placeholder{background:#27272a;border-color:#3f3f46;color:#a1a1aa}}
-</style>
-</head>
-<body>
-<div class="progress" id="progress"></div>
-<div class="hint">← → &nbsp;move&nbsp; · &nbsp;N&nbsp;notes&nbsp; · &nbsp;Esc&nbsp;exit</div>
+      /* presenter notes */
+      .notes {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 60;
+        transform: translateY(100%);
+        transition: transform 0.35s ease;
+        background: rgba(28, 32, 22, 0.97);
+        color: #e9e7d9;
+        padding: 22px clamp(24px, 5vw, 90px) 30px;
+        box-shadow: 0 -20px 50px -20px rgba(0, 0, 0, 0.6);
+        border-top: 2px solid var(--clay);
+      }
+      .notes.open {
+        transform: translateY(0);
+      }
+      .notes .nh {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--clay-soft);
+        margin-bottom: 10px;
+      }
+      .notes .nb {
+        font-family: var(--serif);
+        font-size: clamp(16px, 1.9vw, 22px);
+        line-height: 1.5;
+        max-width: 90ch;
+      }
+      .notes .nb strong {
+        font-weight: 600;
+        color: var(--clay-soft);
+      }
 
-<div class="deck" id="deck">
-
-  <!-- 1 TITLE -->
-  <section class="slide active" data-notes="I built this for myself — not a generic productivity app. Target: 90 seconds to two minutes of framing, then I jump into the live bot.">
-    <div class="slide-inner">
-      <div class="kicker">Personal app demo</div>
-      <h1>Personal&nbsp;Ops</h1>
-      <div class="sub">A Telegram bot for executive-functioning support.</div>
-      <div class="rule" style="max-width:520px"></div>
-      <p class="pull" style="max-width:20ch;font-size:clamp(18px,2.3vw,28px)">“I wasn’t trying to build a productivity system. I was trying to build a <span class="mk">low-friction processing layer</span> for my life.”</p>
+      .chrome,
+      .hint {
+        transition: opacity 0.3s;
+      }
+      body.notes-on .chrome {
+        opacity: 0.15;
+      }
+    </style>
+    <style>
+      .ha-img-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 6px;
+        background: #f4f4f5;
+        border: 1px dashed #d4d4d8;
+        border-radius: 8px;
+        color: #71717a;
+        font-size: 12px;
+        font-family: system-ui, sans-serif;
+        min-height: 80px;
+        padding: 16px;
+        box-sizing: border-box;
+        animation: ha-img-pulse 1.5s ease-in-out infinite;
+      }
+      .ha-img-placeholder.ha-failed {
+        animation: none;
+        opacity: 0.7;
+      }
+      @keyframes ha-img-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      @media (prefers-color-scheme: dark) {
+        .ha-img-placeholder {
+          background: #27272a;
+          border-color: #3f3f46;
+          color: #a1a1aa;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="progress" id="progress"></div>
+    <div class="hint">
+      ← → &nbsp;move&nbsp; · &nbsp;N&nbsp;notes&nbsp; · &nbsp;Esc&nbsp;exit
     </div>
-  </section>
 
-  <!-- 2 PROBLEM -->
-  <section class="slide" data-notes="I'm in a transitional period — days less structured, a lot in flux. Thoughts, reminders, feelings and decisions come faster than I can process them. I needed to get things out of my head before they disappeared.">
-    <div class="slide-inner">
-      <div class="kicker">The problem</div>
-      <div class="two">
-        <div>
-          <h2>Days in flux,<br>thoughts too fast.</h2>
+    <div class="deck" id="deck">
+      <!-- 1 TITLE -->
+      <section
+        class="slide active"
+        data-notes="So — this is something I built for myself. Not a generic productivity app. I'll keep the framing short — a minute or two — then jump straight into the **live bot.**"
+      >
+        <div class="slide-inner">
+          <div class="kicker">Personal app demo</div>
+          <h1>Personal&nbsp;Ops</h1>
+          <div class="sub">
+            A Telegram bot for executive-functioning support.
+          </div>
+          <div class="rule" style="max-width: 520px"></div>
+          <p
+            class="pull"
+            style="max-width: 20ch; font-size: clamp(18px, 2.3vw, 28px)"
+          >
+            “I wasn’t trying to build a productivity system. I was trying to
+            build a <span class="mk">low-friction processing layer</span> for my
+            life.”
+          </p>
         </div>
-        <div>
-          <ul class="points">
-            <li>I’m in a <b>transitional period</b> — days are less structured.</li>
-            <li>A lot is in flux.</li>
-            <li>Thoughts, reminders, feelings, and decisions come <b>faster than I can process them</b>.</li>
-            <li>I need fast capture now, and reflection later.</li>
-          </ul>
+      </section>
+
+      <!-- 2 WHOAMI / ABOUT (dark) -->
+      <section
+        class="slide slide--dark"
+        data-notes="One quick word on me before the bot. I'm **Jacob Shore.** For the **past three and a half years** I was an infrastructure and DevOps engineer at a — let's call it **clandestine** — Israeli B2G security firm. So reliable systems, clean operations, doing more with less — that's the lens I bring to everything, including this. Everything I build and write lives at **jacob-shore.com.** Okay — now, why this exists."
+      >
+        <div class="slide-inner">
+          <div class="kicker">Who's behind it</div>
+          <div class="two" style="align-items: start">
+            <div>
+              <div class="brand">
+                <img
+                  class="mark"
+                  src="https://jacob-shore.com/img/jacob_pixel_512.e29b254deb721a4ef3bdf06475d6f46a861ada344dde5d9c99bccc9feec34530.png"
+                  alt="Jacob Shore"
+                  width="74"
+                  height="74"
+                />
+                <div class="wm">
+                  <span class="nm">Jacob Shore</span>
+                  <span class="dm">jacob-shore.com</span>
+                </div>
+              </div>
+              <h2>Hi — I’m Jacob.</h2>
+              <p class="lead" style="margin-top: 16px">
+                I design and build practical, AI-assisted tools for real life.
+                Personal Ops is one of them.
+              </p>
+              <p class="role">
+                <span class="mono">Background</span>
+                For the past <b>3.5 years</b>, an
+                <b>Infrastructure &amp; DevOps Engineer</b> at a clandestine
+                Israeli B2G security firm.
+              </p>
+            </div>
+            <div>
+              <div class="col-h">Websites</div>
+              <ul class="links" style="margin-bottom: clamp(26px, 3.4vw, 40px)">
+                <li>
+                  <a href="https://jacob-shore.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">jacob-shore.com</span></a
+                  >
+                </li>
+                <li>
+                  <a href="https://dewofyouryouth.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">dewofyouryouth.com</span></a
+                  >
+                </li>
+                <li>
+                  <a href="https://dailyderja.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">dailyderja.com</span></a
+                  >
+                </li>
+              </ul>
+              <div class="col-h">Socials</div>
+              <div class="social-row">
+                <a
+                  href="https://www.linkedin.com/in/jacob-shore-86094725a/"
+                  aria-label="LinkedIn"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                      d="M20.45 20.45h-3.56v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.13 2.07 2.07 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"
+                    />
+                  </svg>
+                </a>
+                <a href="https://github.com/DewofyourYouth" aria-label="GitHub">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                      d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.17.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2C5.67 21.7 5 19.61 5 19.61c-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.2.08 1.84 1.2 1.84 1.2 1.07 1.78 2.81 1.27 3.5.97.11-.76.42-1.27.76-1.56-2.66-.29-5.46-1.29-5.46-5.74 0-1.27.46-2.31 1.2-3.12-.12-.29-.52-1.46.12-3.05 0 0 .98-.31 3.2 1.19a11.3 11.3 0 0 1 5.82 0c2.22-1.5 3.2-1.19 3.2-1.19.64 1.59.24 2.76.12 3.05.75.81 1.2 1.85 1.2 3.12 0 4.46-2.81 5.44-5.48 5.73.43.36.81 1.08.81 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.68.83.56C20.57 21.89 24 17.49 24 12.29 24 5.78 18.63.5 12 .5z"
+                    />
+                  </svg>
+                </a>
+                <a
+                  href="https://www.instagram.com/yaakshore/"
+                  aria-label="Instagram"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                      d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.06 1.8.25 2.23.42.56.21.96.47 1.38.9.43.42.69.82.9 1.38.17.42.36 1.06.42 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.06 1.17-.25 1.81-.42 2.23-.21.56-.47.96-.9 1.38-.42.43-.82.69-1.38.9-.42.17-1.06.36-2.23.42-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.06-1.8-.25-2.23-.42a3.72 3.72 0 0 1-1.38-.9 3.72 3.72 0 0 1-.9-1.38c-.17-.42-.36-1.06-.42-2.23-.06-1.27-.07-1.65-.07-4.85s.01-3.58.07-4.85c.06-1.17.25-1.81.42-2.23.21-.56.47-.96.9-1.38.42-.43.82-.69 1.38-.9.43-.17 1.06-.36 2.23-.42 1.27-.06 1.65-.07 4.85-.07M12 0C8.74 0 8.33.01 7.05.07c-1.27.06-2.15.26-2.91.56-.79.3-1.46.71-2.13 1.38A5.9 5.9 0 0 0 .63 4.14c-.3.76-.5 1.64-.56 2.91C.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.71 1.46 1.38 2.13.67.67 1.34 1.08 2.13 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56a5.9 5.9 0 0 0 2.13-1.38 5.9 5.9 0 0 0 1.38-2.13c.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91a5.9 5.9 0 0 0-1.38-2.13A5.9 5.9 0 0 0 19.86.63c-.76-.3-1.64-.5-2.91-.56C15.67.01 15.26 0 12 0zm0 5.84A6.16 6.16 0 1 0 12 18.16 6.16 6.16 0 0 0 12 5.84zm0 10.16A4 4 0 1 1 12 8a4 4 0 0 1 0 8zm6.41-11.85a1.44 1.44 0 1 0 0 2.88 1.44 1.44 0 0 0 0-2.88z"
+                    />
+                  </svg>
+                </a>
+                <a href="https://t.me/dewofyouryouth" aria-label="Telegram">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path
+                      d="M23.95 3.6 20.4 20.62c-.27 1.18-.97 1.47-1.96.92l-5.42-4-2.62 2.52c-.29.29-.53.53-1.09.53l.39-5.51L19.74 5.5c.44-.39-.1-.61-.68-.22L6.36 13.18l-5.35-1.67c-1.16-.36-1.19-1.16.24-1.72L22.45 1.5c.97-.36 1.81.22 1.5 2.1z"
+                    />
+                  </svg>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3 PROBLEM -->
+      <section
+        class="slide"
+        data-notes="Quick context on why this exists. I'm in a **transitional period** right now — days are a lot less structured, a lot's in flux. And the thoughts, the reminders, the feelings, the small decisions — they come faster than I can deal with them. So really — I just needed a way to **get things out of my head** before they disappear."
+      >
+        <div class="slide-inner">
+          <div class="kicker">The problem</div>
+          <div class="two">
+            <div>
+              <h2>Days in flux,<br />thoughts too fast.</h2>
+            </div>
+            <div>
+              <ul class="points">
+                <li>
+                  I’m in a <b>transitional period</b> — days are less
+                  structured.
+                </li>
+                <li>A lot is in flux.</li>
+                <li>
+                  Thoughts, reminders, feelings, and decisions come
+                  <b>faster than I can process them</b>.
+                </li>
+                <li>I need fast capture now, and reflection later.</li>
+              </ul>
+              <div class="rule"></div>
+              <p class="pull" style="font-size: clamp(18px, 2.2vw, 26px)">
+                “Get things out of my head before they disappear.”
+              </p>
+              <p class="footnote" style="margin-top: 16px">
+                If you’ve ever tried to organize your soul with Markdown —
+                welcome.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4 THE IDEA (dark) -->
+      <section
+        class="slide slide--dark"
+        data-notes="If I had to put it in one line — I wasn't trying to build a productivity system. I was trying to build a **low-friction processing layer** for my life."
+      >
+        <div class="slide-inner" style="text-align: center">
+          <div class="kicker" style="justify-content: center">The idea</div>
+          <p
+            class="pull"
+            style="
+              font-size: clamp(30px, 5.2vw, 68px);
+              line-height: 1.12;
+              max-width: 18ch;
+              margin: 0 auto;
+            "
+          >
+            Not a productivity system.<br />A
+            <span class="mk">low-friction processing&nbsp;layer</span> for my
+            life.
+          </p>
+        </div>
+      </section>
+
+      <!-- 5 THREE PRINCIPLES -->
+      <section
+        class="slide"
+        data-notes="There were three principles that ended up shaping basically **every decision** I made — technical and product. Let me walk through them quickly."
+      >
+        <div class="slide-inner">
+          <div class="kicker">How it’s built</div>
+          <h2 style="margin-bottom: clamp(26px, 3.4vw, 42px)">
+            Three design principles
+          </h2>
+          <div class="cards">
+            <div class="pcard">
+              <span class="num">01</span>
+              <h3>Input is everything</h3>
+              <p>The app succeeds or fails at the point of capture.</p>
+            </div>
+            <div class="pcard">
+              <span class="num">02</span>
+              <h3>Support, not control</h3>
+              <p>Help me find the next right thing — don’t manage me.</p>
+            </div>
+            <div class="pcard">
+              <span class="num">03</span>
+              <h3>AI as UX, not the product</h3>
+              <p>Use AI to remove friction, then get out of the way.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6 INPUT IS EVERYTHING -->
+      <section
+        class="slide"
+        data-notes="First one — input is everything. Honest truth is, if capturing something takes any effort, I just won't do it. So — no frontend, no dashboard. It's Telegram. I can text it, or send a voice note — the same way I would with a friend. And here's why this one matters most — if I don't capture the thought in the moment, **none of the downstream intelligence matters.**"
+      >
+        <div class="slide-inner">
+          <div class="kicker">Principle 01</div>
+          <div class="two">
+            <div>
+              <h2>Input is everything.</h2>
+              <p class="lead" style="margin-top: 18px">
+                If capturing a thought takes effort, the moment is already gone.
+                So — no frontend, no dashboard, no separate app to open.
+              </p>
+              <div class="taglist" style="margin-top: 22px">
+                <span
+                  style="
+                    background: rgba(110, 127, 91, 0.16);
+                    border-color: rgba(110, 127, 91, 0.3);
+                    color: #3c4a30;
+                  "
+                  >text or voice</span
+                >
+                <span
+                  style="
+                    background: rgba(110, 127, 91, 0.16);
+                    border-color: rgba(110, 127, 91, 0.3);
+                    color: #3c4a30;
+                  "
+                  >already on my phone</span
+                >
+                <span
+                  style="
+                    background: rgba(110, 127, 91, 0.16);
+                    border-color: rgba(110, 127, 91, 0.3);
+                    color: #3c4a30;
+                  "
+                  >no forms to fill</span
+                >
+              </div>
+              <p
+                class="pull"
+                style="font-size: clamp(17px, 2vw, 24px); margin-top: 24px"
+              >
+                “Like texting a friend, not filling out a form.”
+              </p>
+            </div>
+            <div class="chat">
+              <div class="chat-head">
+                <div class="avatar">P</div>
+                <div>
+                  <div class="nm">Personal Ops</div>
+                  <div class="st">bot</div>
+                </div>
+              </div>
+              <div class="bubble me voice">
+                <span class="play"></span>
+                <span class="wave">
+                  <i style="height: 7px"></i><i style="height: 14px"></i
+                  ><i style="height: 20px"></i><i style="height: 11px"></i
+                  ><i style="height: 18px"></i><i style="height: 8px"></i
+                  ><i style="height: 15px"></i><i style="height: 22px"></i
+                  ><i style="height: 10px"></i><i style="height: 6px"></i>
+                </span>
+                <span class="dur">0:14</span>
+              </div>
+              <div class="bubble bot">
+                felt scattered today but still made it to the morning
+                <span class="heb">חברותא</span> and got a walk in
+              </div>
+              <div class="logged">
+                <span class="tick">✓</span> Logged · <b>#checkin</b> · 6:42
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7 SUPPORT NOT CONTROL -->
+      <section
+        class="slide"
+        data-notes="Second — support, not control. I really didn't want to build myself a **digital taskmaster.** Nobody wants to be managed by an AI overlord. So instead — it helps me find the next right thing, notices when I'm running low, nudges gently. The idea is it should try to **understand me before it judges me.** A bad day shouldn't feel like a productivity failure. (Beat for the taskmaster line — the early version really did hand me an agenda every morning. **Let it land.**)"
+      >
+        <div class="slide-inner">
+          <div class="kicker">Principle 02</div>
+          <div class="two">
+            <div>
+              <h2>Support,<br />not control.</h2>
+              <div class="rule"></div>
+              <p class="pull" style="font-size: clamp(18px, 2.1vw, 26px)">
+                “I didn’t want to build myself a digital taskmaster.”
+              </p>
+              <p
+                class="pull"
+                style="
+                  font-size: clamp(18px, 2.1vw, 26px);
+                  margin-top: 14px;
+                  color: var(--clay);
+                "
+              >
+                “No one wants to be managed by an AI overlord.”
+              </p>
+            </div>
+            <div>
+              <ul class="points">
+                <li>Help decide the <b>next right thing</b>.</li>
+                <li>Notice my current state and energy.</li>
+                <li>Give structure without becoming oppressive.</li>
+                <li>Recognize burnout.</li>
+                <li>Know when to push — and when not to.</li>
+              </ul>
+              <p
+                class="footnote"
+                style="color: var(--ink-soft); margin-top: 24px"
+              >
+                An early version handed me an agenda every morning. I’d built a
+                taskmaster — and given it my phone number.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8 AI AS UX (dark) -->
+      <section
+        class="slide slide--dark"
+        data-notes="Third — AI as UX, not the product. I only use AI where it actually **removes friction** — transcription, natural-language dates, summaries, the digest. Everywhere else it's deterministic, practical — and honestly, price-conscious. Quick example of what I mean — I don't want to type 'remind me on 2026-06-28.' I want to say **'remind me June 28th'** and just be understood. And the flip side — the AI handles the language, but **the data and the numbers never get to hallucinate.** Tracking, counts, dates — that's all deterministic. I don't want a model improvising my stats."
+      >
+        <div class="slide-inner">
+          <div class="kicker">Principle 03</div>
+          <p
+            class="pull"
+            style="
+              font-size: clamp(26px, 4vw, 52px);
+              line-height: 1.14;
+              max-width: 20ch;
+            "
+          >
+            The AI isn’t there to make the app feel magical. It’s there to make
+            the <span class="mk">interface disappear</span>.
+          </p>
           <div class="rule"></div>
-          <p class="pull" style="font-size:clamp(18px,2.2vw,26px)">“Get things out of my head before they disappear.”</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 3 THE IDEA (dark) -->
-  <section class="slide slide--dark" data-notes="In one line: I wasn't trying to build a productivity system. I was trying to build a low-friction processing layer for my life.">
-    <div class="slide-inner" style="text-align:center">
-      <div class="kicker" style="justify-content:center">The idea</div>
-      <p class="pull" style="font-size:clamp(30px,5.2vw,68px);line-height:1.12;max-width:18ch;margin:0 auto">Not a productivity system.<br>A <span class="mk">low-friction processing&nbsp;layer</span> for my life.</p>
-    </div>
-  </section>
-
-  <!-- 4 THREE PRINCIPLES -->
-  <section class="slide" data-notes="Three principles shaped almost every technical and product decision.">
-    <div class="slide-inner">
-      <div class="kicker">How it’s built</div>
-      <h2 style="margin-bottom:clamp(26px,3.4vw,42px)">Three design principles</h2>
-      <div class="cards">
-        <div class="pcard"><span class="num">01</span><h3>Input is everything</h3><p>The app succeeds or fails at the point of capture.</p></div>
-        <div class="pcard"><span class="num">02</span><h3>Support, not control</h3><p>Help me find the next right thing — don’t manage me.</p></div>
-        <div class="pcard"><span class="num">03</span><h3>AI as UX, not the product</h3><p>Use AI to remove friction, then get out of the way.</p></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 5 INPUT IS EVERYTHING -->
-  <section class="slide" data-notes="Input is everything. If capturing something takes effort, I won't do it — so no frontend, no dashboard. Telegram, because I can text it or send a voice note the way I would with a friend. If I won't capture the thought in the moment, none of the downstream intelligence matters.">
-    <div class="slide-inner">
-      <div class="kicker">Principle 01</div>
-      <div class="two">
-        <div>
-          <h2>Input is everything.</h2>
-          <p class="lead" style="margin-top:18px">If capturing a thought takes effort, the moment is already gone. So — no frontend, no dashboard, no separate app to open.</p>
-          <div class="taglist" style="margin-top:22px">
-            <span style="background:rgba(110,127,91,.16);border-color:rgba(110,127,91,.3);color:#3c4a30">text or voice</span>
-            <span style="background:rgba(110,127,91,.16);border-color:rgba(110,127,91,.3);color:#3c4a30">already on my phone</span>
-            <span style="background:rgba(110,127,91,.16);border-color:rgba(110,127,91,.3);color:#3c4a30">no forms to fill</span>
-          </div>
-          <p class="pull" style="font-size:clamp(17px,2vw,24px);margin-top:24px">“Like texting a friend, not filling out a form.”</p>
-        </div>
-        <div class="chat">
-          <div class="chat-head">
-            <div class="avatar">P</div>
-            <div><div class="nm">Personal Ops</div><div class="st">bot</div></div>
-          </div>
-          <div class="bubble me voice">
-            <span class="play"></span>
-            <span class="wave">
-              <i style="height:7px"></i><i style="height:14px"></i><i style="height:20px"></i><i style="height:11px"></i><i style="height:18px"></i><i style="height:8px"></i><i style="height:15px"></i><i style="height:22px"></i><i style="height:10px"></i><i style="height:6px"></i>
-            </span>
-            <span class="dur">0:14</span>
-          </div>
-          <div class="bubble bot">felt scattered today but still made it to the morning <span class="heb">חברותא</span> and got a walk in</div>
-          <div class="logged"><span class="tick">✓</span> Logged · <b>#checkin</b> · 6:42</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 6 SUPPORT NOT CONTROL -->
-  <section class="slide" data-notes="I didn't want a digital taskmaster. No one wants to be managed by an AI overlord. The bot should help me find the next right thing, notice when I'm burning out, and guide me gently — try to understand me before judging me. A bad day shouldn't feel like a productivity failure.">
-    <div class="slide-inner">
-      <div class="kicker">Principle 02</div>
-      <div class="two">
-        <div>
-          <h2>Support,<br>not control.</h2>
-          <div class="rule"></div>
-          <p class="pull" style="font-size:clamp(18px,2.1vw,26px)">“I didn’t want to build myself a digital taskmaster.”</p>
-          <p class="pull" style="font-size:clamp(18px,2.1vw,26px);margin-top:14px;color:var(--clay)">“No one wants to be managed by an AI overlord.”</p>
-        </div>
-        <div>
-          <ul class="points">
-            <li>Help decide the <b>next right thing</b>.</li>
-            <li>Notice my current state and energy.</li>
-            <li>Give structure without becoming oppressive.</li>
-            <li>Recognize burnout.</li>
-            <li>Know when to push — and when not to.</li>
-          </ul>
-          <p class="footnote" style="color:var(--ink-soft);margin-top:24px">The bot should try to understand me before judging me.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 7 AI AS UX (dark) -->
-  <section class="slide slide--dark" data-notes="I use AI only where it removes friction — transcription, natural-language dates, structure, summaries, reflection, the digest. Otherwise: deterministic, practical, price-conscious. I don't want to type 'remind me on 2026-06-28.' I want to say 'remind me June 28th' and be understood.">
-    <div class="slide-inner">
-      <div class="kicker">Principle 03</div>
-      <p class="pull" style="font-size:clamp(26px,4vw,52px);line-height:1.14;max-width:20ch">The AI isn’t there to make the app feel magical. It’s there to make the <span class="mk">interface disappear</span>.</p>
-      <div class="rule"></div>
-      <div class="two" style="align-items:start;gap:clamp(24px,4vw,56px)">
-        <div>
-          <div style="font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--sage-light);margin-bottom:12px">AI only where it removes friction</div>
-          <div class="taglist" style="margin-top:0">
-            <span>voice transcription</span><span>natural-language dates</span><span>structure from mess</span><span>summaries</span><span>reflection</span><span>daily digest</span>
+          <div
+            class="two"
+            style="align-items: start; gap: clamp(24px, 4vw, 56px)"
+          >
+            <div>
+              <div
+                style="
+                  font-family: var(--mono);
+                  font-size: 12px;
+                  letter-spacing: 0.16em;
+                  text-transform: uppercase;
+                  color: var(--sage-light);
+                  margin-bottom: 12px;
+                "
+              >
+                AI only where it removes friction
+              </div>
+              <div class="taglist" style="margin-top: 0">
+                <span>voice transcription</span
+                ><span>natural-language dates</span
+                ><span>structure from mess</span><span>summaries</span
+                ><span>reflection</span><span>daily digest</span>
+              </div>
+            </div>
+            <div>
+              <div class="cmp">
+                <div class="row good">
+                  <span class="tag">say</span
+                  ><span class="txt">remind me June 28th</span>
+                </div>
+                <div class="row bad">
+                  <span class="tag">not</span
+                  ><span class="txt">remind me on 2026-06-28</span>
+                </div>
+              </div>
+              <p class="footnote">
+                Otherwise: deterministic, practical, price-conscious — and
+                <span style="color: var(--clay-soft); font-style: normal"
+                  >the data and numbers never get to hallucinate</span
+                >.
+              </p>
+            </div>
           </div>
         </div>
-        <div>
-          <div class="cmp">
-            <div class="row good"><span class="tag">say</span><span class="txt">remind me June 28th</span></div>
-            <div class="row bad"><span class="tag">not</span><span class="txt">remind me on 2026-06-28</span></div>
+      </section>
+
+      <!-- 9 ATOMIC HABITS -->
+      <section
+        class="slide"
+        data-notes="A lot of this comes out of Atomic Habits. The core idea — behavior change is less about willpower, more about making the right action **obvious, easy, and right there.** Cues, identity, environment. So if you've read James Clear and you hear echoes of that — yeah, **not a coincidence.**"
+      >
+        <div class="slide-inner">
+          <div class="kicker">Influence</div>
+          <div class="two">
+            <div>
+              <h2 style="font-style: italic">Atomic&nbsp;Habits.</h2>
+              <p class="lead" style="margin-top: 16px">
+                Behavior change depends less on willpower than on making the
+                right action available.
+              </p>
+              <p
+                class="pull"
+                style="font-size: clamp(17px, 2vw, 24px); margin-top: 22px"
+              >
+                “If you hear echoes of it, that’s not a coincidence.”
+              </p>
+            </div>
+            <div>
+              <ul class="points">
+                <li>Make the right action <b>obvious</b>.</li>
+                <li>Make it <b>easy</b>.</li>
+                <li>Reduce reliance on willpower.</li>
+                <li>Build around <b>cues, identity, environment</b>.</li>
+              </ul>
+            </div>
           </div>
-          <p class="footnote">Otherwise: deterministic, practical, price-conscious.</p>
         </div>
+      </section>
+
+      <!-- 10 DEMO ARC -->
+      <section
+        class="slide"
+        data-notes="The help menu is basically organized around what I wanted the app to do. Four beats — **Capture, Digest, Adapt, Propose.** I'll roughly follow that order. Okay — let me show you the **actual bot.**"
+      >
+        <div class="slide-inner">
+          <div class="kicker">The demo arc</div>
+          <h2 style="margin-bottom: clamp(18px, 2.4vw, 30px)">
+            From raw input to the next right step.
+          </h2>
+          <div class="arc">
+            <div class="stage">
+              <div class="sn">01</div>
+              <h4>Capture</h4>
+              <p>Get it out of my head in the moment — text or voice.</p>
+            </div>
+            <div class="stage">
+              <div class="sn">02</div>
+              <h4>Digest</h4>
+              <p>Turn messy input into structure, then a daily reflection.</p>
+            </div>
+            <div class="stage">
+              <div class="sn">03</div>
+              <h4>Adapt</h4>
+              <p>Meet the day as it actually is — notice state and energy.</p>
+            </div>
+            <div class="stage">
+              <div class="sn">04</div>
+              <h4>Propose</h4>
+              <p>Surface the next right thing. One concrete suggestion.</p>
+            </div>
+          </div>
+          <p class="handoff">
+            Now I’ll show the <span class="mk">actual bot</span>.
+          </p>
+        </div>
+      </section>
+
+      <!-- 11 CONTACT / CLOSE (dark) -->
+      <section
+        class="slide slide--dark"
+        data-notes="And that's it. I'm **open to work** — both employment and freelance. This is where you can find me — the websites, the socials. I'd love to talk."
+      >
+        <div class="slide-inner">
+          <div class="kicker">Find me / let’s talk</div>
+          <h2 style="font-size: clamp(34px, 5.6vw, 72px)">Open to work.</h2>
+          <p
+            class="lead"
+            style="
+              margin-top: 18px;
+              font-size: clamp(18px, 2.2vw, 27px);
+              max-width: 34ch;
+            "
+          >
+            Currently looking for
+            <span style="color: #fff"
+              >employment and freelance opportunities</span
+            >. If something here resonated, I’d love to talk.
+          </p>
+          <div class="rule" style="max-width: 560px"></div>
+          <div
+            class="two"
+            style="align-items: start; gap: clamp(24px, 4vw, 56px)"
+          >
+            <div>
+              <div class="col-h">Websites</div>
+              <ul class="links">
+                <li>
+                  <a href="https://jacob-shore.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">jacob-shore.com</span></a
+                  >
+                </li>
+                <li>
+                  <a href="https://dewofyouryouth.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">dewofyouryouth.com</span></a
+                  >
+                </li>
+                <li>
+                  <a href="https://dailyderja.com"
+                    ><span class="ic web">✦</span
+                    ><span class="hn">dailyderja.com</span></a
+                  >
+                </li>
+              </ul>
+            </div>
+            <div>
+              <div class="col-h">Socials</div>
+              <ul class="links">
+                <li>
+                  <a href="https://www.linkedin.com/in/jacob-shore-86094725a/">
+                    <span class="ic"
+                      ><svg viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                          d="M20.45 20.45h-3.56v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.13 2.07 2.07 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"
+                        /></svg
+                    ></span>
+                    <span class="hd"
+                      ><span class="pl">LinkedIn</span
+                      ><span class="hn">Jacob Shore</span></span
+                    ></a
+                  >
+                </li>
+                <li>
+                  <a href="https://github.com/DewofyourYouth">
+                    <span class="ic"
+                      ><svg viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                          d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.17.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2C5.67 21.7 5 19.61 5 19.61c-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.2.08 1.84 1.2 1.84 1.2 1.07 1.78 2.81 1.27 3.5.97.11-.76.42-1.27.76-1.56-2.66-.29-5.46-1.29-5.46-5.74 0-1.27.46-2.31 1.2-3.12-.12-.29-.52-1.46.12-3.05 0 0 .98-.31 3.2 1.19a11.3 11.3 0 0 1 5.82 0c2.22-1.5 3.2-1.19 3.2-1.19.64 1.59.24 2.76.12 3.05.75.81 1.2 1.85 1.2 3.12 0 4.46-2.81 5.44-5.48 5.73.43.36.81 1.08.81 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.68.83.56C20.57 21.89 24 17.49 24 12.29 24 5.78 18.63.5 12 .5z"
+                        /></svg
+                    ></span>
+                    <span class="hd"
+                      ><span class="pl">GitHub</span
+                      ><span class="hn">@DewofyourYouth</span></span
+                    ></a
+                  >
+                </li>
+                <li>
+                  <a href="https://www.instagram.com/yaakshore/">
+                    <span class="ic"
+                      ><svg viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                          d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.06 1.8.25 2.23.42.56.21.96.47 1.38.9.43.42.69.82.9 1.38.17.42.36 1.06.42 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.06 1.17-.25 1.81-.42 2.23-.21.56-.47.96-.9 1.38-.42.43-.82.69-1.38.9-.42.17-1.06.36-2.23.42-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.06-1.8-.25-2.23-.42a3.72 3.72 0 0 1-1.38-.9 3.72 3.72 0 0 1-.9-1.38c-.17-.42-.36-1.06-.42-2.23-.06-1.27-.07-1.65-.07-4.85s.01-3.58.07-4.85c.06-1.17.25-1.81.42-2.23.21-.56.47-.96.9-1.38.42-.43.82-.69 1.38-.9.43-.17 1.06-.36 2.23-.42 1.27-.06 1.65-.07 4.85-.07M12 0C8.74 0 8.33.01 7.05.07c-1.27.06-2.15.26-2.91.56-.79.3-1.46.71-2.13 1.38A5.9 5.9 0 0 0 .63 4.14c-.3.76-.5 1.64-.56 2.91C.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.71 1.46 1.38 2.13.67.67 1.34 1.08 2.13 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56a5.9 5.9 0 0 0 2.13-1.38 5.9 5.9 0 0 0 1.38-2.13c.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91a5.9 5.9 0 0 0-1.38-2.13A5.9 5.9 0 0 0 19.86.63c-.76-.3-1.64-.5-2.91-.56C15.67.01 15.26 0 12 0zm0 5.84A6.16 6.16 0 1 0 12 18.16 6.16 6.16 0 0 0 12 5.84zm0 10.16A4 4 0 1 1 12 8a4 4 0 0 1 0 8zm6.41-11.85a1.44 1.44 0 1 0 0 2.88 1.44 1.44 0 0 0 0-2.88z"
+                        /></svg
+                    ></span>
+                    <span class="hd"
+                      ><span class="pl">Instagram</span
+                      ><span class="hn">@yaakshore</span></span
+                    ></a
+                  >
+                </li>
+                <li>
+                  <a href="https://t.me/dewofyouryouth">
+                    <span class="ic"
+                      ><svg viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                          d="M23.95 3.6 20.4 20.62c-.27 1.18-.97 1.47-1.96.92l-5.42-4-2.62 2.52c-.29.29-.53.53-1.09.53l.39-5.51L19.74 5.5c.44-.39-.1-.61-.68-.22L6.36 13.18l-5.35-1.67c-1.16-.36-1.19-1.16.24-1.72L22.45 1.5c.97-.36 1.81.22 1.5 2.1z"
+                        /></svg
+                    ></span>
+                    <span class="hd"
+                      ><span class="pl">Telegram</span
+                      ><span class="hn">@dewofyouryouth</span></span
+                    ></a
+                  >
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="close-mark">
+            <span class="dot"></span> Personal Ops &nbsp;·&nbsp; capture →
+            digest → adapt → propose
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="chrome" id="chrome">
+      <div class="dots" id="dots"></div>
+      <div class="ctr">
+        <button class="nav-btn" id="prev" aria-label="Previous">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+        <span class="counter" id="counter">01 / 10</span>
+        <button class="nav-btn" id="next" aria-label="Next">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
       </div>
     </div>
-  </section>
 
-  <!-- 8 ATOMIC HABITS -->
-  <section class="slide" data-notes="A lot of the design comes from Atomic Habits — behavior change depends less on willpower than on making the right action obvious, easy, and immediately available. Cues, identity, environment. If you hear echoes of that, it's not a coincidence.">
-    <div class="slide-inner">
-      <div class="kicker">Influence</div>
-      <div class="two">
-        <div>
-          <h2 style="font-style:italic">Atomic&nbsp;Habits.</h2>
-          <p class="lead" style="margin-top:16px">Behavior change depends less on willpower than on making the right action available.</p>
-          <p class="pull" style="font-size:clamp(17px,2vw,24px);margin-top:22px">“If you hear echoes of it, that’s not a coincidence.”</p>
-        </div>
-        <div>
-          <ul class="points">
-            <li>Make the right action <b>obvious</b>.</li>
-            <li>Make it <b>easy</b>.</li>
-            <li>Reduce reliance on willpower.</li>
-            <li>Build around <b>cues, identity, environment</b>.</li>
-          </ul>
-        </div>
+    <div class="notes" id="notes">
+      <div class="nh">
+        Presenter notes <span id="nNum" style="color: #9aa389"></span>
       </div>
+      <div class="nb" id="nBody"></div>
     </div>
-  </section>
 
-  <!-- 9 DEMO ARC -->
-  <section class="slide" data-notes="The help menu is organized around what I wanted the app to do. The arc is Capture, Digest, Adapt, Propose. I'll walk through it roughly in that order — now I'll show the actual bot.">
-    <div class="slide-inner">
-      <div class="kicker">The demo arc</div>
-      <h2 style="margin-bottom:clamp(18px,2.4vw,30px)">From raw input to the next right step.</h2>
-      <div class="arc">
-        <div class="stage"><div class="sn">01</div><h4>Capture</h4><p>Get it out of my head in the moment — text or voice.</p></div>
-        <div class="stage"><div class="sn">02</div><h4>Digest</h4><p>Turn messy input into structure, then a daily reflection.</p></div>
-        <div class="stage"><div class="sn">03</div><h4>Adapt</h4><p>Meet the day as it actually is — notice state and energy.</p></div>
-        <div class="stage"><div class="sn">04</div><h4>Propose</h4><p>Surface the next right thing. One concrete suggestion.</p></div>
-      </div>
-      <p class="handoff">Now I’ll show the <span class="mk">actual bot</span>.</p>
-    </div>
-  </section>
+    <script>
+      const slides = Array.from(document.querySelectorAll(".slide"));
+      const total = slides.length;
+      let cur = 0;
+      const dotsWrap = document.getElementById("dots");
+      const counter = document.getElementById("counter");
+      const progress = document.getElementById("progress");
+      const notes = document.getElementById("notes");
+      const nBody = document.getElementById("nBody");
+      const nNum = document.getElementById("nNum");
 
-  <!-- 10 CONTACT / CLOSE (dark) -->
-  <section class="slide slide--dark" data-notes="Closing slide. I'm open to employment and freelance work — here's where to find me. Websites and socials.">
-    <div class="slide-inner">
-      <div class="kicker">Find me / let’s talk</div>
-      <h2 style="font-size:clamp(34px,5.6vw,72px)">Open to work.</h2>
-      <p class="lead" style="margin-top:18px;font-size:clamp(18px,2.2vw,27px);max-width:34ch">Currently looking for <span style="color:#fff">employment and freelance opportunities</span>. If something here resonated, I’d love to talk.</p>
-      <div class="rule" style="max-width:560px"></div>
-      <div class="two" style="align-items:start;gap:clamp(24px,4vw,56px)">
-        <div>
-          <div class="col-h">Websites</div>
-          <ul class="links">
-            <li><a href="https://jacob-shore.com"><span class="ic web">✦</span><span class="hn">jacob-shore.com</span></a></li>
-            <li><a href="https://dewofyouryouth.com"><span class="ic web">✦</span><span class="hn">dewofyouryouth.com</span></a></li>
-            <li><a href="https://dailyderja.com"><span class="ic web">✦</span><span class="hn">dailyderja.com</span></a></li>
-          </ul>
-        </div>
-        <div>
-          <div class="col-h">Socials</div>
-          <ul class="links">
-            <li><a href="https://www.linkedin.com/in/jacob-shore-86094725a/">
-              <span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.13 2.07 2.07 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"/></svg></span>
-              <span class="hd"><span class="pl">LinkedIn</span><span class="hn">Jacob Shore</span></span></a></li>
-            <li><a href="https://github.com/DewofyourYouth">
-              <span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.17.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2C5.67 21.7 5 19.61 5 19.61c-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.2.08 1.84 1.2 1.84 1.2 1.07 1.78 2.81 1.27 3.5.97.11-.76.42-1.27.76-1.56-2.66-.29-5.46-1.29-5.46-5.74 0-1.27.46-2.31 1.2-3.12-.12-.29-.52-1.46.12-3.05 0 0 .98-.31 3.2 1.19a11.3 11.3 0 0 1 5.82 0c2.22-1.5 3.2-1.19 3.2-1.19.64 1.59.24 2.76.12 3.05.75.81 1.2 1.85 1.2 3.12 0 4.46-2.81 5.44-5.48 5.73.43.36.81 1.08.81 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.68.83.56C20.57 21.89 24 17.49 24 12.29 24 5.78 18.63.5 12 .5z"/></svg></span>
-              <span class="hd"><span class="pl">GitHub</span><span class="hn">@DewofyourYouth</span></span></a></li>
-            <li><a href="https://www.instagram.com/yaakshore/">
-              <span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.06 1.8.25 2.23.42.56.21.96.47 1.38.9.43.42.69.82.9 1.38.17.42.36 1.06.42 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.06 1.17-.25 1.81-.42 2.23-.21.56-.47.96-.9 1.38-.42.43-.82.69-1.38.9-.42.17-1.06.36-2.23.42-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.06-1.8-.25-2.23-.42a3.72 3.72 0 0 1-1.38-.9 3.72 3.72 0 0 1-.9-1.38c-.17-.42-.36-1.06-.42-2.23-.06-1.27-.07-1.65-.07-4.85s.01-3.58.07-4.85c.06-1.17.25-1.81.42-2.23.21-.56.47-.96.9-1.38.42-.43.82-.69 1.38-.9.43-.17 1.06-.36 2.23-.42 1.27-.06 1.65-.07 4.85-.07M12 0C8.74 0 8.33.01 7.05.07c-1.27.06-2.15.26-2.91.56-.79.3-1.46.71-2.13 1.38A5.9 5.9 0 0 0 .63 4.14c-.3.76-.5 1.64-.56 2.91C.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.71 1.46 1.38 2.13.67.67 1.34 1.08 2.13 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56a5.9 5.9 0 0 0 2.13-1.38 5.9 5.9 0 0 0 1.38-2.13c.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91a5.9 5.9 0 0 0-1.38-2.13A5.9 5.9 0 0 0 19.86.63c-.76-.3-1.64-.5-2.91-.56C15.67.01 15.26 0 12 0zm0 5.84A6.16 6.16 0 1 0 12 18.16 6.16 6.16 0 0 0 12 5.84zm0 10.16A4 4 0 1 1 12 8a4 4 0 0 1 0 8zm6.41-11.85a1.44 1.44 0 1 0 0 2.88 1.44 1.44 0 0 0 0-2.88z"/></svg></span>
-              <span class="hd"><span class="pl">Instagram</span><span class="hn">@yaakshore</span></span></a></li>
-            <li><a href="https://t.me/dewofyouryouth">
-              <span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M23.95 3.6 20.4 20.62c-.27 1.18-.97 1.47-1.96.92l-5.42-4-2.62 2.52c-.29.29-.53.53-1.09.53l.39-5.51L19.74 5.5c.44-.39-.1-.61-.68-.22L6.36 13.18l-5.35-1.67c-1.16-.36-1.19-1.16.24-1.72L22.45 1.5c.97-.36 1.81.22 1.5 2.1z"/></svg></span>
-              <span class="hd"><span class="pl">Telegram</span><span class="hn">@dewofyouryouth</span></span></a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="close-mark"><span class="dot"></span> Personal Ops &nbsp;·&nbsp; capture → digest → adapt → propose</div>
-    </div>
-  </section>
+      slides.forEach((s, i) => {
+        const b = document.createElement("button");
+        b.addEventListener("click", () => go(i));
+        dotsWrap.appendChild(b);
+      });
+      const dots = Array.from(dotsWrap.children);
 
-</div>
+      function pad(n) {
+        return String(n + 1).padStart(2, "0");
+      }
 
-<div class="chrome" id="chrome">
-  <div class="dots" id="dots"></div>
-  <div class="ctr">
-    <button class="nav-btn" id="prev" aria-label="Previous"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
-    <span class="counter" id="counter">01 / 10</span>
-    <button class="nav-btn" id="next" aria-label="Next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
-  </div>
-</div>
+      function go(i) {
+        cur = Math.max(0, Math.min(total - 1, i));
+        slides.forEach((s, k) => s.classList.toggle("active", k === cur));
+        dots.forEach((d, k) => d.classList.toggle("on", k === cur));
+        counter.textContent = pad(cur) + " / " + pad(total - 1);
+        progress.style.width = (cur / (total - 1)) * 100 + "%";
+        // dark-aware dots
+        const dark = slides[cur].classList.contains("slide--dark");
+        dots.forEach((d) => {
+          if (!d.classList.contains("on"))
+            d.style.background = dark
+              ? "rgba(243,239,228,.3)"
+              : "rgba(42,45,36,.22)";
+        });
+        document.querySelectorAll(".nav-btn").forEach((n) => {
+          n.style.color = dark ? "#F3EFE4" : "#2A2D24";
+          n.style.borderColor = dark ? "rgba(243,239,228,.25)" : "var(--line)";
+          n.style.background = dark
+            ? "rgba(243,239,228,.08)"
+            : "rgba(255,255,255,.5)";
+        });
+        counter.style.color = dark ? "#C8CDB6" : "var(--ink-soft)";
+        document.querySelector(".hint").style.color = dark
+          ? "#C8CDB6"
+          : "var(--ink-soft)";
+        if (notes.classList.contains("open")) renderNotes();
+      }
+      function next() {
+        go(cur + 1);
+      }
+      function prev() {
+        go(cur - 1);
+      }
 
-<div class="notes" id="notes">
-  <div class="nh">Presenter notes <span id="nNum" style="color:#9aa389"></span></div>
-  <div class="nb" id="nBody"></div>
-</div>
+      function renderNotes() {
+        const raw = slides[cur].dataset.notes || "—";
+        // escape HTML, then turn **text** into bold for emphasis
+        const safe = raw
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        nBody.innerHTML = safe;
+        nNum.textContent = "· " + pad(cur) + " / " + pad(total - 1);
+      }
+      function toggleNotes() {
+        notes.classList.toggle("open");
+        document.body.classList.toggle(
+          "notes-on",
+          notes.classList.contains("open"),
+        );
+        if (notes.classList.contains("open")) renderNotes();
+      }
 
-<script>
-  const slides = Array.from(document.querySelectorAll('.slide'));
-  const total = slides.length;
-  let cur = 0;
-  const dotsWrap = document.getElementById('dots');
-  const counter = document.getElementById('counter');
-  const progress = document.getElementById('progress');
-  const notes = document.getElementById('notes');
-  const nBody = document.getElementById('nBody');
-  const nNum = document.getElementById('nNum');
+      document.getElementById("next").addEventListener("click", next);
+      document.getElementById("prev").addEventListener("click", prev);
 
-  slides.forEach((s,i)=>{
-    const b=document.createElement('button');
-    b.addEventListener('click',()=>go(i));
-    dotsWrap.appendChild(b);
-  });
-  const dots = Array.from(dotsWrap.children);
+      document.addEventListener("keydown", (e) => {
+        if (
+          e.key === "ArrowRight" ||
+          e.key === " " ||
+          e.key === "ArrowDown" ||
+          e.key === "PageDown"
+        ) {
+          e.preventDefault();
+          next();
+        } else if (
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowUp" ||
+          e.key === "PageUp"
+        ) {
+          e.preventDefault();
+          prev();
+        } else if (e.key === "n" || e.key === "N") {
+          toggleNotes();
+        } else if (e.key === "Escape") {
+          if (notes.classList.contains("open")) {
+            toggleNotes();
+          } else {
+            window.parent.postMessage({ type: "close-fullscreen" }, "*");
+          }
+        } else if (e.key === "Home") {
+          go(0);
+        } else if (e.key === "End") {
+          go(total - 1);
+        }
+      });
 
-  function pad(n){return String(n+1).padStart(2,'0');}
+      // touch swipe
+      let tx = 0,
+        ty = 0;
+      document.addEventListener(
+        "touchstart",
+        (e) => {
+          tx = e.changedTouches[0].clientX;
+          ty = e.changedTouches[0].clientY;
+        },
+        { passive: true },
+      );
+      document.addEventListener(
+        "touchend",
+        (e) => {
+          const dx = e.changedTouches[0].clientX - tx,
+            dy = e.changedTouches[0].clientY - ty;
+          if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+            dx < 0 ? next() : prev();
+          }
+        },
+        { passive: true },
+      );
 
-  function go(i){
-    cur = Math.max(0, Math.min(total-1, i));
-    slides.forEach((s,k)=>s.classList.toggle('active', k===cur));
-    dots.forEach((d,k)=>d.classList.toggle('on', k===cur));
-    counter.textContent = pad(cur)+' / '+pad(total-1);
-    progress.style.width = ((cur)/(total-1)*100)+'%';
-    // dark-aware dots
-    const dark = slides[cur].classList.contains('slide--dark');
-    dots.forEach(d=>{ if(!d.classList.contains('on')) d.style.background = dark?'rgba(243,239,228,.3)':'rgba(42,45,36,.22)';});
-    document.querySelectorAll('.nav-btn').forEach(n=>{
-      n.style.color = dark?'#F3EFE4':'#2A2D24';
-      n.style.borderColor = dark?'rgba(243,239,228,.25)':'var(--line)';
-      n.style.background = dark?'rgba(243,239,228,.08)':'rgba(255,255,255,.5)';
-    });
-    counter.style.color = dark?'#C8CDB6':'var(--ink-soft)';
-    document.querySelector('.hint').style.color = dark?'#C8CDB6':'var(--ink-soft)';
-    if(notes.classList.contains('open')) renderNotes();
-  }
-  function next(){go(cur+1);}
-  function prev(){go(cur-1);}
+      // parent navigation messages
+      window.addEventListener("message", (e) => {
+        const d = e.data || {};
+        if (d.type === "navigate") {
+          d.direction === "next"
+            ? next()
+            : d.direction === "prev"
+              ? prev()
+              : null;
+        }
+      });
 
-  function renderNotes(){
-    nBody.textContent = slides[cur].dataset.notes || '—';
-    nNum.textContent = '· '+pad(cur)+' / '+pad(total-1);
-  }
-  function toggleNotes(){
-    notes.classList.toggle('open');
-    document.body.classList.toggle('notes-on', notes.classList.contains('open'));
-    if(notes.classList.contains('open')) renderNotes();
-  }
-
-  document.getElementById('next').addEventListener('click',next);
-  document.getElementById('prev').addEventListener('click',prev);
-
-  document.addEventListener('keydown',(e)=>{
-    if(e.key==='ArrowRight'||e.key===' '||e.key==='ArrowDown'||e.key==='PageDown'){e.preventDefault();next();}
-    else if(e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='PageUp'){e.preventDefault();prev();}
-    else if(e.key==='n'||e.key==='N'){toggleNotes();}
-    else if(e.key==='Escape'){ if(notes.classList.contains('open')){toggleNotes();} else { window.parent.postMessage({type:'close-fullscreen'},'*'); } }
-    else if(e.key==='Home'){go(0);}
-    else if(e.key==='End'){go(total-1);}
-  });
-
-  // touch swipe
-  let tx=0,ty=0;
-  document.addEventListener('touchstart',e=>{tx=e.changedTouches[0].clientX;ty=e.changedTouches[0].clientY;},{passive:true});
-  document.addEventListener('touchend',e=>{
-    const dx=e.changedTouches[0].clientX-tx, dy=e.changedTouches[0].clientY-ty;
-    if(Math.abs(dx)>50 && Math.abs(dx)>Math.abs(dy)){ dx<0?next():prev(); }
-  },{passive:true});
-
-  // parent navigation messages
-  window.addEventListener('message',(e)=>{
-    const d=e.data||{};
-    if(d.type==='navigate'){ d.direction==='next'?next():d.direction==='prev'?prev():null; }
-  });
-
-  go(0);
-</script>
-<script>
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape' && window.parent !== window) {
-    window.parent.postMessage({ type: 'close-fullscreen' }, '*');
-  }
-});
-</script>
-<!-- broken-img-handler -->
-<script>
-(function(){
-  if(window.__brokenImgHandler)return;
-  window.__brokenImgHandler=true;
-  var MAX=5,DELAYS=[2000,4000,8000,16000,32000];
-  document.addEventListener('error',function(e){
-    var img=e.target;
-    if(!img||img.tagName!=='IMG')return;
-    var liveSrc=img.getAttribute('src');
-    var src=img.dataset.haOriginalSrc||liveSrc;
-    if(!src)return;
-    if(img.dataset.haOriginalSrc&&liveSrc&&liveSrc!==img.dataset.haOriginalSrc&&liveSrc.indexOf('_r=')<0){src=liveSrc;img.dataset.haOriginalSrc=src;img.dataset.haRetryCount='0'}
-    else if(!img.dataset.haOriginalSrc){img.dataset.haOriginalSrc=src}
-    var attempt=parseInt(img.dataset.haRetryCount||'0',10);
-    if(img.dataset.haPhId){var old=document.getElementById(img.dataset.haPhId);if(old)old.remove()}
-    var ph=document.createElement('div');
-    ph.className='ha-img-placeholder'+(attempt>=MAX?' ha-failed':'');
-    ph.id='ha-ph-'+Math.random().toString(36).slice(2,9);
-    var w=img.getAttribute('width');var h=img.getAttribute('height');
-    if(w)ph.style.width=w+(isNaN(Number(w))?'':'px');
-    else if(img.style.width)ph.style.width=img.style.width;
-    else if(img.width>1)ph.style.width=img.width+'px';
-    if(h)ph.style.height=h+(isNaN(Number(h))?'':'px');
-    else if(img.style.height)ph.style.height=img.style.height;
-    else if(img.height>1)ph.style.height=img.height+'px';
-    ph.textContent=attempt>=MAX?'Image unavailable':'Loading image\u2026';
-    img.dataset.haPhId=ph.id;
-    if(img.dataset.haOrigDisplay==null)img.dataset.haOrigDisplay=img.style.display||'';
-    img.style.display='none';
-    img.insertAdjacentElement('afterend',ph);
-    if(attempt<MAX){
-      img.dataset.haRetryCount=String(attempt+1);
-      setTimeout(function(){
-        if(!img.isConnected)return;
-        if(img.dataset.haOriginalSrc!==src)return;
-        if(img.complete&&img.naturalWidth>0)return;
-        var curSrc=img.getAttribute('src');
-        if(curSrc&&curSrc.indexOf(src)!==0)return;
-        var fresh=src+(src.indexOf('?')>=0?'&':'?')+'_r='+(attempt+1)+'_'+Date.now();
-        img.src=fresh;
-      },DELAYS[attempt]);
-    }
-  },true);
-  document.addEventListener('load',function(e){
-    var img=e.target;
-    if(!img||img.tagName!=='IMG')return;
-    if(img.dataset.haPhId){
-      var ph=document.getElementById(img.dataset.haPhId);
-      if(ph)ph.remove();
-      delete img.dataset.haPhId;
-      img.style.display=img.dataset.haOrigDisplay||'';
-      delete img.dataset.haOrigDisplay;
-      delete img.dataset.haOriginalSrc;
-      delete img.dataset.haRetryCount;
-    }
-  },true);
-})();
-</script>
-</body>
+      go(0);
+    </script>
+    <script>
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && window.parent !== window) {
+          window.parent.postMessage({ type: "close-fullscreen" }, "*");
+        }
+      });
+    </script>
+    <!-- broken-img-handler -->
+    <script>
+      (function () {
+        if (window.__brokenImgHandler) return;
+        window.__brokenImgHandler = true;
+        var MAX = 5,
+          DELAYS = [2000, 4000, 8000, 16000, 32000];
+        document.addEventListener(
+          "error",
+          function (e) {
+            var img = e.target;
+            if (!img || img.tagName !== "IMG") return;
+            var liveSrc = img.getAttribute("src");
+            var src = img.dataset.haOriginalSrc || liveSrc;
+            if (!src) return;
+            if (
+              img.dataset.haOriginalSrc &&
+              liveSrc &&
+              liveSrc !== img.dataset.haOriginalSrc &&
+              liveSrc.indexOf("_r=") < 0
+            ) {
+              src = liveSrc;
+              img.dataset.haOriginalSrc = src;
+              img.dataset.haRetryCount = "0";
+            } else if (!img.dataset.haOriginalSrc) {
+              img.dataset.haOriginalSrc = src;
+            }
+            var attempt = parseInt(img.dataset.haRetryCount || "0", 10);
+            if (img.dataset.haPhId) {
+              var old = document.getElementById(img.dataset.haPhId);
+              if (old) old.remove();
+            }
+            var ph = document.createElement("div");
+            ph.className =
+              "ha-img-placeholder" + (attempt >= MAX ? " ha-failed" : "");
+            ph.id = "ha-ph-" + Math.random().toString(36).slice(2, 9);
+            var w = img.getAttribute("width");
+            var h = img.getAttribute("height");
+            if (w) ph.style.width = w + (isNaN(Number(w)) ? "" : "px");
+            else if (img.style.width) ph.style.width = img.style.width;
+            else if (img.width > 1) ph.style.width = img.width + "px";
+            if (h) ph.style.height = h + (isNaN(Number(h)) ? "" : "px");
+            else if (img.style.height) ph.style.height = img.style.height;
+            else if (img.height > 1) ph.style.height = img.height + "px";
+            ph.textContent =
+              attempt >= MAX ? "Image unavailable" : "Loading image\u2026";
+            img.dataset.haPhId = ph.id;
+            if (img.dataset.haOrigDisplay == null)
+              img.dataset.haOrigDisplay = img.style.display || "";
+            img.style.display = "none";
+            img.insertAdjacentElement("afterend", ph);
+            if (attempt < MAX) {
+              img.dataset.haRetryCount = String(attempt + 1);
+              setTimeout(function () {
+                if (!img.isConnected) return;
+                if (img.dataset.haOriginalSrc !== src) return;
+                if (img.complete && img.naturalWidth > 0) return;
+                var curSrc = img.getAttribute("src");
+                if (curSrc && curSrc.indexOf(src) !== 0) return;
+                var fresh =
+                  src +
+                  (src.indexOf("?") >= 0 ? "&" : "?") +
+                  "_r=" +
+                  (attempt + 1) +
+                  "_" +
+                  Date.now();
+                img.src = fresh;
+              }, DELAYS[attempt]);
+            }
+          },
+          true,
+        );
+        document.addEventListener(
+          "load",
+          function (e) {
+            var img = e.target;
+            if (!img || img.tagName !== "IMG") return;
+            if (img.dataset.haPhId) {
+              var ph = document.getElementById(img.dataset.haPhId);
+              if (ph) ph.remove();
+              delete img.dataset.haPhId;
+              img.style.display = img.dataset.haOrigDisplay || "";
+              delete img.dataset.haOrigDisplay;
+              delete img.dataset.haOriginalSrc;
+              delete img.dataset.haRetryCount;
+            }
+          },
+          true,
+        );
+      })();
+    </script>
+  </body>
 </html>
