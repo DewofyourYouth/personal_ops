@@ -107,4 +107,5 @@ HELP_TEXT = """<b>Planning</b>
 Anything else is logged as <code>#log</code>
 
 Voice notes are transcribed automatically.
+Send a photo of food (or a nutrition label) → macro estimate to confirm, then log.
 Upload an HTML/text file → it extracts tasks (added to your /backlog) and insights."""

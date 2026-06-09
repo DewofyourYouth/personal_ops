@@ -330,6 +330,7 @@ class TextRouter:
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         app.add_handler(CommandHandler("backdate", self.cmd_backdate))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
@@ -513,6 +514,50 @@ class TextRouter:
             lines.append("\n<b>Logged as insights</b>")
             lines += [f"• {html.escape(i)}" for i in insights]
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """A photo is treated as food: read the label / identify the dish via vision,
+        then hand off to the same confirm/adjust UI the `food:` text path uses."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        photos = update.message.photo
+        if not photos:
+            return
+        chat_id = update.effective_chat.id
+        caption = (update.message.caption or "").strip()
+        hint = re.sub(
+            r"^(food|ate)\s*[:\s]\s*", "", caption, flags=re.IGNORECASE
+        ).strip()
+
+        await update.message.reply_text("📷 Looking at that…")
+        tg_file = await photos[-1].get_file()  # [-1] = highest resolution
+        img = bytes(await tg_file.download_as_bytearray())
+        try:
+            estimate = await self.planner.estimate_food_from_image(
+                img, "image/jpeg", hint
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Couldn't read the image: {e}")
+            return
+        if not estimate:
+            await update.message.reply_text(
+                "Couldn't spot any food in that photo. If it is food, add a caption like "
+                "<code>food: a bottle of kefir</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+        raw = hint or "this"
+        self._awaiting_food[chat_id] = {
+            "raw": raw,
+            "estimate": estimate,
+            "adjusting": False,
+        }
+        await update.message.reply_text(
+            _format_food_estimate(raw, estimate),
+            reply_markup=_food_keyboard(),
+            parse_mode="HTML",
+        )
 
     async def handle_voice_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

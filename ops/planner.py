@@ -906,6 +906,99 @@ class Planner:
                 return {"items": items, "total": total}
         return None
 
+    async def estimate_food_from_image(
+        self, image_bytes: bytes, media_type: str = "image/jpeg", hint: str = ""
+    ) -> dict | None:
+        """Estimate a meal's nutrition from a photo (+ an optional caption hint).
+
+        Same {items, total} shape as estimate_food, so the photo path reuses the food
+        confirm/adjust UI. Reads a visible nutrition label if there is one, otherwise
+        identifies the food and estimates from general knowledge. None if no food is found.
+        The tool schema mirrors estimate_food deliberately (kept separate so the working
+        text path is untouched).
+        """
+        import base64
+
+        client = anthropic.AsyncAnthropic()
+        b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        prompt = "Estimate the nutrition of the food in this photo."
+        if hint:
+            prompt += f" The user says: {hint}."
+        prompt += (
+            " If a nutrition label is visible, read it; otherwise identify the food and "
+            "estimate from general knowledge. Split it into component items with realistic "
+            "portions. If there is no food in the image, return no items."
+        )
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            tools=[
+                {
+                    "name": "estimate_meal",
+                    "description": "Estimate nutrition for the food shown in an image.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "portion": {
+                                            "type": "string",
+                                            "description": "Estimated portion, e.g. '~330ml' or '1 bottle'.",
+                                        },
+                                        "kcal": {"type": "number"},
+                                        "protein_g": {"type": "number"},
+                                        "fat_g": {"type": "number"},
+                                        "carbs_g": {"type": "number"},
+                                    },
+                                    "required": ["name", "portion", "kcal", "protein_g"],
+                                },
+                            }
+                        },
+                        "required": ["items"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "estimate_meal"},
+            system=(
+                "Estimate the nutrition of food shown in a photo. Prefer reading a visible "
+                "nutrition label; otherwise identify the food and estimate kcal/protein/fat/"
+                "carbs per item from general knowledge. Estimates are approximate — fine."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                items = block.input.get("items", [])
+                if not items:
+                    return None
+                total = {
+                    "kcal": round(sum(i.get("kcal", 0) for i in items)),
+                    "protein_g": round(sum(i.get("protein_g", 0) for i in items), 1),
+                    "fat_g": round(sum(i.get("fat_g", 0) for i in items), 1),
+                    "carbs_g": round(sum(i.get("carbs_g", 0) for i in items), 1),
+                }
+                return {"items": items, "total": total}
+        return None
+
     async def evaluate_hypothesis(self, text: str) -> dict:
         """Evaluate a hypothesis and return structured tracking actions + narrative.
 
