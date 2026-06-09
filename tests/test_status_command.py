@@ -24,6 +24,7 @@ def agenda(tmp_path):
 
 
 def test_status_message_shows_all_statuses():
+    """The status message renders every agenda item with its status icon."""
     items = [
         {"text": "Deep work block", "status": "done"},
         {"text": "Strength training", "status": "missed"},
@@ -39,6 +40,7 @@ def test_status_message_shows_all_statuses():
 
 
 def test_status_message_numbering():
+    """Agenda status output numbers each rendered item."""
     items = [
         {"text": "First", "status": "done"},
         {"text": "Second", "status": "open"},
@@ -49,17 +51,20 @@ def test_status_message_numbering():
 
 
 def test_status_message_header():
+    """Agenda status output includes its header when items are present."""
     msg = _status_message([{"text": "Something", "status": "open"}])
     assert "Agenda Status" in msg
 
 
 def test_status_message_empty_list():
+    """Agenda status output still includes the header when there are no items."""
     # _status_message with no items — just the header
     msg = _status_message([])
     assert "Agenda Status" in msg
 
 
 def test_get_status_after_mixed_marks(agenda):
+    """Agenda.get_status reports done, open, and missed items together."""
     agenda.accept_items(["A", "B", "C"])
     agenda.mark_status(0, "done")
     agenda.mark_status(2, "missed")
@@ -72,6 +77,7 @@ def test_get_status_after_mixed_marks(agenda):
 
 
 def test_status_icons_all_present():
+    """The bot constants define icons for every agenda status value."""
     assert "done" in STATUS_ICONS
     assert "missed" in STATUS_ICONS
     assert "open" in STATUS_ICONS

@@ -14,6 +14,7 @@ def ledger(tmp_path):
 
 
 def test_merge_adds_new_items(ledger):
+    """Insights.merge adds valid new items with ids and first occurrence metadata."""
     summary = ledger.merge(
         new_items=[
             {"kind": "hypothesis", "text": "Friday anxiety comes from Shabbat prep"},
@@ -31,6 +32,7 @@ def test_merge_adds_new_items(ledger):
 
 
 def test_recurrence_bumps_without_duplicating(ledger):
+    """Recurring insight references add occurrences without creating duplicate items."""
     ledger.merge(
         [{"kind": "concern", "text": "I keep missing Shacharit"}],
         [],
@@ -46,6 +48,7 @@ def test_recurrence_bumps_without_duplicating(ledger):
 
 
 def test_recurrence_is_idempotent_same_day(ledger):
+    """Reprocessing the same recurrence on the same day does not double-count it."""
     ledger.merge(
         [{"kind": "insight", "text": "I work best in the morning"}],
         [],
@@ -57,6 +60,7 @@ def test_recurrence_is_idempotent_same_day(ledger):
 
 
 def test_merge_ignores_bad_input(ledger):
+    """Invalid insight kinds, blank text, and unknown recurrence ids are ignored."""
     summary = ledger.merge(
         new_items=[
             {"kind": "bogus", "text": "wrong kind"},  # invalid kind
@@ -72,6 +76,7 @@ def test_merge_ignores_bad_input(ledger):
 
 
 def test_format_for_prompt_shows_recurrence_count(ledger):
+    """Prompt formatting shows recurrence count, date range, and insight text."""
     ledger.merge(
         [{"kind": "hypothesis", "text": "Friday dread"}], [], on_date=date(2026, 6, 1)
     )
@@ -83,5 +88,6 @@ def test_format_for_prompt_shows_recurrence_count(ledger):
 
 
 def test_format_empty(ledger):
+    """Empty insight ledgers render no prompt text and a Telegram empty-state message."""
     assert ledger.format_for_prompt() == ""
     assert "No insights" in ledger.format_for_telegram()

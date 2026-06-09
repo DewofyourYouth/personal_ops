@@ -15,6 +15,7 @@ def log_dir(tmp_path):
 
 
 def test_write_and_read_today(log_dir):
+    """Logs.write stores an entry that read_today returns with tag and content."""
     log_dir.write("note", "hello world")
     entries = log_dir.read_today()
     assert len(entries) == 1
@@ -23,6 +24,7 @@ def test_write_and_read_today(log_dir):
 
 
 def test_write_metric(log_dir):
+    """Logs.write_metric stores metrics in SQLite and exposes them via load_metrics."""
     # Metrics live in the SQLite `metrics` table (not `entries`/read_today since
     # the migration); read them back through the public load_metrics API.
     log_dir.write_metric("weight", 75.5, "kg")
@@ -33,6 +35,7 @@ def test_write_metric(log_dir):
 
 
 def test_read_recent_skips_metrics(tmp_path):
+    """read_recent excludes metric rows from human-facing recent log text."""
     logs = Logs(str(tmp_path))
     yesterday = date.today() - timedelta(days=1)
     jsonl = tmp_path / f"{yesterday}.jsonl"
@@ -64,6 +67,7 @@ def test_read_recent_skips_metrics(tmp_path):
 
 
 def test_load_metrics(log_dir):
+    """load_metrics groups recent metric values by metric key."""
     log_dir.write_metric("steps", 8000)
     metrics = log_dir.load_metrics(days=2)
     assert "steps" in metrics
@@ -71,6 +75,7 @@ def test_load_metrics(log_dir):
 
 
 def test_parse_md_fallback(tmp_path):
+    """read_recent can parse legacy markdown log files when JSONL data is absent."""
     logs = Logs(str(tmp_path))
     yesterday = date.today() - timedelta(days=1)
     md = tmp_path / f"{yesterday}.md"
@@ -80,17 +85,20 @@ def test_parse_md_fallback(tmp_path):
 
 
 def test_read_recent_no_logs(log_dir):
+    """read_recent returns the empty-state message when no logs exist."""
     result = log_dir.read_recent(days=3)
     assert result == "No recent logs."
 
 
 def test_read_recent_includes_today(log_dir):
+    """read_recent includes entries written for the current day."""
     log_dir.write("note", "today's entry")
     result = log_dir.read_recent(days=1)
     assert "today's entry" in result
 
 
 def test_compute_stats_completion(tmp_path):
+    """compute_stats counts done and missed agenda items while excluding open items."""
     logs = Logs(str(tmp_path))
     today = date.today()
     agenda = {
@@ -107,6 +115,7 @@ def test_compute_stats_completion(tmp_path):
 
 
 def test_compute_stats_anchors(tmp_path):
+    """compute_stats counts completed and missed anchor tasks separately."""
     logs = Logs(str(tmp_path))
     today = date.today()
     agenda = {
@@ -128,6 +137,7 @@ def test_compute_stats_anchors(tmp_path):
 
 
 def test_compute_stats_wins(tmp_path):
+    """compute_stats counts entries tagged as wins for the day."""
     logs = Logs(str(tmp_path))
     logs.write("win", "shipped a feature")
     logs.write("win", "took a walk")
@@ -137,6 +147,7 @@ def test_compute_stats_wins(tmp_path):
 
 
 def test_compute_stats_checkin_response(tmp_path):
+    """compute_stats counts reminder prompts and nearby checkin responses."""
     logs = Logs(str(tmp_path))
     today = date.today()
     from datetime import datetime
@@ -163,6 +174,7 @@ def test_compute_stats_checkin_response(tmp_path):
 
 
 def test_format_stats_for_prompt(tmp_path):
+    """format_stats_for_prompt renders completion, wins, and rolling stats sections."""
     logs = Logs(str(tmp_path))
     today = date.today()
     agenda = {
@@ -180,6 +192,7 @@ def test_format_stats_for_prompt(tmp_path):
 
 
 def test_format_metrics_for_prompt(log_dir):
+    """format_metrics_for_prompt renders tracked metric summaries."""
     log_dir.write_metric("mood", 8)
     text = log_dir.format_metrics_for_prompt(days=2)
     assert "mood" in text
@@ -187,6 +200,7 @@ def test_format_metrics_for_prompt(log_dir):
 
 
 def test_mood_energy_by_time_of_day(tmp_path):
+    """mood_energy_by_time_of_day buckets mood and energy averages by local hour."""
     # Write readings at known hours via JSONL (fresh DB → JSONL fallback fires).
     logs = Logs(str(tmp_path))
     today = date.today()
@@ -224,6 +238,7 @@ def test_mood_energy_by_time_of_day(tmp_path):
 
 
 def test_read_skips_reminder_noise(tmp_path):
+    """read_recent hides bot reminder prompts while keeping real user content."""
     # Reminder entries are bot-fired prompt noise — they must not appear in the
     # human/LLM-facing day read (regression: they were 31% of all entries).
     logs = Logs(str(tmp_path))

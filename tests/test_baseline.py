@@ -16,6 +16,7 @@ def logs(tmp_path):
 
 
 def test_mood_energy_for_range_collects_numeric(logs):
+    """Mood and energy range reads collect numeric metric values from storage."""
     logs.write_metric("mood", 4)
     logs.write_metric("energy", 2)
     logs.write_metric("mood", 2)
@@ -26,6 +27,7 @@ def test_mood_energy_for_range_collects_numeric(logs):
 
 
 def test_mood_energy_normalizes_legacy_labels(logs):
+    """Legacy textual mood and energy labels normalize to numeric scale values."""
     # Old data stored labels/emoji rather than 1-5 / 1-3 integers.
     logs.write_metric("mood", "great")  # -> 5
     logs.write_metric("energy", "drained")  # -> 1
@@ -36,6 +38,7 @@ def test_mood_energy_normalizes_legacy_labels(logs):
 
 
 def test_mood_energy_falls_back_to_jsonl(tmp_path):
+    """Mood and energy range reads include pre-migration JSONL metric entries."""
     # A day with no DB rows (pre-migration) must still be read from JSONL.
     logs = Logs(str(tmp_path))
     past = date.today() - timedelta(days=3)
@@ -68,6 +71,7 @@ def test_mood_energy_falls_back_to_jsonl(tmp_path):
 
 
 def test_compute_week_includes_mood_energy(logs):
+    """Weekly baseline computation stores averaged mood and energy values."""
     logs.write_metric("mood", 4)
     logs.write_metric("mood", 2)
     logs.write_metric("energy", 3)
@@ -78,6 +82,7 @@ def test_compute_week_includes_mood_energy(logs):
 
 
 def test_compute_week_no_metrics_is_none(logs):
+    """Weekly baseline averages are None when no mood or energy metrics exist."""
     # No mood/energy logged -> averages are None, not 0 (0 would imply a real low reading).
     entry = Baseline(logs.log_dir)._compute_week(logs)
     assert entry["mood_avg"] is None
@@ -85,6 +90,7 @@ def test_compute_week_no_metrics_is_none(logs):
 
 
 def test_format_for_prompt_renders_mood_energy(logs):
+    """Baseline prompt formatting includes saved mood and energy averages."""
     logs.write_metric("mood", 5)
     logs.write_metric("energy", 2)
     baseline = Baseline(logs.log_dir)

@@ -27,12 +27,14 @@ def planner(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dedupe_empty_proposed_returns_empty(planner):
+    """An empty proposal short-circuits without asking the LLM to dedupe."""
     # No proposed items: short-circuit, no client call at all.
     assert await planner.dedupe(["already open"], []) == []
 
 
 @pytest.mark.asyncio
 async def test_dedupe_falls_back_to_proposed_on_api_error(planner):
+    """Planner.dedupe preserves proposed items when the LLM API raises."""
     proposed = ["Call Rev Galai", "Write drasha"]
     with patch("planner.anthropic.AsyncAnthropic") as mock_client:
         mock_client.return_value.messages.create = AsyncMock(
@@ -45,6 +47,7 @@ async def test_dedupe_falls_back_to_proposed_on_api_error(planner):
 
 @pytest.mark.asyncio
 async def test_dedupe_falls_back_when_model_returns_nothing(planner):
+    """Planner.dedupe preserves proposed items when the LLM response is unusable."""
     proposed = ["Call Rev Galai"]
     fake_response = SimpleNamespace(content=[SimpleNamespace(text="(no items)")])
     with patch("planner.anthropic.AsyncAnthropic") as mock_client:

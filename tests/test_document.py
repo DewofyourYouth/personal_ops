@@ -9,6 +9,7 @@ from text_router import _html_to_text
 
 
 def test_strips_tags_and_keeps_text():
+    """HTML tags are removed while visible text content is preserved."""
     html = "<html><body><h1>Plan</h1><p>Call <b>Rev Galai</b> at 3pm.</p></body></html>"
     text = _html_to_text(html)
     assert "Plan" in text
@@ -17,6 +18,7 @@ def test_strips_tags_and_keeps_text():
 
 
 def test_skips_script_and_style():
+    """Script and style contents are excluded from extracted document text."""
     html = (
         "<html><head><style>.x{color:red}</style></head>"
         "<body><script>var secret = 1;</script><p>Visible</p></body></html>"
@@ -28,5 +30,6 @@ def test_skips_script_and_style():
 
 
 def test_empty_or_textless_html_yields_empty():
+    """Empty or textless HTML inputs produce an empty string."""
     assert _html_to_text("<html><body></body></html>").strip() == ""
     assert _html_to_text("") == ""

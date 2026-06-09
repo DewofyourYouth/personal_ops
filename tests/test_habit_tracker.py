@@ -32,6 +32,7 @@ def _write_habit_days(logs: Logs, name: str, days_back: range) -> None:
 
 
 def test_is_due():
+    """Due-day logic treats Shabbat as skipped and honors weekday filters."""
     # Find a known Monday and Saturday to test deterministically.
     monday = date(2026, 6, 1)  # a Monday
     saturday = date(2026, 6, 6)  # a Saturday (Shabbat)
@@ -42,6 +43,7 @@ def test_is_due():
 
 
 def test_recent_chain_all_done(tmp_path):
+    """recent_chain returns a full hit chain when every recent due day was logged."""
     logs = Logs(str(tmp_path))
     _write_habit_days(logs, "Daily walk", range(0, 20))
     chain = recent_chain(logs, "Daily walk", due_weekdays=None, n=14)
@@ -50,6 +52,7 @@ def test_recent_chain_all_done(tmp_path):
 
 
 def test_recent_chain_shows_gaps(tmp_path):
+    """recent_chain marks an unlogged recent due day as a miss."""
     logs = Logs(str(tmp_path))
     _write_habit_days(logs, "Daily walk", range(0, 20))  # all done...
     # ...then blank out today's log file so the most recent due day is a miss.
@@ -60,6 +63,7 @@ def test_recent_chain_shows_gaps(tmp_path):
 
 
 def test_missed_last_due_day(tmp_path):
+    """missed_last_due_day distinguishes never-logged from recently completed habits."""
     logs = Logs(str(tmp_path))
     assert missed_last_due_day(logs, "Daily walk", None) is True  # nothing logged ever
     _write_habit_days(logs, "Daily walk", range(0, 20))
@@ -67,6 +71,7 @@ def test_missed_last_due_day(tmp_path):
 
 
 def test_compute_streak_respects_due_days(tmp_path):
+    """compute_streak counts only due-day history when calculating streaks."""
     logs = Logs(str(tmp_path))
     _write_habit_days(logs, "Daily walk", range(0, 30))
     current, longest = compute_streak(logs, "Daily walk", due_weekdays=None)
@@ -83,6 +88,7 @@ CREATE TABLE habits (
 
 
 def test_struggling_habits(tmp_path):
+    """struggling_habits finds started habits that missed the recent success threshold."""
     from habit_tracker import struggling_habits
 
     logs = Logs(str(tmp_path))
@@ -113,6 +119,7 @@ def test_struggling_habits(tmp_path):
 
 
 def test_format_habits_for_prompt(tmp_path):
+    """Prompt formatting groups tracked habits and includes cue metadata."""
     from habit_tracker import format_habits_for_prompt
 
     logs = Logs(str(tmp_path))
@@ -135,6 +142,7 @@ def test_format_habits_for_prompt(tmp_path):
 
 
 def test_habit_notes(tmp_path):
+    """Habit notes are stored case-insensitively and returned newest-first."""
     import sys
     from pathlib import Path as _P
 
@@ -155,6 +163,7 @@ def test_habit_notes(tmp_path):
 
 
 def test_bonus_day_done_counts_toward_streak(tmp_path):
+    """Doing a habit on a non-due day counts as a bonus day in the streak."""
     # Regression: doing a habit on a non-due day (Shabbat) should *extend* the streak,
     # not be skipped. Logging every day for two weeks always spans at least one Shabbat,
     # so all 14 days must count.
@@ -165,6 +174,7 @@ def test_bonus_day_done_counts_toward_streak(tmp_path):
 
 
 def test_quiet_non_due_day_does_not_break_streak(tmp_path):
+    """A non-due day without a log is transparent and does not break the streak."""
     # The other half of the rule: a Shabbat with nothing logged is transparent — it
     # neither counts nor breaks. Done on every non-Shabbat day → streak spans the gaps.
     logs = Logs(str(tmp_path))

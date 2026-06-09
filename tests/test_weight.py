@@ -26,6 +26,7 @@ def weight(tmp_path):
 
 
 def test_total_lost(weight):
+    """Weight.total_lost reports current weight and loss from the Wegovy baseline."""
     total = weight.total_lost()
     assert total["current_kg"] == 99.0
     assert total["lost_kg"] == round(WEGOVY_START_WEIGHT - 99.0, 1)  # 4.5
@@ -33,6 +34,7 @@ def test_total_lost(weight):
 
 
 def test_latest_is_newest_first_with_deltas(weight):
+    """Weight.latest returns newest readings first with loss deltas attached."""
     latest = weight.latest(3)
     assert [r["date"] for r in latest] == ["2025-11-25", "2025-11-20", "2025-11-18"]
     assert latest[0]["kg_lost"] == 4.5
@@ -40,6 +42,7 @@ def test_latest_is_newest_first_with_deltas(weight):
 
 
 def test_weekly_averages_and_change(weight):
+    """Weekly averages are ordered newest-first and include change from prior week."""
     weeks = weight.weekly_averages()
     # Newest week first.
     assert weeks[0]["week"] == "2025-W48"
@@ -51,6 +54,7 @@ def test_weekly_averages_and_change(weight):
 
 
 def test_latest_reading_per_day_wins(tmp_path):
+    """When a day has multiple weigh-ins, the latest timestamp is the current reading."""
     db = Database(str(tmp_path / "ops.db"))
     db.insert_metric("2025-11-20T07:00:00+02:00", "2025-11-20", "weight", "100.0", "kg")
     db.insert_metric("2025-11-20T20:00:00+02:00", "2025-11-20", "weight", "99.5", "kg")
@@ -59,6 +63,7 @@ def test_latest_reading_per_day_wins(tmp_path):
 
 
 def test_summary_pct_and_rate(tmp_path):
+    """Weight.summary computes bodyweight percentage and weekly loss rate."""
     # Steady loss over ~4 weeks; check % of bodyweight and the kg/week slope sign.
     db = Database(str(tmp_path / "ops.db"))
     start = date.today() - timedelta(days=28)
@@ -75,10 +80,12 @@ def test_summary_pct_and_rate(tmp_path):
 
 
 def test_summary_none_when_empty(tmp_path):
+    """Weight.summary returns None when there are no weight metrics."""
     assert Weight(Database(str(tmp_path / "ops.db"))).summary() is None
 
 
 def test_injections(tmp_path):
+    """Weight.injections returns only logged injection entries in date order."""
     db = Database(str(tmp_path / "ops.db"))
     db.insert_entry("2025-11-11T09:00:00+02:00", "2025-11-11", "injection", "0.25mg")
     db.insert_entry("2025-12-09T09:00:00+02:00", "2025-12-09", "injection", "0.5mg")
@@ -90,6 +97,7 @@ def test_injections(tmp_path):
 
 
 def test_weight_cache(tmp_path):
+    """Cached figures and synopsis share a weigh-in row without clobbering each other."""
     # Figures and synopsis are cached on one row per weigh-in date, updated independently.
     db = Database(str(tmp_path / "ops.db"))
     assert db.latest_weight_synopsis() is None
@@ -109,6 +117,7 @@ def test_weight_cache(tmp_path):
 
 
 def test_summary_is_cached(tmp_path):
+    """Weight.summary reuses cached figures for the latest weight date."""
     # Second summary() call returns the stored figures without recomputing.
     db = Database(str(tmp_path / "ops.db"))
     for i in range(10):

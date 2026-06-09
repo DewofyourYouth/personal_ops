@@ -15,6 +15,7 @@ _ESTIMATE = {
 
 
 def test_log_content_has_summary_and_items():
+    """Food log content includes the raw meal summary and itemized estimate lines."""
     out = _food_log_content("lasagna and salad", _ESTIMATE)
     # Summary line carries the raw description and the totals.
     assert out.startswith("lasagna and salad — ~480 kcal, 24g protein")
@@ -24,6 +25,7 @@ def test_log_content_has_summary_and_items():
 
 
 def test_preview_escapes_and_totals():
+    """Food estimate previews escape user text and show total macro context."""
     preview = _format_food_estimate("lasagna & salad", _ESTIMATE)
     assert "lasagna &amp; salad" in preview  # HTML-escaped raw text
     assert "Total:" in preview and "~480 kcal" in preview
@@ -31,6 +33,7 @@ def test_preview_escapes_and_totals():
 
 
 def test_parse_macros_round_trips_log_content():
+    """Macro parsing can read the exact format written into food logs."""
     # Parse straight back out of what _food_log_content writes — guards the format
     # contract /foodlog relies on.
     content = _food_log_content("lasagna and salad", _ESTIMATE)
@@ -43,10 +46,12 @@ def test_parse_macros_round_trips_log_content():
 
 
 def test_parse_macros_none_without_estimate():
+    """Entries without an estimate marker do not produce macro data."""
     assert _parse_macros("banana — forgot to estimate") is None
 
 
 def test_macro_totals_sums_and_skips_unestimated():
+    """Macro totals sum estimated entries while ignoring unestimated notes."""
     a = _food_log_content("breakfast", _ESTIMATE)  # 480/24/21/47
     b = _food_log_content("lunch", _ESTIMATE)  # 480/24/21/47
     totals = _macro_totals([a, b, "snack — no macros"])
@@ -59,4 +64,5 @@ def test_macro_totals_sums_and_skips_unestimated():
 
 
 def test_macro_totals_none_when_nothing_estimated():
+    """Macro totals return None when no entries contain parseable estimates."""
     assert _macro_totals(["banana", "an apple"]) is None

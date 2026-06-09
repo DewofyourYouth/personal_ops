@@ -14,11 +14,13 @@ def agenda(tmp_path):
 
 
 def test_load_empty(agenda):
+    """A new agenda file loads with an empty items list."""
     data = agenda.load()
     assert data == {"items": []}
 
 
 def test_accept_items(agenda):
+    """Accepting proposed agenda items stores open LLM-sourced tasks."""
     items = agenda.accept_items(["Do laundry", "Review PRs"])
     assert len(items) == 2
     assert items[0]["text"] == "Do laundry"
@@ -27,6 +29,7 @@ def test_accept_items(agenda):
 
 
 def test_reconcile_rejects_already_committed_item(agenda):
+    """Reconciliation can remove a previously accepted item that is later rejected."""
     # The screenshot bug: an item committed by an earlier "accept all" must be
     # removable by unchecking it in a later proposal.
     agenda.reconcile(["Apply to jobs", "Research lead", "Follow up headhunter"], [])
@@ -37,12 +40,14 @@ def test_reconcile_rejects_already_committed_item(agenda):
 
 
 def test_reconcile_no_minimum(agenda):
+    """Reconciliation accepts an empty set of approved items."""
     agenda.reconcile(["A", "B"], [])
     agenda.reconcile([], ["A", "B"])  # reject everything — a valid outcome
     assert agenda.get_open() == []
 
 
 def test_reconcile_preserves_completed_history(agenda):
+    """Rejecting a completed item during reconciliation does not delete history."""
     agenda.reconcile(["Walk"], [])
     agenda.mark_status(agenda.get_open()[0]["id"], "done")
     agenda.reconcile([], ["Walk"])  # rejecting a done item must not delete it
@@ -52,6 +57,7 @@ def test_reconcile_preserves_completed_history(agenda):
 
 
 def test_accept_items_persists(agenda):
+    """Accepted agenda items are written to persistent storage."""
     agenda.accept_items(["Task A"])
     data = agenda.load()
     assert len(data["items"]) == 1
@@ -59,6 +65,7 @@ def test_accept_items_persists(agenda):
 
 
 def test_accept_items_appends(agenda):
+    """A second accept call appends items with incrementing ids."""
     agenda.accept_items(["First"])
     agenda.accept_items(["Second"])
     data = agenda.load()
@@ -67,6 +74,7 @@ def test_accept_items_appends(agenda):
 
 
 def test_mark_status_done(agenda):
+    """mark_status can change an agenda item to done."""
     agenda.accept_items(["Do something"])
     agenda.mark_status(0, "done")
     data = agenda.load()
@@ -74,12 +82,14 @@ def test_mark_status_done(agenda):
 
 
 def test_mark_status_missed(agenda):
+    """mark_status can change an agenda item to missed."""
     agenda.accept_items(["Do something"])
     agenda.mark_status(0, "missed")
     assert agenda.load()["items"][0]["status"] == "missed"
 
 
 def test_get_open_filters(agenda):
+    """get_open returns only agenda items that are still open."""
     agenda.accept_items(["Open task", "Closed task"])
     agenda.mark_status(1, "done")
     open_items = agenda.get_open()
@@ -88,6 +98,7 @@ def test_get_open_filters(agenda):
 
 
 def test_edit_item(agenda):
+    """edit_item replaces text and returns the previous value."""
     agenda.accept_items(["Old text"])
     old = agenda.edit_item(0, "New text")
     assert agenda.load()["items"][0]["text"] == "New text"
@@ -95,12 +106,14 @@ def test_edit_item(agenda):
 
 
 def test_edit_item_returns_none_for_missing_id(agenda):
+    """edit_item returns None when no item exists for the given id."""
     agenda.accept_items(["Something"])
     old = agenda.edit_item(99, "irrelevant")
     assert old is None
 
 
 def test_accept_items_deduplicates(agenda):
+    """accept_items skips exact duplicates while preserving new tasks."""
     agenda.accept_items(["Do laundry", "Job search"])
     agenda.accept_items(["Job search", "Walk"])  # "Job search" already exists
     items = agenda.load()["items"]
@@ -111,17 +124,20 @@ def test_accept_items_deduplicates(agenda):
 
 
 def test_accept_items_dedup_case_insensitive(agenda):
+    """accept_items deduplicates task text case-insensitively."""
     agenda.accept_items(["Anki review"])
     agenda.accept_items(["anki review"])  # same, different case
     assert len(agenda.load()["items"]) == 1
 
 
 def test_accept_custom_source(agenda):
+    """accept_items preserves a custom source label when one is supplied."""
     items = agenda.accept_items(["Manual task"], source="manual")
     assert items[0]["source"] == "manual"
 
 
 def test_edit_uses_position_not_id(agenda):
+    """Editing open items works with actual ids after earlier ids are completed."""
     # First batch completes, leaving non-zero IDs for second batch
     agenda.accept_items(["Old task A", "Old task B"])
     agenda.mark_status(0, "done")
@@ -137,6 +153,7 @@ def test_edit_uses_position_not_id(agenda):
 
 
 def test_get_status_returns_all_items(agenda):
+    """get_status returns all agenda items regardless of status."""
     agenda.accept_items(["Task A", "Task B", "Task C"])
     agenda.mark_status(0, "done")
     agenda.mark_status(1, "missed")
@@ -149,10 +166,12 @@ def test_get_status_returns_all_items(agenda):
 
 
 def test_get_status_empty(agenda):
+    """get_status returns an empty list when the agenda has no items."""
     assert agenda.get_status() == []
 
 
 def test_mark_status_uses_actual_id(agenda):
+    """mark_status targets actual item ids, not open-list positions."""
     agenda.accept_items(["First"])
     agenda.mark_status(0, "done")
     agenda.accept_items(["Second"])  # ID is 1, not 0
@@ -164,10 +183,12 @@ def test_mark_status_uses_actual_id(agenda):
 
 
 def test_existing_summary_empty(agenda):
+    """existing_summary is empty when there are no agenda items."""
     assert agenda.existing_summary() == ""
 
 
 def test_existing_summary_open_items(agenda):
+    """existing_summary lists currently open agenda items."""
     agenda.accept_items(["Task A", "Task B"])
     summary = agenda.existing_summary()
     assert "Still open" in summary
@@ -176,6 +197,7 @@ def test_existing_summary_open_items(agenda):
 
 
 def test_existing_summary_mixed_status(agenda):
+    """existing_summary separates open items from completed or missed history."""
     agenda.accept_items(["Done task", "Open task"])
     agenda.mark_status(0, "done")
     summary = agenda.existing_summary()
@@ -187,6 +209,7 @@ def test_existing_summary_mixed_status(agenda):
 
 @pytest.mark.asyncio
 async def test_generate_calls_planner(agenda):
+    """Agenda.generate calls the planner with calendar events and no existing summary."""
     mock_planner = AsyncMock()
     mock_planner.propose.return_value = ["Item 1", "Item 2"]
     result = await agenda.generate(mock_planner, calendar_events="10:00 standup")
@@ -196,6 +219,7 @@ async def test_generate_calls_planner(agenda):
 
 @pytest.mark.asyncio
 async def test_generate_passes_existing_summary(agenda):
+    """Agenda.generate passes existing agenda context to the planner."""
     agenda.accept_items(["Existing open task"])
     mock_planner = AsyncMock()
     mock_planner.propose.return_value = []
