@@ -50,7 +50,7 @@ from text_router import (
 )
 from tg_common import safe_answer
 
-from bot_constants import HELP_TEXT
+from bot_constants import HELP_INTRO, HELP_SECTIONS, HELP_TEXT  # noqa: F401
 
 # Single per-instance config object: identity, storage path, and tunables come
 # from here rather than from scattered env reads or getcwd(). The globals below
@@ -292,10 +292,45 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _help_menu_keyboard() -> InlineKeyboardMarkup:
+    keys = list(HELP_SECTIONS)
+    rows = [
+        [
+            InlineKeyboardButton(HELP_SECTIONS[k][0], callback_data=f"help:{k}")
+            for k in keys[i : i + 2]
+        ]
+        for i in range(0, len(keys), 2)
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+    await update.message.reply_text(
+        HELP_INTRO, parse_mode="HTML", reply_markup=_help_menu_keyboard()
+    )
+
+
+async def handle_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await safe_answer(query)
+    key = query.data.split(":", 1)[1]
+    if key == "back":
+        await query.edit_message_text(
+            HELP_INTRO, parse_mode="HTML", reply_markup=_help_menu_keyboard()
+        )
+        return
+    section = HELP_SECTIONS.get(key)
+    if not section:
+        return
+    title, body = section
+    back = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅ Back", callback_data="help:back")]]
+    )
+    await query.edit_message_text(
+        f"<b>{title}</b>\n\n{body}", parse_mode="HTML", reply_markup=back
+    )
 
 
 # Scheduler wrappers: the digest logic lives in DigestHandlers, but the persistent
@@ -788,6 +823,7 @@ def main():
     reminders_feature.register(app)
 
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help:"))
     app.add_handler(CommandHandler("events", cmd_events))
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler("logs", cmd_logs))
