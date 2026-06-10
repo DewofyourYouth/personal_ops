@@ -304,6 +304,9 @@ class Planner:
             user_content += f"{history}\n\n"
         if metrics_text:
             user_content += f"{metrics_text}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=days)
+        if food_text:
+            user_content += f"{food_text}\n\n"
         tod_text = self.logs.format_time_of_day_for_prompt(days=max(days, 14))
         if tod_text:
             user_content += f"{tod_text}\n\n"
@@ -444,6 +447,9 @@ class Planner:
         weight_synopsis = await self.weight_synopsis_cached()
         if weight_synopsis:
             user_content += f"Weight progress: {weight_synopsis}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=7, end_date=d)
+        if food_text:
+            user_content += f"{food_text}\n\n"
         user_content += "Generate today's end-of-day digest."
 
         response = await client.messages.create(
@@ -542,6 +548,9 @@ class Planner:
         metrics_text = self.logs.format_metrics_for_prompt(days=30)
         if metrics_text:
             data_block += f"{metrics_text}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=30)
+        if food_text:
+            data_block += f"{food_text}\n\n"
         tod_text = self.logs.format_time_of_day_for_prompt(days=30)
         if tod_text:
             data_block += f"{tod_text}\n\n"

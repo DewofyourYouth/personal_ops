@@ -10,6 +10,14 @@ from zoneinfo import ZoneInfo
 from db import Database
 
 TZ = ZoneInfo("Asia/Jerusalem")
+
+# Mirrors the format written by text_router._food_log_content, e.g.
+# "lasagna — ~480 kcal, 24g protein, 21g fat, 47g carbs"
+_FOOD_MACRO_RE = re.compile(
+    r"~?\s*([\d.]+)\s*kcal,\s*([\d.]+)\s*g\s*protein,\s*"
+    r"([\d.]+)\s*g\s*fat,\s*([\d.]+)\s*g\s*carbs",
+    re.IGNORECASE,
+)
 logger = logging.getLogger(__name__)
 
 # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
@@ -532,6 +540,67 @@ class Logs:
         if avg_7:
             parts.append(f"7-day avg: {avg_7} kg{trend}")
         return " | ".join(parts)
+
+    # --- Food macro persistence ---
+
+    def save_food_summary(self, d: date) -> dict | None:
+        """Compute and persist the day's macro totals to the food_summary table.
+
+        Returns the saved totals dict, or None if there were no estimable entries.
+        Idempotent — safe to call multiple times for the same day (upserts).
+        """
+        rows = self.db.entries_for_date(d)
+        food_contents = [r["content"] for r in rows if r["tag"] == "food"]
+        if not food_contents:
+            return None
+        parsed = []
+        for content in food_contents:
+            m = _FOOD_MACRO_RE.search(content)
+            if m:
+                kcal, protein, fat, carbs = (float(g) for g in m.groups())
+                parsed.append(
+                    {"kcal": kcal, "protein_g": protein, "fat_g": fat, "carbs_g": carbs}
+                )
+        if not parsed:
+            return None
+        totals = {
+            k: sum(p[k] for p in parsed) for k in ("kcal", "protein_g", "fat_g", "carbs_g")
+        }
+        self.db.upsert_food_summary(
+            d.isoformat(),
+            totals["kcal"],
+            totals["protein_g"],
+            totals["fat_g"],
+            totals["carbs_g"],
+            len(food_contents),
+        )
+        return totals
+
+    def format_food_for_prompt(self, days: int = 14, end_date: date | None = None) -> str:
+        """Recent daily macro totals as a formatted block for LLM prompts."""
+        end = end_date or date.today()
+        start = end - timedelta(days=days - 1)
+        rows = self.db.food_summary_for_range(start, end)
+        if not rows:
+            return ""
+
+        def _fmt(n: float) -> str:
+            return str(int(n)) if float(n).is_integer() else str(round(n, 1))
+
+        lines = ["## Food / macros\n"]
+        lines.append("| Date | kcal | protein | fat | carbs | entries |")
+        lines.append("|------|------|---------|-----|-------|---------|")
+        kcal_vals = []
+        for r in rows:
+            lines.append(
+                f"| {r['date']} | ~{_fmt(r['kcal'])} | {_fmt(r['protein_g'])}g | "
+                f"{_fmt(r['fat_g'])}g | {_fmt(r['carbs_g'])}g | {r['entry_count']} |"
+            )
+            kcal_vals.append(r["kcal"])
+        if len(kcal_vals) >= 3:
+            avg_kcal = round(sum(kcal_vals) / len(kcal_vals))
+            lines.append(f"\n**Avg (logged days only):** ~{avg_kcal:,} kcal/day")
+        return "\n".join(lines)
 
     def earliest_log_date(self) -> date | None:
         return self.db.earliest_entry_date()
