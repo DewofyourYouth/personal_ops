@@ -185,3 +185,45 @@ def test_quiet_non_due_day_does_not_break_streak(tmp_path):
     _write_habit_days(logs, "Daf Yomi", due_days)
     current, _ = compute_streak(logs, "Daf Yomi", due_weekdays=None)
     assert current == len(due_days)
+
+
+def test_single_missed_due_day_does_not_break_streak(tmp_path):
+    """Regression: one missed due day must not break the streak (takes two consecutive)."""
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    # Collect 6 consecutive non-Shabbat due days going back from today.
+    due_days_back: list[int] = []
+    i = 0
+    while len(due_days_back) < 6:
+        if _is_due(today - timedelta(days=i), None):
+            due_days_back.append(i)
+        i += 1
+    # Done on all of them except the 3rd most recent — a single miss in the middle.
+    logged_by_day = {
+        (today - timedelta(days=d)).isoformat(): ["daf yomi"]
+        for idx, d in enumerate(due_days_back)
+        if idx != 2
+    }
+    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
+    assert current > 0, "single missed due day must not break the current streak"
+
+
+def test_two_consecutive_misses_break_streak(tmp_path):
+    """Two consecutive missed due days break the streak."""
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    # Collect 7 consecutive non-Shabbat due days going back from today.
+    due_days_back: list[int] = []
+    i = 0
+    while len(due_days_back) < 7:
+        if _is_due(today - timedelta(days=i), None):
+            due_days_back.append(i)
+        i += 1
+    # Done today (index 0) and days 3+ only; miss indices 1 and 2 (two consecutive).
+    logged_by_day = {
+        (today - timedelta(days=d)).isoformat(): ["daf yomi"]
+        for idx, d in enumerate(due_days_back)
+        if idx not in (1, 2)
+    }
+    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
+    assert current == 1, "two consecutive misses must break the streak; only today should count"
