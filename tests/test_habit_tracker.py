@@ -204,7 +204,9 @@ def test_single_missed_due_day_does_not_break_streak(tmp_path):
         for idx, d in enumerate(due_days_back)
         if idx != 2
     }
-    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
+    current, _ = compute_streak(
+        logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day
+    )
     assert current > 0, "single missed due day must not break the current streak"
 
 
@@ -225,5 +227,9 @@ def test_two_consecutive_misses_break_streak(tmp_path):
         for idx, d in enumerate(due_days_back)
         if idx not in (1, 2)
     }
-    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
-    assert current == 1, "two consecutive misses must break the streak; only today should count"
+    current, _ = compute_streak(
+        logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day
+    )
+    assert current == 1, (
+        "two consecutive misses must break the streak; only today should count"
+    )

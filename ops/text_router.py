@@ -435,7 +435,10 @@ class TextRouter:
 
         try:
             await tg_file.download_to_drive(tmp_path)
-            text = transcribe(tmp_path)
+            # transcribe() is a synchronous, blocking Whisper round-trip. Off-load it to
+            # a thread so the single event loop (PTB polling + the scheduler) stays free
+            # — otherwise the whole bot stalls for the duration of every voice note.
+            text = await asyncio.to_thread(transcribe, tmp_path)
         finally:
             os.unlink(tmp_path)
 
