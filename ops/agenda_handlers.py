@@ -50,7 +50,6 @@ class AgendaHandlers:
         app.add_handler(CommandHandler("p", self.cmd_plan))
         app.add_handler(CommandHandler("agenda", self.cmd_agenda))
         app.add_handler(CommandHandler("a", self.cmd_agenda))
-        app.add_handler(CommandHandler("status", self.cmd_agenda_status))
         app.add_handler(
             CallbackQueryHandler(self.handle_agenda_callback, pattern="^ag_")
         )
@@ -121,6 +120,15 @@ class AgendaHandlers:
             )
         return "\n".join(lines)
 
+    def status_text(self) -> str | None:
+        """The agenda section for the /status snapshot: every item with its status
+        icon, or None when there's no agenda yet. Owned here so the rendering stays
+        beside the rest of the agenda UI."""
+        items = self.agenda.get_status()
+        if not items:
+            return None
+        return self._status_message(items)
+
     # --- Commands ---
 
     async def cmd_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,19 +148,6 @@ class AgendaHandlers:
             return
         text, keyboard = self._agenda_message(open_items)
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-    async def cmd_agenda_status(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        if update.effective_user.id != self.allowed_user:
-            return
-        items = self.agenda.get_status()
-        if not items:
-            await update.message.reply_text(
-                "No open agenda items. Use /plan to generate one."
-            )
-            return
-        await update.message.reply_text(self._status_message(items), parse_mode="HTML")
 
     # --- Callbacks ---
 

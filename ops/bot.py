@@ -30,6 +30,7 @@ from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
+from status_handlers import StatusHandlers
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
@@ -90,6 +91,7 @@ agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
 router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
+status_feature: "StatusHandlers" = None  # type: ignore[assignment]
 plugins: list = []  # built in main(); _post_init reads their scheduled jobs
 
 # In-memory conversation state keyed by chat_id (single-user bot, in-memory is fine).
@@ -805,6 +807,18 @@ def main():
         app.bot, reminders, logs, shabbat_, ALLOWED_USER
     )
     reminders_feature.register(app)
+
+    # Status snapshot (/status): a cross-cutting dashboard that composes the agenda
+    # feature, the habit plugin, the calendar, and a planner synopsis. The habit
+    # plugin is found by duck-typing (same pattern as router.grocery above).
+    global status_feature
+    status_feature = StatusHandlers(
+        app.bot, agenda_feature, gcal_, planner_, shabbat_, ALLOWED_USER
+    )
+    status_feature.habits = next(
+        (p for p in plugins if hasattr(p, "pending_today")), None
+    )
+    status_feature.register(app)
 
     # app.add_handler(CommandHandler(, cmd_help))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help:"))
