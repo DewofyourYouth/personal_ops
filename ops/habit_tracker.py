@@ -97,32 +97,35 @@ def compute_streak(
 
     `due_weekdays` (0=Mon..6=Sun) lists the scheduled days; None = every non-Shabbat day.
     Non-due days (Shabbat, or unscheduled weekdays) are *bonus*: doing the habit on one
-    extends the streak, but skipping it never breaks the streak. Only a missed DUE day
-    breaks the run.
+    extends the streak, but skipping it never breaks the streak. A single missed due day
+    is forgiven (never miss twice); only two consecutive missed due days break the run.
     """
     today = date.today()
     current = 0
     longest = 0
     run = 0
     in_current = True
+    consecutive_misses = 0
 
     for i in range(lookback):
         d = today - timedelta(days=i)
         done = any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
-        # Non-due days (Shabbat, or weekdays the habit isn't scheduled for) are *bonus*:
-        # doing the habit on one extends the streak, but a quiet one never breaks it. So a
-        # bonus day with nothing logged is transparent — only a missed DUE day is a break.
+        # Non-due days are *bonus*: quiet ones are transparent, done ones extend the run.
         if not _is_due(d, due_weekdays) and not done:
             continue
         if done:
             run += 1
+            consecutive_misses = 0
             if in_current:
                 current = run
         else:
-            if in_current:
-                in_current = False
-            longest = max(longest, run)
-            run = 0
+            consecutive_misses += 1
+            if consecutive_misses >= 2:
+                if in_current:
+                    in_current = False
+                longest = max(longest, run)
+                run = 0
+                consecutive_misses = 0
 
     return current, max(longest, run)
 
