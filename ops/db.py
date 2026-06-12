@@ -157,6 +157,9 @@ class Database:
         """Run a read and return all rows."""
         return self._conn().execute(sql, params).fetchall()
 
+    def delete_entry(self, entry_id: int) -> None:
+        self.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
+
     def insert_entry(self, ts: str, date_str: str, tag: str, content: str):
         self._conn().execute(
             "INSERT INTO entries (ts, date, tag, content) VALUES (?, ?, ?, ?)",

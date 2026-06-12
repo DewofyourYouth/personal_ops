@@ -269,7 +269,8 @@ def _food_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("✅ Log it", callback_data="food_confirm"),
                 InlineKeyboardButton("✏️ Adjust", callback_data="food_adjust"),
-            ]
+            ],
+            [InlineKeyboardButton("❌ Didn't eat it", callback_data="food_cancel")],
         ]
     )
 
@@ -335,11 +336,15 @@ class TextRouter:
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         app.add_handler(CommandHandler("backdate", self.cmd_backdate))
+        app.add_handler(CommandHandler("undofood", self.cmd_undo_food))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
         )
         app.add_handler(
-            CallbackQueryHandler(self.handle_food_callback, pattern="^food_")
+            CallbackQueryHandler(self.handle_food_callback, pattern="^food_(?!del:)")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_food_delete_callback, pattern="^food_del:")
         )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
@@ -626,6 +631,9 @@ class TextRouter:
                 + "\n\n✏️ Tell me the correction (e.g. <i>the lasagna was ~400g, no salad</i>).",
                 parse_mode="HTML",
             )
+        elif query.data == "food_cancel":
+            self._awaiting_food.pop(chat_id, None)
+            await query.edit_message_text("👍 OK, not logged.")
 
     async def try_handle_food_adjust(self, update: Update) -> bool:
         """If a food estimate is awaiting a portion correction, re-estimate from the
@@ -640,12 +648,22 @@ class TextRouter:
         except Exception:
             estimate = None
         if not estimate:
+            pending["adjusting"] = False
             await update.message.reply_text(
-                "Couldn't re-estimate that. Logging the original estimate instead."
+                "Couldn't re-estimate that. Log the original estimate, or cancel?",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "✅ Log original", callback_data="food_confirm"
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Don't log", callback_data="food_cancel"
+                            ),
+                        ]
+                    ]
+                ),
             )
-            content = _food_log_content(pending["raw"], pending["estimate"])
-            self.logs.write("food", content)
-            self._awaiting_food.pop(chat_id, None)
             return True
         pending["estimate"] = estimate
         pending["adjusting"] = False
@@ -677,6 +695,50 @@ class TextRouter:
                 ).strip()
                 return t.lstrip("#"), content
         return "log", text
+
+    def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
+        today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+        rows = self.logs.db.entries_for_date(today)
+        food_rows = [r for r in rows if r["tag"] == "food"]
+        if not food_rows:
+            return "No food logged today.", InlineKeyboardMarkup([])
+        kbd_rows = []
+        for r in food_rows:
+            label = r["content"][:40] + ("…" if len(r["content"]) > 40 else "")
+            t = r["ts"][11:16]
+            kbd_rows.append(
+                [
+                    InlineKeyboardButton(f"{t} {label}", callback_data="noop"),
+                    InlineKeyboardButton("🗑", callback_data=f"food_del:{r['id']}"),
+                ]
+            )
+        return "🍽 <b>Today's food — tap 🗑 to delete:</b>", InlineKeyboardMarkup(
+            kbd_rows
+        )
+
+    async def cmd_undo_food(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/undofood — pick a food entry from today to delete."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        text, keyboard = self._food_manage_message()
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_food_delete_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        if query.from_user.id != self.allowed_user:
+            return
+        entry_id = int(query.data.split(":", 1)[1])
+        self.logs.db.delete_entry(entry_id)
+        text, keyboard = self._food_manage_message()
+        if not keyboard.inline_keyboard:
+            await query.edit_message_text("🗑 Removed. No more food entries today.")
+        else:
+            await query.edit_message_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
 
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's

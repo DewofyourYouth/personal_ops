@@ -98,6 +98,7 @@ HELP_SECTIONS = {
 /metrics — tracked metrics with trend (last 14 days)
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals
+/undofood — delete the most recently logged food entry today
 /grocery — shared grocery checklist
 /backlog — someday items, grouped by domain
 /logs — today's log entries
