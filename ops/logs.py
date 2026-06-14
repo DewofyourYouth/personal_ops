@@ -718,16 +718,21 @@ class Logs:
     def _entry_html(entry: dict, max_chars: int | None = None) -> str:
         ts = str(entry.get("ts", ""))
         t = ts[11:16] if len(ts) >= 16 else "??:??"
-        tag = html.escape(str(entry.get("tag", "")))
-        prefix = f"<code>{t}</code> <b>#{tag}</b> "
+        tag = str(entry.get("tag", ""))
+        is_discrete = tag == "discrete"
+        prefix = f"<code>{t}</code> <b>#{html.escape(tag)}</b> "
         content = str(entry.get("content", ""))
 
+        def _render(text: str) -> str:
+            escaped = html.escape(text)
+            return f"<tg-spoiler>{escaped}</tg-spoiler>" if is_discrete else escaped
+
         if max_chars is None:
-            return prefix + html.escape(content)
+            return prefix + _render(content)
 
         suffix = " …(entry truncated)"
         if len(prefix + html.escape(content)) <= max_chars:
-            return prefix + html.escape(content)
+            return prefix + _render(content)
         if max_chars <= len(prefix) + len(suffix):
             return (prefix + suffix).strip()[:max_chars]
 
@@ -739,7 +744,7 @@ class Logs:
                 lo = mid
             else:
                 hi = mid - 1
-        return prefix + html.escape(content[:lo]) + suffix
+        return prefix + _render(content[:lo]) + suffix
 
     def _format_entries_for_telegram(
         self, d: date, entries: list[dict], max_chars: int = 3900

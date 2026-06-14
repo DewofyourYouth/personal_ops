@@ -278,18 +278,25 @@ def _food_keyboard() -> InlineKeyboardMarkup:
 def _format_food_estimate(raw: str, estimate: dict) -> str:
     """Telegram preview of the itemised estimate awaiting confirmation."""
     t = estimate["total"]
-    lines = [f"🍽 <b>Estimated:</b> {html.escape(raw)}\n"]
+    item_lines = []
     for i in estimate["items"]:
-        lines.append(
+        item_lines.append(
             f"• {html.escape(i['name'])} ({html.escape(str(i.get('portion', '')))}): "
             f"{round(i.get('kcal', 0))} kcal, {round(i.get('protein_g', 0))}g P"
         )
-    lines.append(
-        f"\n<b>Total:</b> ~{t['kcal']} kcal, {t['protein_g']}g protein, "
+    breakdown = (
+        f"<blockquote>{chr(10).join(item_lines)}</blockquote>" if item_lines else ""
+    )
+    total = (
+        f"<b>Total:</b> ~{t['kcal']} kcal, {t['protein_g']}g protein, "
         f"{t['fat_g']}g fat, {t['carbs_g']}g carbs"
     )
-    lines.append("\n<i>Estimates are approximate. Look right?</i>")
-    return "\n".join(lines)
+    return (
+        f"🍽 <b>Estimated:</b> {html.escape(raw)}\n\n"
+        f"{breakdown}\n"
+        f"{total}\n\n"
+        f"<i>Estimates are approximate. Look right?</i>"
+    )
 
 
 def _food_log_content(raw: str, estimate: dict) -> str:
@@ -1124,7 +1131,9 @@ class TextRouter:
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")
 
-        if tag == "checkin":
+        if tag == "discrete":
+            await reply("🔒 Logged.")
+        elif tag == "checkin":
             await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
         elif tag == "injection":
             await reply(f"💉 Injection logged: {html.escape(content)}")

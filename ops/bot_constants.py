@@ -26,6 +26,8 @@ PREFIXES = {
     "excused:": "#skip",
     "values:": "#values",
     "value:": "#values",
+    "discrete:": "#discrete",
+    "private:": "#discrete",
 }
 
 ENCOURAGEMENTS = [

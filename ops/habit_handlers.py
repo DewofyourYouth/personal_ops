@@ -1239,7 +1239,9 @@ class HabitHandlers:
         await update.message.reply_text("🧭 Strategizing…")
         try:
             text = await self.planner.habit_strategy(strugglers)
-            await update.message.reply_text(text, parse_mode="HTML")
+            await update.message.reply_text(
+                f"<blockquote expandable>{text}</blockquote>", parse_mode="HTML"
+            )
         except Exception as e:
             await update.message.reply_text(f"Strategy failed: {e}")
 
@@ -1355,7 +1357,11 @@ class HabitHandlers:
                 return
             lines = [f"📋 <b>{html.escape(raw)}</b> — last 30 days\n"]
             for s in slips[-20:]:
-                note_part = f" — {html.escape(s['note'])}" if s["note"] else ""
+                note_part = (
+                    f" — <tg-spoiler>{html.escape(s['note'])}</tg-spoiler>"
+                    if s["note"]
+                    else ""
+                )
                 lines.append(f"<code>{s['date']}</code>{note_part}")
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
@@ -1417,7 +1423,7 @@ class HabitHandlers:
             )
             await self.bot.send_message(
                 chat_id=self.allowed_user,
-                text=f"💡 <b>Weekly habit tip</b>\n\n{html.escape(display)}",
+                text=f"💡 <b>Weekly habit tip</b>\n\n<blockquote>{html.escape(display)}</blockquote>",
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
