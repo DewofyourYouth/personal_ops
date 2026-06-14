@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS weight_cache (
 );
 """
 
+_CREATE_FOOD_SUMMARY = """
+CREATE TABLE IF NOT EXISTS food_summary (
+    date        TEXT PRIMARY KEY,
+    kcal        REAL NOT NULL,
+    protein_g   REAL NOT NULL,
+    fat_g       REAL NOT NULL,
+    carbs_g     REAL NOT NULL,
+    entry_count INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 
 class Database:
     def __init__(self, db_path: str):
@@ -95,6 +106,7 @@ class Database:
         conn.executescript(_CREATE_METRICS)
         conn.executescript(_CREATE_REMINDERS)
         conn.executescript(_CREATE_WEIGHT_CACHE)
+        conn.executescript(_CREATE_FOOD_SUMMARY)
         conn.commit()
 
     # --- Weight cache ---
@@ -135,6 +147,37 @@ class Database:
             "ORDER BY basis_date DESC LIMIT 1"
         )
         return rows[0]["synopsis"] if rows else None
+
+    # --- Food summary ---
+    # One row per day: end-of-day macro totals derived from food entries. Written
+    # by the daily digest job so the data persists independently of the raw entries.
+
+    def upsert_food_summary(
+        self,
+        date_str: str,
+        kcal: float,
+        protein_g: float,
+        fat_g: float,
+        carbs_g: float,
+        entry_count: int,
+    ) -> None:
+        self.execute(
+            """INSERT INTO food_summary (date, kcal, protein_g, fat_g, carbs_g, entry_count)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                   kcal        = excluded.kcal,
+                   protein_g   = excluded.protein_g,
+                   fat_g       = excluded.fat_g,
+                   carbs_g     = excluded.carbs_g,
+                   entry_count = excluded.entry_count""",
+            (date_str, kcal, protein_g, fat_g, carbs_g, entry_count),
+        )
+
+    def food_summary_for_range(self, start: date, end: date) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM food_summary WHERE date >= ? AND date <= ? ORDER BY date",
+            (start.isoformat(), end.isoformat()),
+        )
 
     # --- Plugin-owned schema ---
     # Core doesn't know what plugins exist, so it can't own their tables. A plugin

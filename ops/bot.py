@@ -377,13 +377,19 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tod = logs.mood_energy_by_time_of_day(days=14)
     if tod:
         lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
+        lines.append(
+            "<table><tr><th>Time</th><th>Mood</th><th>Energy</th><th>n</th></tr>"
+        )
         for label in ("late night", "morning", "afternoon", "evening"):
             if label not in tod:
                 continue
             b = tod[label]
             mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
             energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
-            lines.append(f"{label}: mood {mood}, energy {energy} (n={b['n']})")
+            lines.append(
+                f"<tr><td>{label}</td><td>{mood}</td><td>{energy}</td><td>{b['n']}</td></tr>"
+            )
+        lines.append("</table>")
 
     text = "\n".join(lines)
     if len(text) > 4000:

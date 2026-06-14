@@ -213,19 +213,31 @@ class Weight:
         ]
 
         lines.append("<b>Latest weigh-ins</b> (raw daily — noisy)")
+        lines.append(
+            "<table><tr><th>Date</th><th>Weight</th><th>Lost</th></tr>"
+        )
         for r in self.latest(5):
             lines.append(
-                f"<code>{r['date']}</code>  {r['kg']} kg  ({r['kg_lost']} lost)"
+                f"<tr><td>{r['date']}</td><td>{r['kg']} kg</td>"
+                f"<td>-{r['kg_lost']} kg</td></tr>"
             )
+        lines.append("</table>")
 
         weekly = self.weekly_averages()
         if weekly:
-            lines.append("\n<b>Weekly average</b>  (Δ vs prev week)")
+            lines.append("\n<b>Weekly averages</b>")
+            lines.append(
+                "<table><tr><th>Week</th><th>Avg</th><th>Δ</th></tr>"
+            )
             for r in weekly[:weeks]:
                 vs_prev = (
                     "—" if r["delta_vs_prev"] is None else signed(r["delta_vs_prev"])
                 )
-                lines.append(f"<code>{r['week']}</code>  {r['avg']} kg  ({vs_prev})")
+                lines.append(
+                    f"<tr><td>{r['week']}</td><td>{r['avg']} kg</td>"
+                    f"<td>{vs_prev}</td></tr>"
+                )
+            lines.append("</table>")
 
         injections = self.injections()
         if injections:
