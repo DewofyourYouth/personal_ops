@@ -213,9 +213,7 @@ class Weight:
         ]
 
         lines.append("<b>Latest weigh-ins</b> (raw daily — noisy)")
-        lines.append(
-            "<table><tr><th>Date</th><th>Weight</th><th>Lost</th></tr>"
-        )
+        lines.append("<table><tr><th>Date</th><th>Weight</th><th>Lost</th></tr>")
         for r in self.latest(5):
             lines.append(
                 f"<tr><td>{r['date']}</td><td>{r['kg']} kg</td>"
@@ -226,9 +224,7 @@ class Weight:
         weekly = self.weekly_averages()
         if weekly:
             lines.append("\n<b>Weekly averages</b>")
-            lines.append(
-                "<table><tr><th>Week</th><th>Avg</th><th>Δ</th></tr>"
-            )
+            lines.append("<table><tr><th>Week</th><th>Avg</th><th>Δ</th></tr>")
             for r in weekly[:weeks]:
                 vs_prev = (
                     "—" if r["delta_vs_prev"] is None else signed(r["delta_vs_prev"])

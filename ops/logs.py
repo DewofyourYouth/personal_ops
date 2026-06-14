@@ -564,7 +564,8 @@ class Logs:
         if not parsed:
             return None
         totals = {
-            k: sum(p[k] for p in parsed) for k in ("kcal", "protein_g", "fat_g", "carbs_g")
+            k: sum(p[k] for p in parsed)
+            for k in ("kcal", "protein_g", "fat_g", "carbs_g")
         }
         self.db.upsert_food_summary(
             d.isoformat(),
@@ -576,7 +577,9 @@ class Logs:
         )
         return totals
 
-    def format_food_for_prompt(self, days: int = 14, end_date: date | None = None) -> str:
+    def format_food_for_prompt(
+        self, days: int = 14, end_date: date | None = None
+    ) -> str:
         """Recent daily macro totals as a formatted block for LLM prompts."""
         end = end_date or date.today()
         start = end - timedelta(days=days - 1)
