@@ -9,6 +9,7 @@ The Wegovy baseline (start weight + date) are constants here rather than config 
 a personal tool and they are fixed historical facts. Change them here if they ever need to.
 """
 
+import html
 import json
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -240,7 +241,7 @@ class Weight:
             last_date, last_dose = injections[-1]
             lines.append(
                 f"\n<b>Injections:</b> {len(injections)} logged · "
-                f"latest {last_dose} on {last_date}"
+                f"latest {html.escape(last_dose)} on {last_date}"
             )
 
         return "\n".join(lines)

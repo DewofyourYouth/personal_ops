@@ -105,12 +105,21 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
     if isinstance(context.error, NetworkError):
         return  # transient connectivity blips — genuinely noisy, swallow
     if isinstance(context.error, BadRequest):
-        # A malformed reply (bad HTML, a GIF sent via send_video, an unchanged
-        # edit). It LOOKS like the bot ignored the user, so log it loudly with the
-        # offending update rather than swallowing — silence here is undebuggable.
+        # Malformed reply (bad HTML, unchanged edit, GIF via wrong method, etc.).
+        # For user-initiated commands/messages, tell them it failed so the bot doesn't
+        # look like it silently ignored them. Background sends (scheduled messages)
+        # have no update to reply to.
         logging.getLogger(__name__).warning(
             "BadRequest while handling update: %s | update=%s", context.error, update
         )
+        try:
+            if isinstance(update, Update) and update.effective_chat and update.message:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"⚠️ Couldn't send that response (formatting error). Check /logs or try again.\n({type(context.error).__name__}: {context.error})",
+                )
+        except Exception:
+            logging.getLogger(__name__).exception("Failed to notify user about BadRequest")
         return
     # Never fail silently on a real error: log it AND tell the user their
     # message wasn't handled, so a dropped entry can't disappear unnoticed.
