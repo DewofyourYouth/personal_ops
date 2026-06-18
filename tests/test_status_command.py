@@ -88,18 +88,27 @@ def test_status_icons_all_present():
 # --- /status snapshot assembly (StatusHandlers section rendering) ---
 
 
-def _status_handlers(*, pending, agenda_status, shabbat=False):
-    """A StatusHandlers wired with fakes for the synchronous section methods.
-    bot/gcal/planner aren't touched by the section renderers, so they're None."""
+def _status_handlers(
+    *, pending, agenda_status, shabbat=False, checklist=None, agenda_items=None
+):
+    """A StatusHandlers wired with fakes for the synchronous render methods.
+    bot/gcal/planner aren't touched by the renderers, so they're None.
+    `checklist` feeds the rich checkbox list; `agenda_items` the rich agenda."""
     sh = StatusHandlers(
         bot=None,
-        agenda_feature=SimpleNamespace(status_text=lambda: agenda_status),
+        agenda_feature=SimpleNamespace(
+            status_text=lambda: agenda_status,
+            status_items=lambda: agenda_items or [],
+        ),
         gcal=None,
         planner=None,
         shabbat=SimpleNamespace(quiet_now=lambda: shabbat),
         allowed_user=1,
     )
-    sh.habits = SimpleNamespace(pending_today=lambda: pending)
+    sh.habits = SimpleNamespace(
+        pending_today=lambda: pending,
+        today_checklist=lambda: checklist or [],
+    )
     return sh
 
 
@@ -138,3 +147,107 @@ def test_snapshot_message_combines_all_sections():
     assert "Walk" in msg
     assert "Ship it" in msg
     assert "Dentist" in msg
+
+
+# --- Rich-message snapshot (checkbox list) ---
+
+
+def test_rich_habits_checkbox_states():
+    """Done habits render a checked box; open habits an unchecked one."""
+    sh = _status_handlers(
+        pending=[],
+        agenda_status=None,
+        checklist=[("Shacharit", True), ("Strength training", False)],
+    )
+    out = sh._rich_habits_html()
+    assert '<input type="checkbox" checked>Shacharit</li>' in out
+    assert '<input type="checkbox">Strength training</li>' in out
+    assert out.count("<li>") == 2
+    assert "Open Habits (1)" in out  # one still open
+
+
+def test_rich_habits_all_done_header():
+    sh = _status_handlers(
+        pending=[], agenda_status=None, checklist=[("Shacharit", True)]
+    )
+    out = sh._rich_habits_html()
+    assert "All habits done today" in out
+    assert '<input type="checkbox" checked>' in out
+
+
+def test_rich_habits_shabbat_has_no_checkboxes():
+    sh = _status_handlers(
+        pending=[], agenda_status=None, shabbat=True, checklist=[("Shacharit", False)]
+    )
+    out = sh._rich_habits_html()
+    assert "Shabbat" in out
+    assert "checkbox" not in out
+
+
+def test_rich_habits_escapes_names():
+    sh = _status_handlers(
+        pending=[], agenda_status=None, checklist=[("Read <Tanakh> & pray", False)]
+    )
+    out = sh._rich_habits_html()
+    assert "&lt;Tanakh&gt; &amp; pray" in out
+    assert "<Tanakh>" not in out
+
+
+def test_rich_agenda_is_a_table_with_icons():
+    sh = _status_handlers(
+        pending=[],
+        agenda_status=None,
+        agenda_items=[
+            {"text": "Ship it", "status": "done"},
+            {"text": "Call Galai", "status": "open"},
+        ],
+    )
+    out = sh._rich_agenda_html()
+    assert "<table>" in out and out.count("<tr>") == 3  # header + 2 rows
+    assert STATUS_ICONS["done"] in out and STATUS_ICONS["open"] in out
+    assert "Ship it" in out and "Call Galai" in out
+
+
+def test_rich_agenda_empty_prompts_plan_without_table():
+    sh = _status_handlers(pending=[], agenda_status=None, agenda_items=[])
+    out = sh._rich_agenda_html()
+    assert "/plan" in out
+    assert "<table>" not in out
+
+
+def test_rich_events_table():
+    sh = _status_handlers(pending=[], agenda_status=None)
+    out = sh._rich_events_html([("15:00", "Dentist"), ("All day", "Fast")], "")
+    assert "<table>" in out
+    assert '<th align="left">Time</th>' in out
+    assert "Dentist" in out and "Fast" in out
+    assert out.count("<tr>") == 3  # header + 2 events
+
+
+def test_rich_events_empty_shows_note_not_table():
+    sh = _status_handlers(pending=[], agenda_status=None)
+    out = sh._rich_events_html([], "Calendar unavailable.")
+    assert "Calendar unavailable." in out
+    assert "<table>" not in out
+
+
+def test_rich_events_escapes_summary():
+    sh = _status_handlers(pending=[], agenda_status=None)
+    out = sh._rich_events_html([("10:00", "Lunch w/ <Avi> & co")], "")
+    assert "&lt;Avi&gt; &amp; co" in out
+    assert "<Avi>" not in out
+
+
+def test_rich_snapshot_combines_sections():
+    sh = _status_handlers(
+        pending=[],
+        agenda_status=None,
+        checklist=[("Walk", False)],
+        agenda_items=[{"text": "Ship it", "status": "open"}],
+    )
+    out = sh._rich_snapshot_html([("15:00", "Dentist")], "")
+    assert "📊 Status" in out
+    assert '<input type="checkbox">Walk' in out
+    assert "Ship it" in out
+    assert "Dentist" in out
+    assert out.count("<table>") == 2  # agenda + events

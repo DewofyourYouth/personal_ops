@@ -774,6 +774,35 @@ class HabitHandlers:
             for h in self._pending_today_habits()
         ]
 
+    def today_checklist(self) -> list[tuple[str, bool]]:
+        """(display name, done) for every habit due today — done = a completed
+        ('habit') log exists today. Feeds the /status rich-message checkbox list,
+        where done habits render checked and the rest unchecked. Does not consider
+        Shabbat; the caller suppresses it then."""
+        from datetime import date as _date
+
+        today_weekday = _date.today().weekday()
+        sections = self.store.sections()
+        logged_today = [
+            e["content"].strip()
+            for e in self.logs.read_today()
+            if e.get("tag") == "habit"
+        ]
+        all_visible = []
+        for habits in sections.values():
+            all_visible.extend(
+                h for h in habits if h["days"] is None or today_weekday in h["days"]
+            )
+        done_ids = set()
+        for logged in logged_today:
+            h = self._resolve_logged_to_habit(logged, all_visible)
+            if h:
+                done_ids.add(h["id"])
+        return [
+            (self.context.habit_display_name(h["name"]), h["id"] in done_ids)
+            for h in all_visible
+        ]
+
     def _eod_message(self) -> tuple[str | None, InlineKeyboardMarkup | None]:
         """Prompt for habits due today that have neither a done nor a missed log yet.
         Returns (None, None) when nothing is pending."""

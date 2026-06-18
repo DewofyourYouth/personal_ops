@@ -119,7 +119,9 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
                     text=f"⚠️ Couldn't send that response (formatting error). Check /logs or try again.\n({type(context.error).__name__}: {context.error})",
                 )
         except Exception:
-            logging.getLogger(__name__).exception("Failed to notify user about BadRequest")
+            logging.getLogger(__name__).exception(
+                "Failed to notify user about BadRequest"
+            )
         return
     # Never fail silently on a real error: log it AND tell the user their
     # message wasn't handled, so a dropped entry can't disappear unnoticed.
