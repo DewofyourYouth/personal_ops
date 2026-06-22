@@ -51,6 +51,13 @@ def _fmt(n: float) -> str:
 
 
 class FoodHandlers:
+    classification_tags = [
+        {
+            "tag": "food",
+            "description": "a meal or food consumed, to log with a nutrition estimate",
+        }
+    ]
+
     def __init__(self, bot: Bot, logs: Logs, allowed_user: int) -> None:
         self.bot = bot
         self.logs = logs

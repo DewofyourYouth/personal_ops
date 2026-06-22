@@ -323,6 +323,9 @@ class TextRouter:
         # Set by bot.py — the grocery plugin, so confirmed voice transcripts opening
         # with "grocery"/"groceries" route into the list instead of a plain log.
         self.grocery = None
+        # Set by bot.py after plugins are built — used to collect plugin classification
+        # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
+        self.plugins: list = []
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -676,11 +679,20 @@ class TextRouter:
         return "log", text
 
     async def _classify_entry_with_llm(self, text: str) -> tuple[str, str]:
-        """Like _classify_entry but falls back to Haiku when no prefix is detected."""
+        """Like _classify_entry but falls back to Haiku when no prefix is detected.
+
+        Gathers classification_tags from registered plugins so each plugin's tags
+        are included in the LLM enum and prompt without hardcoding them here.
+        """
         tag, content = self._classify_entry(text)
         if tag == "log":
             try:
-                tag = await classify_entry(text)
+                extra_tags = [
+                    t
+                    for plugin in self.plugins
+                    for t in getattr(plugin, "classification_tags", [])
+                ]
+                tag = await classify_entry(text, extra_tags=extra_tags or None)
             except Exception:
                 pass  # keep "log" on any LLM failure
         return tag, content
@@ -1024,6 +1036,17 @@ class TextRouter:
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
         tag, content = await self._classify_entry_with_llm(text)
+
+        # Dispatch plugin-owned tags to the plugin that declared them. Each plugin
+        # optionally implements handle_classified_text(tag, content, reply) → bool.
+        for plugin in self.plugins:
+            handler = getattr(plugin, "handle_classified_text", None)
+            if handler is None:
+                continue
+            plugin_tags = [t["tag"] for t in getattr(plugin, "classification_tags", [])]
+            if tag in plugin_tags:
+                if await handler(tag, content, reply):
+                    return
 
         # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
         # logged. We hold the entry until they tap "Log it" rather than writing immediately.

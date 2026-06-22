@@ -797,6 +797,7 @@ def main():
     # Hand the grocery plugin to the router so confirmed voice transcripts opening
     # with "grocery"/"groceries" route into the list (the plugin owns the logic).
     router.grocery = next((p for p in plugins if hasattr(p, "handle_voice_text")), None)
+    router.plugins = plugins
     router.register(app)
 
     # Digest feature (daily + weekly reviews). Its scheduled runs are wrapped by

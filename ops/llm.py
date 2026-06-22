@@ -26,13 +26,33 @@ def transcribe(audio_path: str) -> str:
     return transcript.text.strip()
 
 
-async def classify_entry(text: str) -> str:
+_BASE_CLASSIFICATION_TAGS = [
+    ("insight", "a new realization, lesson, or pattern noticed"),
+    ("hypothesis", "an empirical claim to test (I think X causes Y)"),
+    ("note", "a general observation or reference note"),
+    ("task", "something to do or action item"),
+    ("wrong", "a mistake, problem, or thing that went badly"),
+    ("win", "an accomplishment or positive outcome"),
+    ("backlog", "a someday/maybe idea, not urgent"),
+    ("checkin", "emotional, physical, or energy status update"),
+    ("values", "reflection on personal principles or identity"),
+    ("log", "anything else (default fallback)"),
+]
+
+
+async def classify_entry(
+    text: str, extra_tags: list[dict] | None = None
+) -> str:
     """Classify a log entry as a tag when no explicit prefix was detected.
 
-    Returns one of: insight, hypothesis, note, task, wrong, win, backlog,
-    checkin, values, log (default). Never returns habit/food/injection/skip —
-    those require explicit prefixes because they trigger side effects.
+    `extra_tags` — additional {"tag", "description"} dicts contributed by plugins
+    (e.g. grocery, food). They extend the enum so the LLM can route to them.
     """
+    plugin_pairs = [(t["tag"], t["description"]) for t in (extra_tags or [])]
+    all_pairs = _BASE_CLASSIFICATION_TAGS + plugin_pairs
+    enum_values = [tag for tag, _ in all_pairs]
+    prompt_lines = [f"{tag} — {desc}" for tag, desc in all_pairs]
+
     client = anthropic.AsyncAnthropic()
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -44,21 +64,7 @@ async def classify_entry(text: str) -> str:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "tag": {
-                            "type": "string",
-                            "enum": [
-                                "insight",
-                                "hypothesis",
-                                "note",
-                                "task",
-                                "wrong",
-                                "win",
-                                "backlog",
-                                "checkin",
-                                "values",
-                                "log",
-                            ],
-                        }
+                        "tag": {"type": "string", "enum": enum_values}
                     },
                     "required": ["tag"],
                 },
@@ -71,16 +77,7 @@ async def classify_entry(text: str) -> str:
                 "content": (
                     "Classify this personal log entry as exactly one tag:\n\n"
                     f'"{text}"\n\n'
-                    "insight — a new realization, lesson, or pattern noticed\n"
-                    "hypothesis — an empirical claim to test (I think X causes Y)\n"
-                    "note — a general observation or reference note\n"
-                    "task — something to do or action item\n"
-                    "wrong — a mistake, problem, or thing that went badly\n"
-                    "win — an accomplishment or positive outcome\n"
-                    "backlog — a someday/maybe idea, not urgent\n"
-                    "checkin — emotional, physical, or energy status update\n"
-                    "values — reflection on personal principles or identity\n"
-                    "log — anything else (default fallback)"
+                    + "\n".join(prompt_lines)
                 ),
             }
         ],

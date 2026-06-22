@@ -226,6 +226,16 @@ class GroceryStore:
 
 
 class GroceryHandlers:
+    classification_tags = [
+        {
+            "tag": "grocery",
+            "description": (
+                "items to buy or add to the grocery/shopping list "
+                "(e.g. 'eggs and milk', 'need bananas', 'out of olive oil')"
+            ),
+        }
+    ]
+
     def __init__(self, bot: Bot, logs: Logs, allowed_user: int) -> None:
         self.bot = bot
         self.logs = logs
@@ -247,6 +257,16 @@ class GroceryHandlers:
         self.store.add_items(items)
         msg, keyboard = self._message(f"Added: {', '.join(items)}")
         await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard)
+        return True
+
+    async def handle_classified_text(self, tag: str, text: str, reply) -> bool:
+        """Called by the text router when the LLM classifies a message as 'grocery'."""
+        if tag != "grocery":
+            return False
+        items = split_grocery_items(text) or [text.strip()]
+        self.store.add_items(items)
+        msg, keyboard = self._message(f"Added: {', '.join(items)}")
+        await reply(msg, parse_mode="HTML", reply_markup=keyboard)
         return True
 
     async def handle_voice_text(self, text: str, reply) -> bool:
