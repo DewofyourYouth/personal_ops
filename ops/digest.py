@@ -24,6 +24,7 @@ from baseline_tracker import Baseline
 from context import Context
 from logs import Logs
 from planner import Planner
+from tg_common import send_long
 
 _TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -142,8 +143,10 @@ class DigestHandlers:
         arg = " ".join(context.args).strip().lower() if context.args else ""
         if arg == "show":
             # Just display the current ledger without re-running extraction.
-            await update.message.reply_text(
-                self.planner.insights.format_for_telegram(), parse_mode="HTML"
+            await send_long(
+                update.message.reply_text,
+                self.planner.insights.format_for_telegram(),
+                parse_mode="HTML",
             )
             return
         await update.message.reply_text("🔍 Distilling insights from your logs…")
@@ -154,9 +157,9 @@ class DigestHandlers:
                 f"(+{len(summary['added'])} new, {len(summary['recurred'])} recurred, "
                 f"{summary['total']} total)\n"
             )
-            await update.message.reply_text(
-                header + self.planner.insights.format_for_telegram(),
-                parse_mode="HTML",
+            body = self.planner.insights.format_for_telegram()
+            await send_long(
+                update.message.reply_text, header + body, parse_mode="HTML"
             )
         except Exception as e:
             await update.message.reply_text(f"Insight extraction failed: {e}")
