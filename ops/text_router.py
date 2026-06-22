@@ -37,7 +37,7 @@ from telegram.ext import (
 
 from bot_constants import PREFIXES
 from habit_handlers import match_habit
-from llm import parse_queue_entry, transcribe
+from llm import classify_entry, parse_queue_entry, transcribe
 from media import send_sticker
 from tg_common import encourage, safe_answer
 
@@ -675,6 +675,16 @@ class TextRouter:
                 return t.lstrip("#"), content
         return "log", text
 
+    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str]:
+        """Like _classify_entry but falls back to Haiku when no prefix is detected."""
+        tag, content = self._classify_entry(text)
+        if tag == "log":
+            try:
+                tag = await classify_entry(text)
+            except Exception:
+                pass  # keep "log" on any LLM failure
+        return tag, content
+
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
         Daf Yomi that never got logged). The remainder is parsed exactly like a normal
@@ -707,7 +717,7 @@ class TextRouter:
             )
             return
 
-        tag, content = self._classify_entry(entry_text)
+        tag, content = await self._classify_entry_with_llm(entry_text)
 
         # Resolve free-text habit logs to a defined habit name, same as the live path, so
         # the backfilled day matches the checklist exactly and counts toward the streak.
@@ -1013,7 +1023,7 @@ class TextRouter:
             return
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
-        tag, content = self._classify_entry(text)
+        tag, content = await self._classify_entry_with_llm(text)
 
         # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
         # logged. We hold the entry until they tap "Log it" rather than writing immediately.
