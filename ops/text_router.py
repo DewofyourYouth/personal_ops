@@ -37,7 +37,7 @@ from telegram.ext import (
 
 from bot_constants import PREFIXES
 from habit_handlers import match_habit
-from llm import parse_queue_entry, transcribe
+from llm import classify_entry, parse_queue_entry, transcribe
 from media import send_sticker
 from tg_common import encourage, safe_answer
 
@@ -331,6 +331,9 @@ class TextRouter:
         # Set by bot.py — the grocery plugin, so confirmed voice transcripts opening
         # with "grocery"/"groceries" route into the list instead of a plain log.
         self.grocery = None
+        # Set by bot.py after plugins are built — used to collect plugin classification
+        # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
+        self.plugins: list = []
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -779,7 +782,7 @@ class TextRouter:
             )
             return
 
-        tag, content = self._classify_entry(entry_text)
+        tag, content = await self._classify_entry_with_llm(entry_text)
 
         # Resolve free-text habit logs to a defined habit name, same as the live path, so
         # the backfilled day matches the checklist exactly and counts toward the streak.
@@ -1085,7 +1088,18 @@ class TextRouter:
             return
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
-        tag, content = self._classify_entry(text)
+        tag, content = await self._classify_entry_with_llm(text)
+
+        # Dispatch plugin-owned tags to the plugin that declared them. Each plugin
+        # optionally implements handle_classified_text(tag, content, reply) → bool.
+        for plugin in self.plugins:
+            handler = getattr(plugin, "handle_classified_text", None)
+            if handler is None:
+                continue
+            plugin_tags = [t["tag"] for t in getattr(plugin, "classification_tags", [])]
+            if tag in plugin_tags:
+                if await handler(tag, content, reply):
+                    return
 
         # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
         # logged. We hold the entry until they tap "Log it" rather than writing immediately.

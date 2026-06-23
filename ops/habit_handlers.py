@@ -739,18 +739,24 @@ class HabitHandlers:
         The shared core of the end-of-day check and the /status snapshot."""
         from datetime import date as _date
 
-        today_weekday = _date.today().weekday()
+        target = for_date or _date.today()
+        target_weekday = target.weekday()
         sections = self.store.sections()
+        entries = (
+            self.logs.read_today()
+            if for_date is None
+            else [dict(r) for r in self.logs.db.entries_for_date(for_date)]
+        )
         resolved = [
             e["content"].strip()
-            for e in self.logs.read_today()
+            for e in entries
             if e.get("tag") in ("habit", "habit_missed")
         ]
 
         all_visible = []
         for habits in sections.values():
             all_visible.extend(
-                h for h in habits if h["days"] is None or today_weekday in h["days"]
+                h for h in habits if h["days"] is None or target_weekday in h["days"]
             )
         resolved_ids = set()
         for logged in resolved:
@@ -775,7 +781,8 @@ class HabitHandlers:
         if not pending:
             return None, None
 
-        lines = ["🌙 <b>End-of-day habit check</b>", "Did you do these today?", ""]
+        day_label = "yesterday" if for_date is not None else "today"
+        lines = ["🌙 <b>End-of-day habit check</b>", f"Did you do these {day_label}?", ""]
         rows = []
         for h in pending:
             name = self.context.habit_display_name(h["name"])
@@ -826,16 +833,34 @@ class HabitHandlers:
             )
 
     async def handle_eod(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
         query = update.callback_query
         await safe_answer(query)
         action, name = query.data.split(":", 1)
-        self.logs.write("habit" if action == "hbq_done" else "habit_missed", name)
+
+        # Morning-after grace window: if it's before noon and the EOD message was sent
+        # on a prior calendar day, log the habit for that prior day so the streak isn't
+        # lost just because the user checks in the next morning.
+        TZ = ZoneInfo("Asia/Jerusalem")
+        now_local = datetime.now(TZ)
+        msg_local = query.message.date.astimezone(TZ)
+        eod_date = msg_local.date() if (
+            now_local.date() > msg_local.date() and now_local.hour < 12
+        ) else None
+
+        self.logs.write(
+            "habit" if action == "hbq_done" else "habit_missed",
+            name,
+            when=msg_local if eod_date else None,
+        )
         await send_sticker(
             self.bot,
             update.effective_chat.id,
             "done" if action == "hbq_done" else "missed",
         )
-        text, keyboard = self._eod_message()
+        text, keyboard = self._eod_message(for_date=eod_date)
         if text is None:
             await query.edit_message_text(
                 "🌙 End-of-day check done — every habit accounted for. Good night."
