@@ -750,6 +750,25 @@ class TextRouter:
                 text, parse_mode="HTML", reply_markup=keyboard
             )
 
+    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str]:
+        """Like _classify_entry but falls back to Haiku when no prefix is detected.
+
+        Gathers classification_tags from registered plugins so each plugin's tags
+        are included in the LLM enum and prompt without hardcoding them here.
+        """
+        tag, content = self._classify_entry(text)
+        if tag == "log":
+            try:
+                extra_tags = [
+                    t
+                    for plugin in self.plugins
+                    for t in getattr(plugin, "classification_tags", [])
+                ]
+                tag = await classify_entry(text, extra_tags=extra_tags or None)
+            except Exception:
+                pass  # keep "log" on any LLM failure
+        return tag, content
+
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
         Daf Yomi that never got logged). The remainder is parsed exactly like a normal

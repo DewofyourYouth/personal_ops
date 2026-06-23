@@ -158,9 +158,7 @@ class DigestHandlers:
                 f"{summary['total']} total)\n"
             )
             body = self.planner.insights.format_for_telegram()
-            await send_long(
-                update.message.reply_text, header + body, parse_mode="HTML"
-            )
+            await send_long(update.message.reply_text, header + body, parse_mode="HTML")
         except Exception as e:
             await update.message.reply_text(f"Insight extraction failed: {e}")
 

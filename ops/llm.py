@@ -40,9 +40,7 @@ _BASE_CLASSIFICATION_TAGS = [
 ]
 
 
-async def classify_entry(
-    text: str, extra_tags: list[dict] | None = None
-) -> str:
+async def classify_entry(text: str, extra_tags: list[dict] | None = None) -> str:
     """Classify a log entry as a tag when no explicit prefix was detected.
 
     `extra_tags` — additional {"tag", "description"} dicts contributed by plugins
@@ -63,9 +61,7 @@ async def classify_entry(
                 "description": "Classify a personal log entry into one tag",
                 "input_schema": {
                     "type": "object",
-                    "properties": {
-                        "tag": {"type": "string", "enum": enum_values}
-                    },
+                    "properties": {"tag": {"type": "string", "enum": enum_values}},
                     "required": ["tag"],
                 },
             }
@@ -76,8 +72,7 @@ async def classify_entry(
                 "role": "user",
                 "content": (
                     "Classify this personal log entry as exactly one tag:\n\n"
-                    f'"{text}"\n\n'
-                    + "\n".join(prompt_lines)
+                    f'"{text}"\n\n' + "\n".join(prompt_lines)
                 ),
             }
         ],

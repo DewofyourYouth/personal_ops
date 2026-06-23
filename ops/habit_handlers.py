@@ -811,7 +811,11 @@ class HabitHandlers:
             return None, None
 
         day_label = "yesterday" if for_date is not None else "today"
-        lines = ["🌙 <b>End-of-day habit check</b>", f"Did you do these {day_label}?", ""]
+        lines = [
+            "🌙 <b>End-of-day habit check</b>",
+            f"Did you do these {day_label}?",
+            "",
+        ]
         rows = []
         for h in pending:
             name = self.context.habit_display_name(h["name"])
@@ -875,9 +879,11 @@ class HabitHandlers:
         TZ = ZoneInfo("Asia/Jerusalem")
         now_local = datetime.now(TZ)
         msg_local = query.message.date.astimezone(TZ)
-        eod_date = msg_local.date() if (
-            now_local.date() > msg_local.date() and now_local.hour < 12
-        ) else None
+        eod_date = (
+            msg_local.date()
+            if (now_local.date() > msg_local.date() and now_local.hour < 12)
+            else None
+        )
 
         self.logs.write(
             "habit" if action == "hbq_done" else "habit_missed",
