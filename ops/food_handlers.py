@@ -99,8 +99,11 @@ class FoodHandlers:
         totals = _macro_totals([e["content"] for e in entries])
         if totals:
             lines.append(
-                f"\n<b>Totals (approx):</b> ~{_fmt(totals['kcal'])} kcal · "
-                f"{_fmt(totals['protein_g'])}g protein · {_fmt(totals['fat_g'])}g fat · "
-                f"{_fmt(totals['carbs_g'])}g carbs"
+                "\n<b>Totals (approx)</b>\n"
+                "<table><tr><th>kcal</th><th>Protein</th><th>Fat</th><th>Carbs</th></tr>"
+                f"<tr><td>~{_fmt(totals['kcal'])}</td>"
+                f"<td>{_fmt(totals['protein_g'])}g</td>"
+                f"<td>{_fmt(totals['fat_g'])}g</td>"
+                f"<td>{_fmt(totals['carbs_g'])}g</td></tr></table>"
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")

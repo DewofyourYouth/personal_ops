@@ -30,6 +30,7 @@ from plugins import build_plugins, collect_jobs
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
+from status_handlers import StatusHandlers
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
@@ -90,6 +91,7 @@ agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
 router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
+status_feature: "StatusHandlers" = None  # type: ignore[assignment]
 plugins: list = []  # built in main(); _post_init reads their scheduled jobs
 
 # In-memory conversation state keyed by chat_id (single-user bot, in-memory is fine).
@@ -384,13 +386,19 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tod = logs.mood_energy_by_time_of_day(days=14)
     if tod:
         lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
+        lines.append(
+            "<table><tr><th>Time</th><th>Mood</th><th>Energy</th><th>n</th></tr>"
+        )
         for label in ("late night", "morning", "afternoon", "evening"):
             if label not in tod:
                 continue
             b = tod[label]
             mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
             energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
-            lines.append(f"{label}: mood {mood}, energy {energy} (n={b['n']})")
+            lines.append(
+                f"<tr><td>{label}</td><td>{mood}</td><td>{energy}</td><td>{b['n']}</td></tr>"
+            )
+        lines.append("</table>")
 
     text = "\n".join(lines)
     if len(text) > 4000:
@@ -815,6 +823,18 @@ def main():
         app.bot, reminders, logs, shabbat_, ALLOWED_USER
     )
     reminders_feature.register(app)
+
+    # Status snapshot (/status): a cross-cutting dashboard that composes the agenda
+    # feature, the habit plugin, the calendar, and a planner synopsis. The habit
+    # plugin is found by duck-typing (same pattern as router.grocery above).
+    global status_feature
+    status_feature = StatusHandlers(
+        app.bot, agenda_feature, gcal_, planner_, shabbat_, ALLOWED_USER
+    )
+    status_feature.habits = next(
+        (p for p in plugins if hasattr(p, "pending_today")), None
+    )
+    status_feature.register(app)
 
     # app.add_handler(CommandHandler(, cmd_help))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help:"))

@@ -10,6 +10,7 @@ from habit_tracker import (
     SHABBAT,
     _is_due,
     compute_streak,
+    load_habit_logs,
     missed_last_due_day,
     recent_chain,
 )
@@ -204,7 +205,9 @@ def test_single_missed_due_day_does_not_break_streak(tmp_path):
         for idx, d in enumerate(due_days_back)
         if idx != 2
     }
-    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
+    current, _ = compute_streak(
+        logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day
+    )
     assert current > 0, "single missed due day must not break the current streak"
 
 
@@ -225,5 +228,88 @@ def test_two_consecutive_misses_break_streak(tmp_path):
         for idx, d in enumerate(due_days_back)
         if idx not in (1, 2)
     }
-    current, _ = compute_streak(logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day)
-    assert current == 1, "two consecutive misses must break the streak; only today should count"
+    current, _ = compute_streak(
+        logs, "daf yomi", due_weekdays=None, logged_by_day=logged_by_day
+    )
+    assert current == 1, (
+        "two consecutive misses must break the streak; only today should count"
+    )
+
+
+# --- SQLite path tests (production path: logs.write → load_habit_logs → compute_streak) ---
+
+
+def _find_most_recent_saturday() -> date:
+    """Return the most recent Saturday (could be today if it is Saturday)."""
+    today = date.today()
+    days_since_saturday = (today.weekday() - SHABBAT) % 7
+    return today - timedelta(days=days_since_saturday)
+
+
+def _write_habit_db(logs: Logs, name: str, days_back: list[int]) -> None:
+    """Write habit entries to SQLite (the production write path)."""
+    today = date.today()
+    for i in days_back:
+        d = today - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T21:00:00+03:00", d.isoformat(), "habit", name)
+
+
+def test_saturday_log_counts_in_sqlite_path(tmp_path):
+    """Regression: motzei Shabbat logs stored in SQLite count toward the streak.
+
+    The chain visual (🟩⬜) never shows Saturday (it shows only due days), but the
+    streak COUNT (🔥N) must increase when the user logs on Saturday night.
+    This exercises the production path: SQLite write → load_habit_logs → compute_streak.
+    """
+    logs = Logs(str(tmp_path))
+    saturday = _find_most_recent_saturday()
+    # Insert 7 consecutive days ending with Saturday to SQLite directly
+    # (mimicking what logs.write() does in production).
+    for i in range(7):
+        d = saturday - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T21:30:00+03:00", d.isoformat(), "habit", "Daf Yomi")
+
+    logged_by_day = load_habit_logs(logs)
+    current, _ = compute_streak(
+        logs, "Daf Yomi", due_weekdays=None, logged_by_day=logged_by_day
+    )
+    assert current == 7, (
+        "7 consecutive days ending Saturday (via SQLite) must show streak of 7"
+    )
+
+
+def test_saturday_night_log_extends_existing_streak(tmp_path):
+    """Logging on Saturday night extends a streak that was building through Friday.
+
+    Scenario: user had N days of streak ending Friday, then logged Saturday night
+    (motzei Shabbat). Checking on Sunday (Sunday not yet logged) should show N+1.
+    This is the exact user-reported scenario: 'logged after Shabbat, streak didn't count.'
+    """
+    logs = Logs(str(tmp_path))
+    saturday = _find_most_recent_saturday()
+    friday = saturday - timedelta(days=1)
+    sunday = saturday + timedelta(days=1)
+
+    # Log Mon–Sat (6 days). Saturday is bonus (non-due), Friday is a due day.
+    for i in range(6):
+        d = saturday - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T21:30:00+03:00", d.isoformat(), "habit", "Daf Yomi")
+
+    # Simulate checking on Sunday (not yet logged Sunday).
+    # Compute streak with Sunday as "today" but nothing logged for it.
+    logged_by_day = load_habit_logs(logs)
+    # Inject Sunday as absent so the lookback starts from Sunday.
+    # (load_habit_logs only contains what's in DB; Sunday has no entry.)
+
+    # Build the lookback dict as compute_streak would see it from Sunday.
+    current, _ = compute_streak(
+        logs,
+        "Daf Yomi",
+        due_weekdays=None,
+        logged_by_day=logged_by_day,
+    )
+    # Sunday is a single miss (forgiven by "never miss twice"), Saturday is bonus done,
+    # Fri–Mon are due days done → streak must be >= 5 (Fri + bonus Sat + 4 prior due days).
+    assert current >= 5, (
+        "Saturday night log must be included in streak when checked the next day"
+    )

@@ -269,7 +269,8 @@ def _food_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("✅ Log it", callback_data="food_confirm"),
                 InlineKeyboardButton("✏️ Adjust", callback_data="food_adjust"),
-            ]
+            ],
+            [InlineKeyboardButton("❌ Didn't eat it", callback_data="food_cancel")],
         ]
     )
 
@@ -277,18 +278,25 @@ def _food_keyboard() -> InlineKeyboardMarkup:
 def _format_food_estimate(raw: str, estimate: dict) -> str:
     """Telegram preview of the itemised estimate awaiting confirmation."""
     t = estimate["total"]
-    lines = [f"🍽 <b>Estimated:</b> {html.escape(raw)}\n"]
+    item_lines = []
     for i in estimate["items"]:
-        lines.append(
+        item_lines.append(
             f"• {html.escape(i['name'])} ({html.escape(str(i.get('portion', '')))}): "
             f"{round(i.get('kcal', 0))} kcal, {round(i.get('protein_g', 0))}g P"
         )
-    lines.append(
-        f"\n<b>Total:</b> ~{t['kcal']} kcal, {t['protein_g']}g protein, "
+    breakdown = (
+        f"<blockquote>{chr(10).join(item_lines)}</blockquote>" if item_lines else ""
+    )
+    total = (
+        f"<b>Total:</b> ~{t['kcal']} kcal, {t['protein_g']}g protein, "
         f"{t['fat_g']}g fat, {t['carbs_g']}g carbs"
     )
-    lines.append("\n<i>Estimates are approximate. Look right?</i>")
-    return "\n".join(lines)
+    return (
+        f"🍽 <b>Estimated:</b> {html.escape(raw)}\n\n"
+        f"{breakdown}\n"
+        f"{total}\n\n"
+        f"<i>Estimates are approximate. Look right?</i>"
+    )
 
 
 def _food_log_content(raw: str, estimate: dict) -> str:
@@ -338,11 +346,15 @@ class TextRouter:
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         app.add_handler(CommandHandler("backdate", self.cmd_backdate))
+        app.add_handler(CommandHandler("undofood", self.cmd_undo_food))
         app.add_handler(
             CallbackQueryHandler(self.handle_voice_callback, pattern="^voice_")
         )
         app.add_handler(
-            CallbackQueryHandler(self.handle_food_callback, pattern="^food_")
+            CallbackQueryHandler(self.handle_food_callback, pattern="^food_(?!del:)")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_food_delete_callback, pattern="^food_del:")
         )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
@@ -438,7 +450,10 @@ class TextRouter:
 
         try:
             await tg_file.download_to_drive(tmp_path)
-            text = transcribe(tmp_path)
+            # transcribe() is a synchronous, blocking Whisper round-trip. Off-load it to
+            # a thread so the single event loop (PTB polling + the scheduler) stays free
+            # — otherwise the whole bot stalls for the duration of every voice note.
+            text = await asyncio.to_thread(transcribe, tmp_path)
         finally:
             os.unlink(tmp_path)
 
@@ -626,6 +641,9 @@ class TextRouter:
                 + "\n\n✏️ Tell me the correction (e.g. <i>the lasagna was ~400g, no salad</i>).",
                 parse_mode="HTML",
             )
+        elif query.data == "food_cancel":
+            self._awaiting_food.pop(chat_id, None)
+            await query.edit_message_text("👍 OK, not logged.")
 
     async def try_handle_food_adjust(self, update: Update) -> bool:
         """If a food estimate is awaiting a portion correction, re-estimate from the
@@ -640,12 +658,22 @@ class TextRouter:
         except Exception:
             estimate = None
         if not estimate:
+            pending["adjusting"] = False
             await update.message.reply_text(
-                "Couldn't re-estimate that. Logging the original estimate instead."
+                "Couldn't re-estimate that. Log the original estimate, or cancel?",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "✅ Log original", callback_data="food_confirm"
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Don't log", callback_data="food_cancel"
+                            ),
+                        ]
+                    ]
+                ),
             )
-            content = _food_log_content(pending["raw"], pending["estimate"])
-            self.logs.write("food", content)
-            self._awaiting_food.pop(chat_id, None)
             return True
         pending["estimate"] = estimate
         pending["adjusting"] = False
@@ -678,24 +706,49 @@ class TextRouter:
                 return t.lstrip("#"), content
         return "log", text
 
-    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str]:
-        """Like _classify_entry but falls back to Haiku when no prefix is detected.
-
-        Gathers classification_tags from registered plugins so each plugin's tags
-        are included in the LLM enum and prompt without hardcoding them here.
-        """
-        tag, content = self._classify_entry(text)
-        if tag == "log":
-            try:
-                extra_tags = [
-                    t
-                    for plugin in self.plugins
-                    for t in getattr(plugin, "classification_tags", [])
+    def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
+        today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+        rows = self.logs.db.entries_for_date(today)
+        food_rows = [r for r in rows if r["tag"] == "food"]
+        if not food_rows:
+            return "No food logged today.", InlineKeyboardMarkup([])
+        kbd_rows = []
+        for r in food_rows:
+            label = r["content"][:40] + ("…" if len(r["content"]) > 40 else "")
+            t = r["ts"][11:16]
+            kbd_rows.append(
+                [
+                    InlineKeyboardButton(f"{t} {label}", callback_data="noop"),
+                    InlineKeyboardButton("🗑", callback_data=f"food_del:{r['id']}"),
                 ]
-                tag = await classify_entry(text, extra_tags=extra_tags or None)
-            except Exception:
-                pass  # keep "log" on any LLM failure
-        return tag, content
+            )
+        return "🍽 <b>Today's food — tap 🗑 to delete:</b>", InlineKeyboardMarkup(
+            kbd_rows
+        )
+
+    async def cmd_undo_food(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/undofood — pick a food entry from today to delete."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        text, keyboard = self._food_manage_message()
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_food_delete_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        if query.from_user.id != self.allowed_user:
+            return
+        entry_id = int(query.data.split(":", 1)[1])
+        self.logs.db.delete_entry(entry_id)
+        text, keyboard = self._food_manage_message()
+        if not keyboard.inline_keyboard:
+            await query.edit_message_text("🗑 Removed. No more food entries today.")
+        else:
+            await query.edit_message_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
 
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
@@ -1092,7 +1145,9 @@ class TextRouter:
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")
 
-        if tag == "checkin":
+        if tag == "discrete":
+            await reply("🔒 Logged.")
+        elif tag == "checkin":
             await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
         elif tag == "injection":
             await reply(f"💉 Injection logged: {html.escape(content)}")

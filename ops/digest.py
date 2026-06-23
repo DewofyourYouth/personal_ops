@@ -170,7 +170,9 @@ class DigestHandlers:
         if self.shabbat.quiet_now():
             return
         try:
-            text = await self.planner.daily_digest(target_date=self._target_date())
+            target = self._target_date()
+            self.logs.save_food_summary(target)
+            text = await self.planner.daily_digest(target_date=target)
             self._save(text, label="daily")
             await self.bot.send_message(
                 chat_id=self.allowed_user,
@@ -184,6 +186,10 @@ class DigestHandlers:
         if self.shabbat.quiet_now():
             return
         try:
+            from datetime import date, timedelta
+
+            for i in range(7):
+                self.logs.save_food_summary(date.today() - timedelta(days=i))
             await self.planner.extract_insights(days=7)
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()

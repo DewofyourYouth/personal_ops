@@ -83,6 +83,37 @@ CREATE TABLE IF NOT EXISTS habit_identities (
 CREATE INDEX IF NOT EXISTS idx_habit_identities_identity ON habit_identities(identity);
 """
 
+_NEGATIVE_HABITS_DDL = """
+CREATE TABLE IF NOT EXISTS negative_habits (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT NOT NULL UNIQUE,
+    position INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_SLIP_LOGS_DDL = """
+CREATE TABLE IF NOT EXISTS slip_logs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    date    TEXT NOT NULL,
+    habit   TEXT NOT NULL,
+    note    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_slip_logs_habit ON slip_logs(habit);
+"""
+
+_HABIT_SUGGESTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS habit_suggestions (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    habit   TEXT NOT NULL,
+    display TEXT NOT NULL,
+    action  TEXT NOT NULL,
+    value   TEXT NOT NULL DEFAULT '{}',
+    status  TEXT NOT NULL DEFAULT 'pending'
+);
+"""
+
 _INT_TO_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
 
@@ -104,6 +135,9 @@ class HabitStore:
         self.db.ensure_schema(_HABITS_DDL)
         self.db.ensure_schema(_HABIT_NOTES_DDL)
         self.db.ensure_schema(_HABIT_IDENTITIES_DDL)
+        self.db.ensure_schema(_NEGATIVE_HABITS_DDL)
+        self.db.ensure_schema(_SLIP_LOGS_DDL)
+        self.db.ensure_schema(_HABIT_SUGGESTIONS_DDL)
         self._migrate_cue_column()
         self._migrate_identities_to_join()
 
@@ -296,6 +330,123 @@ class HabitStore:
             {"date": r["date"], "habit": r["habit"], "note": r["note"]} for r in rows
         ]
 
+    # --- CRUD: edit name / schedule / section ---
+
+    def rename(self, name: str, new_name: str) -> str | None:
+        """Rename a habit. Returns old display name or None if not found."""
+        return self._set_field_by_name("name", name, new_name.strip())
+
+    def set_days_by_name(self, name: str, days: list[int] | None) -> str | None:
+        """Update a habit's schedule. Returns display name or None."""
+        return self._set_field_by_name("days", name, _days_to_csv(days))
+
+    def set_section_by_name(self, name: str, section: str) -> str | None:
+        """Move a habit to a different section. Returns display name or None."""
+        return self._set_field_by_name("section", name, section.strip())
+
+    # --- Negative habits (things to track slipping on) ---
+
+    def add_negative_habit(self, name: str) -> None:
+        nxt = self.db.query(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS p FROM negative_habits"
+        )[0]["p"]
+        self.db.execute(
+            "INSERT OR IGNORE INTO negative_habits (name, position) VALUES (?, ?)",
+            (name.strip(), nxt),
+        )
+
+    def list_negative_habits(self) -> list[dict]:
+        rows = self.db.query(
+            "SELECT id, name FROM negative_habits ORDER BY position, id"
+        )
+        return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+    def remove_negative_habit(self, habit_id: int) -> None:
+        self.db.execute("DELETE FROM negative_habits WHERE id = ?", (habit_id,))
+
+    # --- Slip logs (negative habits — no judgement) ---
+
+    def log_slip(self, habit: str, note: str = "") -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        self.db.execute(
+            "INSERT INTO slip_logs (ts, date, habit, note) VALUES (?, ?, ?, ?)",
+            (
+                now.isoformat(timespec="seconds"),
+                now.date().isoformat(),
+                habit.strip(),
+                note.strip(),
+            ),
+        )
+
+    def recent_slips(self, habit: str | None = None, days: int = 30) -> list[dict]:
+        from datetime import date as _date, timedelta as _td
+
+        start = (_date.today() - _td(days=days)).isoformat()
+        if habit:
+            rows = self.db.query(
+                "SELECT date, habit, note FROM slip_logs "
+                "WHERE date >= ? AND LOWER(habit) = LOWER(?) ORDER BY id",
+                (start, habit.strip()),
+            )
+        else:
+            rows = self.db.query(
+                "SELECT date, habit, note FROM slip_logs WHERE date >= ? ORDER BY id",
+                (start,),
+            )
+        return [
+            {"date": r["date"], "habit": r["habit"], "note": r["note"]} for r in rows
+        ]
+
+    # --- Weekly suggestions ---
+
+    def save_suggestion(
+        self, habit: str, display: str, action: str, value: dict
+    ) -> int:
+        import json
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        self.db.execute(
+            "INSERT INTO habit_suggestions (ts, habit, display, action, value) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                now.isoformat(timespec="seconds"),
+                habit,
+                display,
+                action,
+                json.dumps(value),
+            ),
+        )
+        return self.db.query("SELECT last_insert_rowid() AS id")[0]["id"]
+
+    def get_suggestion(self, suggestion_id: int) -> dict | None:
+        import json
+
+        rows = self.db.query(
+            "SELECT * FROM habit_suggestions WHERE id = ?", (suggestion_id,)
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "id": r["id"],
+            "habit": r["habit"],
+            "display": r["display"],
+            "action": r["action"],
+            "value": json.loads(r["value"]),
+            "status": r["status"],
+        }
+
+    def update_suggestion_status(self, suggestion_id: int, status: str) -> None:
+        self.db.execute(
+            "UPDATE habit_suggestions SET status = ? WHERE id = ?",
+            (status, suggestion_id),
+        )
+
 
 async def match_habit(content: str, db) -> str | None:
     """Resolve a free-text habit log to the canonical habit name it satisfies, or None.
@@ -348,6 +499,61 @@ async def match_habit(content: str, db) -> str | None:
     return None
 
 
+async def match_slip(content: str, db) -> str | None:
+    """Resolve free-text slip to a canonical negative habit name, or None.
+
+    Exact match first (no model call), then LLM semantic match so
+    'slept in', 'woke up late', 'got up at 10' all resolve to 'Late wake'.
+    Returns None when there are no negative habits defined or nothing matches.
+    """
+    rows = db.query("SELECT name FROM negative_habits ORDER BY position, id")
+    names = [r["name"] for r in rows]
+    if not names:
+        return None
+    by_lower = {n.strip().lower(): n for n in names}
+    if content.strip().lower() in by_lower:
+        return by_lower[content.strip().lower()]
+
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=64,
+        tools=[
+            {
+                "name": "match_slip",
+                "description": "Pick which negative habit a free-text slip describes, or 'none'.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "habit": {
+                            "type": "string",
+                            "enum": [*names, "none"],
+                            "description": "The negative habit this slip describes, or 'none'.",
+                        },
+                    },
+                    "required": ["habit"],
+                },
+            }
+        ],
+        tool_choice={"type": "tool", "name": "match_slip"},
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Negative habits: {names}\n"
+                    f"Slip description: {content!r}\n"
+                    "Which negative habit does this describe?"
+                ),
+            }
+        ],
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            choice = block.input.get("habit")
+            return None if choice in (None, "none") else choice
+    return None
+
+
 class HabitHandlers:
     def __init__(
         self, bot: Bot, logs: Logs, context: Context, allowed_user: int, planner=None
@@ -369,24 +575,46 @@ class HabitHandlers:
                 "trigger": "cron",
                 "kwargs": {"hour": 23, "minute": 30},
             },
+            {
+                "id": "habit_weekly_suggestions",
+                "func": self.weekly_habit_suggestions,
+                "trigger": "cron",
+                "kwargs": {"day_of_week": "sun", "hour": 9, "minute": 0},
+            },
         ]
 
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))
         app.add_handler(CommandHandler("h", self.cmd_habits))
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
+        app.add_handler(CommandHandler("edithabit", self.cmd_edit_habit))
         app.add_handler(CommandHandler("habitcue", self.cmd_habit_cue))
         app.add_handler(CommandHandler("habitnote", self.cmd_habit_note))
         app.add_handler(CommandHandler("identity", self.cmd_identity))
         app.add_handler(CommandHandler("habitstrategy", self.cmd_habit_strategy))
+        app.add_handler(
+            CommandHandler("weeklyhabits", self.cmd_weekly_habit_suggestions)
+        )
         app.add_handler(CommandHandler("managehabits", self.cmd_manage))
         app.add_handler(CommandHandler("habitcheck", self.cmd_habit_check))
+        app.add_handler(CommandHandler("addslip", self.cmd_add_slip))
+        app.add_handler(CommandHandler("manageslips", self.cmd_manage_slips))
+        app.add_handler(CommandHandler("slip", self.cmd_slip))
+        app.add_handler(CommandHandler("slips", self.cmd_slips))
+        app.add_handler(
+            CallbackQueryHandler(self.handle_manage_slips, pattern="^hbsl_del:")
+        )
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^hb_done:"))
         app.add_handler(
             CallbackQueryHandler(self.handle_manage, pattern="^hb_(del|on|off):")
         )
         app.add_handler(
             CallbackQueryHandler(self.handle_eod, pattern="^hbq_(done|miss):")
+        )
+        app.add_handler(
+            CallbackQueryHandler(
+                self.handle_suggestion, pattern="^hbs_(accept|reject):"
+            )
         )
 
     # --- Trackable capability ---
@@ -506,9 +734,9 @@ class HabitHandlers:
 
     # --- End-of-day check-in ---
 
-    def _eod_message(self, for_date=None) -> tuple[str | None, InlineKeyboardMarkup | None]:
-        """Prompt for habits due on `for_date` (defaults to today) that have neither a
-        done nor a missed log yet. Returns (None, None) when nothing is pending."""
+    def _pending_today_habits(self) -> list[dict]:
+        """Habit rows due today that have neither a done nor a missed log yet.
+        The shared core of the end-of-day check and the /status snapshot."""
         from datetime import date as _date
 
         target = for_date or _date.today()
@@ -535,7 +763,21 @@ class HabitHandlers:
             h = self._resolve_logged_to_habit(logged, all_visible)
             if h:
                 resolved_ids.add(h["id"])
-        pending = [h for h in all_visible if h["id"] not in resolved_ids]
+        return [h for h in all_visible if h["id"] not in resolved_ids]
+
+    def pending_today(self) -> list[str]:
+        """Display names of today's habits not yet logged done or missed — the
+        'open habits' the /status snapshot lists. Empty list means all accounted
+        for. Does not consider Shabbat; the caller suppresses it then."""
+        return [
+            self.context.habit_display_name(h["name"])
+            for h in self._pending_today_habits()
+        ]
+
+    def _eod_message(self) -> tuple[str | None, InlineKeyboardMarkup | None]:
+        """Prompt for habits due today that have neither a done nor a missed log yet.
+        Returns (None, None) when nothing is pending."""
+        pending = self._pending_today_habits()
         if not pending:
             return None, None
 
@@ -760,6 +1002,132 @@ class HabitHandlers:
             f"➕ Added habit: <b>{html.escape(raw)}</b>", parse_mode="HTML"
         )
 
+    async def cmd_edit_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/edithabit <name>: field=value — edit name, days, or section.
+
+        /edithabit Stretch: name=Quick stretch (2 min)
+        /edithabit Stretch: days=mon,wed,fri
+        /edithabit Stretch: days=daily
+        /edithabit Stretch: section=Morning
+        /edithabit Stretch   (no colon — shows current state)
+        """
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if not raw:
+            await update.message.reply_text(
+                "Usage: <code>/edithabit &lt;name&gt;: field=value</code>\n"
+                "Fields: <code>name</code>, <code>days</code> (e.g. mon,wed,fri or daily), "
+                "<code>section</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if ":" not in raw:
+            target = _match_key(raw)
+            habit = None
+            for h in self.store.list_habits(tracked_only=False):
+                disp = self.context.habit_display_name(h["name"])
+                if _match_key(disp) == target or _match_key(h["name"]) == target:
+                    habit = h
+                    break
+            if not habit:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(raw)}”."
+                )
+                return
+            disp = self.context.habit_display_name(habit["name"])
+            days_str = (
+                ", ".join(_INT_TO_ABBR[d] for d in sorted(habit["days"]))
+                if habit["days"]
+                else "daily"
+            )
+            await update.message.reply_text(
+                f"<b>{html.escape(disp)}</b>\n"
+                f"Section: {html.escape(habit['section'])}\n"
+                f"Days: {days_str}\n"
+                f"Tracked: {'yes' if habit['tracked'] else 'no'}\n"
+                f"Cue: {html.escape(habit['cue'] or '—')}\n\n"
+                f"To edit: <code>/edithabit {html.escape(raw)}: name=New name</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        name, rest = raw.split(":", 1)
+        name = name.strip()
+        rest = rest.strip()
+        if "=" not in rest:
+            await update.message.reply_text(
+                "Use <code>field=value</code> — e.g. <code>name=New name</code>, "
+                "<code>days=mon,wed,fri</code>, <code>section=Morning</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        field, value = rest.split("=", 1)
+        field = field.strip().lower()
+        value = value.strip()
+
+        if field == "name":
+            matched = self.store.rename(name, value)
+            if matched:
+                await update.message.reply_text(
+                    f"✏️ <b>{html.escape(matched)}</b> → <b>{html.escape(value)}</b>",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(name)}”."
+                )
+
+        elif field == "days":
+            if value.lower() == "daily":
+                days = None
+            else:
+                days = [
+                    Context._DAY_NAMES[d.strip()]
+                    for d in value.split(",")
+                    if d.strip() in Context._DAY_NAMES
+                ] or None
+                if days is None:
+                    await update.message.reply_text(
+                        "Unrecognised days. Use: mon, tue, wed, thu, fri, sat, sun or 'daily'."
+                    )
+                    return
+            matched = self.store.set_days_by_name(name, days)
+            if matched:
+                days_str = (
+                    ", ".join(_INT_TO_ABBR[d] for d in sorted(days))
+                    if days
+                    else "daily"
+                )
+                await update.message.reply_text(
+                    f"📅 <b>{html.escape(matched)}</b> → {days_str}",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(name)}”."
+                )
+
+        elif field == "section":
+            matched = self.store.set_section_by_name(name, value)
+            if matched:
+                await update.message.reply_text(
+                    f"📂 <b>{html.escape(matched)}</b> → section: {html.escape(value)}",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"No habit matching “{html.escape(name)}”."
+                )
+
+        else:
+            await update.message.reply_text(
+                f"Unknown field <code>{html.escape(field)}</code>. Use: name, days, or section.",
+                parse_mode="HTML",
+            )
+
     async def cmd_habit_cue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/habitcue <habit>: <cue> — set an implementation intention / stack anchor.
 
@@ -896,9 +1264,282 @@ class HabitHandlers:
         await update.message.reply_text("🧭 Strategizing…")
         try:
             text = await self.planner.habit_strategy(strugglers)
-            await update.message.reply_text(text, parse_mode="HTML")
+            await update.message.reply_text(
+                f"<blockquote expandable>{text}</blockquote>", parse_mode="HTML"
+            )
         except Exception as e:
             await update.message.reply_text(f"Strategy failed: {e}")
+
+    async def cmd_add_slip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/addslip <name> — define a negative habit to track (e.g. /addslip Late wake)."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if not raw:
+            await update.message.reply_text(
+                "Usage: <code>/addslip Late wake</code>", parse_mode="HTML"
+            )
+            return
+        self.store.add_negative_habit(raw)
+        await update.message.reply_text(
+            f"➕ Tracking: <b>{html.escape(raw)}</b>\n"
+            f"Log with <code>/slip {html.escape(raw)}</code> or any close paraphrase.",
+            parse_mode="HTML",
+        )
+
+    def _manage_slips_message(self) -> tuple[str, InlineKeyboardMarkup]:
+        habits = self.store.list_negative_habits()
+        if not habits:
+            return (
+                "No negative habits defined yet. Add one with /addslip.",
+                InlineKeyboardMarkup([]),
+            )
+        rows = []
+        for h in habits:
+            rows.append(
+                [
+                    InlineKeyboardButton(h["name"], callback_data="noop"),
+                    InlineKeyboardButton("🗑", callback_data=f"hbsl_del:{h['id']}"),
+                ]
+            )
+        return "⚙️ <b>Negative habits</b> — delete:", InlineKeyboardMarkup(rows)
+
+    async def cmd_manage_slips(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """/manageslips — delete negative habits from the tracking list."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        text, keyboard = self._manage_slips_message()
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_manage_slips(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        query = update.callback_query
+        await safe_answer(query)
+        _, hid = query.data.split(":", 1)
+        self.store.remove_negative_habit(int(hid))
+        text, keyboard = self._manage_slips_message()
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def cmd_slip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/slip <behavior> [: note] — log a slip; resolves to a tracked negative habit if defined."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if not raw:
+            defined = self.store.list_negative_habits()
+            if defined:
+                names = ", ".join(h["name"] for h in defined)
+                await update.message.reply_text(
+                    f"Usage: <code>/slip Late wake</code> or "
+                    f"<code>/slip junk food: stress</code>\n"
+                    f"Tracking: {html.escape(names)}",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    "Usage: <code>/slip Late wake</code>\n"
+                    "Define what to track first with <code>/addslip Late wake</code>.",
+                    parse_mode="HTML",
+                )
+            return
+        habit_raw, note = (raw.split(":", 1) + [""])[:2]
+        habit_raw = habit_raw.strip()
+        note = note.strip()
+        canonical = await match_slip(habit_raw, self.logs.db)
+        stored_name = canonical if canonical else habit_raw
+        self.store.log_slip(stored_name, note)
+        if canonical and canonical.lower() != habit_raw.lower():
+            await update.message.reply_text(
+                f"Noted as <b>{html.escape(canonical)}</b>. "
+                "No judgement — awareness is the first step.",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                "Noted. No judgement — awareness is the first step."
+            )
+
+    async def cmd_slips(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/slips — summary counts by behavior. /slips <name> — detail for one."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+
+        if raw:
+            slips = self.store.recent_slips(habit=raw, days=30)
+            if not slips:
+                canonical = await match_slip(raw, self.logs.db)
+                if canonical:
+                    slips = self.store.recent_slips(habit=canonical, days=30)
+                    raw = canonical
+            if not slips:
+                await update.message.reply_text(
+                    f'No slips for "{html.escape(raw)}" in the last 30 days.'
+                )
+                return
+            lines = [f"📋 <b>{html.escape(raw)}</b> — last 30 days\n"]
+            for s in slips[-20:]:
+                note_part = (
+                    f" — <tg-spoiler>{html.escape(s['note'])}</tg-spoiler>"
+                    if s["note"]
+                    else ""
+                )
+                lines.append(f"<code>{s['date']}</code>{note_part}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
+        all_slips = self.store.recent_slips(days=30)
+        if not all_slips:
+            await update.message.reply_text("No slips logged in the last 30 days.")
+            return
+        counts: dict[str, dict] = {}
+        for s in all_slips:
+            name = s["habit"]
+            if name not in counts:
+                counts[name] = {"count": 0, "last": s["date"]}
+            counts[name]["count"] += 1
+            counts[name]["last"] = max(counts[name]["last"], s["date"])
+        lines = ["📋 <b>Slips — last 30 days</b>\n"]
+        for name, stat in sorted(counts.items(), key=lambda x: -x[1]["count"]):
+            lines.append(
+                f"{html.escape(name)} — {stat['count']}× (last: {stat['last']})"
+            )
+        lines.append("\n<i>/slips &lt;name&gt; for detail</i>")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def weekly_habit_suggestions(self) -> None:
+        """Sunday 09:00 — send Atomic Habits suggestions for struggling habits."""
+        from habit_tracker import struggling_habits
+
+        strugglers = struggling_habits(self.logs)
+        if not strugglers or not self.planner:
+            return
+        try:
+            suggestions = await self.planner.habit_weekly_suggestions(strugglers)
+        except Exception:
+            return
+        _ACTION_LABEL = {
+            "set_cue": "✅ Add cue",
+            "set_days": "✅ Adjust schedule",
+            "rename": "✅ Rename habit",
+            "archive": "✅ Archive for now",
+        }
+        for s in suggestions:
+            habit = s.get("habit", "")
+            display = s.get("display", "")
+            action = s.get("action", "")
+            value = s.get("value", {})
+            if not habit or not display or not action:
+                continue
+            sid = self.store.save_suggestion(habit, display, action, value)
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            _ACTION_LABEL.get(action, "✅ Apply"),
+                            callback_data=f"hbs_accept:{sid}",
+                        ),
+                        InlineKeyboardButton("Skip", callback_data=f"hbs_reject:{sid}"),
+                    ]
+                ]
+            )
+            await self.bot.send_message(
+                chat_id=self.allowed_user,
+                text=f"💡 <b>Weekly habit tip</b>\n\n<blockquote>{html.escape(display)}</blockquote>",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+    async def cmd_weekly_habit_suggestions(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Manual trigger for the weekly habit suggestions (for testing / on-demand)."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        await update.message.reply_text("🔍 Checking for struggling habits…")
+        await self.weekly_habit_suggestions()
+
+    async def handle_suggestion(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        query = update.callback_query
+        await safe_answer(query)
+        action_str, sid_str = query.data.split(":", 1)
+        suggestion_id = int(sid_str)
+        sugg = self.store.get_suggestion(suggestion_id)
+        if not sugg:
+            await query.edit_message_text("Suggestion not found.")
+            return
+        if sugg["status"] != "pending":
+            status_word = "applied ✅" if sugg["status"] == "accepted" else "skipped"
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n<i>(Already {status_word}.)</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        if action_str == "hbs_reject":
+            self.store.update_suggestion_status(suggestion_id, "rejected")
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n<i>Skipped.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        # Accept — apply the mechanical change
+        habit = sugg["habit"]
+        action = sugg["action"]
+        val = sugg["value"]
+        try:
+            if action == "set_cue":
+                cue = val.get("cue", "")
+                matched = self.store.set_cue_by_name(habit, cue)
+                result = (
+                    f"✅ Cue set for <b>{html.escape(matched or habit)}</b>: "
+                    f"<i>{html.escape(cue)}</i>"
+                )
+            elif action == "set_days":
+                days = val.get("days")
+                matched = self.store.set_days_by_name(habit, days)
+                days_str = (
+                    ", ".join(_INT_TO_ABBR[d] for d in sorted(days))
+                    if days
+                    else "daily"
+                )
+                result = f"✅ Schedule updated for <b>{html.escape(matched or habit)}</b>: {days_str}"
+            elif action == "rename":
+                new_name = val.get("name", "")
+                matched = self.store.rename(habit, new_name)
+                result = (
+                    f"✅ Renamed <b>{html.escape(matched or habit)}</b> → "
+                    f"<b>{html.escape(new_name)}</b>"
+                )
+            elif action == "archive":
+                h = self.store._habit_by_name(habit)
+                if h:
+                    self.store.set_tracked(h["id"], False)
+                    result = (
+                        f"✅ <b>{html.escape(habit)}</b> archived — won't show in daily "
+                        "checks but history is kept."
+                    )
+                else:
+                    result = f"Habit not found: {html.escape(habit)}"
+            else:
+                result = "Unknown action type."
+
+            self.store.update_suggestion_status(suggestion_id, "accepted")
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n{result}",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n<i>Failed to apply: {html.escape(str(e))}</i>",
+                parse_mode="HTML",
+            )
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []

@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from agenda_handlers import AgendaHandlers
 from bot_constants import STATUS_ICONS
 from agenda import Agenda
+from status_handlers import StatusHandlers
+from types import SimpleNamespace
 
 _status_message = AgendaHandlers._status_message
 
@@ -81,3 +83,58 @@ def test_status_icons_all_present():
     assert "done" in STATUS_ICONS
     assert "missed" in STATUS_ICONS
     assert "open" in STATUS_ICONS
+
+
+# --- /status snapshot assembly (StatusHandlers section rendering) ---
+
+
+def _status_handlers(*, pending, agenda_status, shabbat=False):
+    """A StatusHandlers wired with fakes for the synchronous section methods.
+    bot/gcal/planner aren't touched by the section renderers, so they're None."""
+    sh = StatusHandlers(
+        bot=None,
+        agenda_feature=SimpleNamespace(status_text=lambda: agenda_status),
+        gcal=None,
+        planner=None,
+        shabbat=SimpleNamespace(quiet_now=lambda: shabbat),
+        allowed_user=1,
+    )
+    sh.habits = SimpleNamespace(pending_today=lambda: pending)
+    return sh
+
+
+def test_habits_section_lists_open_habits():
+    sh = _status_handlers(pending=["Shacharit", "Strength"], agenda_status=None)
+    section = sh._habits_section()
+    assert "Open Habits (2)" in section
+    assert "Shacharit" in section
+    assert "Strength" in section
+
+
+def test_habits_section_all_done():
+    sh = _status_handlers(pending=[], agenda_status=None)
+    assert "accounted for" in sh._habits_section()
+
+
+def test_habits_section_shabbat_suppressed():
+    sh = _status_handlers(pending=["Shacharit"], agenda_status=None, shabbat=True)
+    section = sh._habits_section()
+    assert "Shabbat" in section
+    assert "Shacharit" not in section
+
+
+def test_agenda_section_empty_prompts_plan():
+    sh = _status_handlers(pending=[], agenda_status=None)
+    assert "/plan" in sh._agenda_section()
+
+
+def test_snapshot_message_combines_all_sections():
+    sh = _status_handlers(
+        pending=["Walk"], agenda_status="Agenda Status:\n1. ⌛ Ship it"
+    )
+    msg = sh._snapshot_message("• 15:00 — Dentist")
+    assert "Status" in msg  # header
+    assert "Open Habits" in msg
+    assert "Walk" in msg
+    assert "Ship it" in msg
+    assert "Dentist" in msg

@@ -304,6 +304,9 @@ class Planner:
             user_content += f"{history}\n\n"
         if metrics_text:
             user_content += f"{metrics_text}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=days)
+        if food_text:
+            user_content += f"{food_text}\n\n"
         tod_text = self.logs.format_time_of_day_for_prompt(days=max(days, 14))
         if tod_text:
             user_content += f"{tod_text}\n\n"
@@ -444,6 +447,9 @@ class Planner:
         weight_synopsis = await self.weight_synopsis_cached()
         if weight_synopsis:
             user_content += f"Weight progress: {weight_synopsis}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=7, end_date=d)
+        if food_text:
+            user_content += f"{food_text}\n\n"
         user_content += "Generate today's end-of-day digest."
 
         response = await client.messages.create(
@@ -532,6 +538,48 @@ class Planner:
         )
         return response.content[0].text.strip()
 
+    async def day_synopsis(self, target_date: date | None = None) -> str:
+        """A 2–3 sentence read on how the day is going SO FAR — for the /status
+        snapshot the user pulls during the day. Deliberately lighter than the
+        daily digest: present-tense, factual, no end-of-day verdict and no
+        penalising of things there's still time to do."""
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        d = target_date or date.today()
+        now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        user_content = f"Date: {d} ({day_type()}). Current time: {now_il.strftime('%H:%M')} Israel time.\n"
+        agenda_text = self.logs.read_agenda_as_text(d)
+        if agenda_text:
+            user_content += f"\nAgenda (planned + status):\n{agenda_text}\n"
+        user_content += f"\nLog so far today:\n{self.logs.read_day_as_text(d)}\n\n"
+        user_content += "Give a brief status read on how today is going so far."
+
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=200,
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You are a personal ops assistant giving a MID-DAY status read — a quick "
+                        "snapshot the user pulls while the day is still in progress, not an end-of-day review.\n\n"
+                        "Write 2–3 plain sentences on how today is going so far. Present tense. Lead with what has "
+                        "actually happened (what's checked off, what's logged); note what's still open only as "
+                        "remaining, never as a miss. The day is NOT over: nothing flexible is failed while there is "
+                        "still time to do it. Do not penalise, score, moralize, therapize, or hand out directives. "
+                        "No coda, no pep-talk, no quote. If little is logged yet, say so plainly. Be warm and terse."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": self._context_block(),
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return response.content[0].text.strip()
+
     async def feedback(self, text: str) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
 
@@ -542,6 +590,9 @@ class Planner:
         metrics_text = self.logs.format_metrics_for_prompt(days=30)
         if metrics_text:
             data_block += f"{metrics_text}\n\n"
+        food_text = self.logs.format_food_for_prompt(days=30)
+        if food_text:
+            data_block += f"{food_text}\n\n"
         tod_text = self.logs.format_time_of_day_for_prompt(days=30)
         if tod_text:
             data_block += f"{tod_text}\n\n"
@@ -613,6 +664,105 @@ class Planner:
             messages=[{"role": "user", "content": json.dumps(strugglers)}],
         )
         return response.content[0].text.strip()
+
+    async def habit_weekly_suggestions(self, strugglers: list[dict]) -> list[dict]:
+        """Structured Atomic Habits suggestions for struggling habits — one per habit.
+
+        Returns a list of {habit, display, action, value} dicts. The handler stores
+        them in the DB and presents each with Accept/Reject buttons that apply the change.
+        action: "set_cue" | "set_days" | "rename" | "archive"
+        value: dict payload — set_cue→{"cue":str}, set_days→{"days":[int,...]},
+               rename→{"name":str}, archive→{}
+        """
+        client = anthropic.AsyncAnthropic(max_retries=4)
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=800,
+            tools=[
+                {
+                    "name": "habit_suggestions",
+                    "description": "Structured Atomic Habits suggestions for struggling habits.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "suggestions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "habit": {
+                                            "type": "string",
+                                            "description": "Exact habit name from the input.",
+                                        },
+                                        "display": {
+                                            "type": "string",
+                                            "description": (
+                                                "2-3 sentences for the user: the pattern "
+                                                "(e.g. '4/14 days'), the likely friction, "
+                                                "and the specific fix being proposed."
+                                            ),
+                                        },
+                                        "action": {
+                                            "type": "string",
+                                            "enum": [
+                                                "set_cue",
+                                                "set_days",
+                                                "rename",
+                                                "archive",
+                                            ],
+                                            "description": (
+                                                "set_cue: add/improve the trigger. "
+                                                "set_days: reduce the schedule. "
+                                                "rename: simplify to a smaller version. "
+                                                "archive: park it for now."
+                                            ),
+                                        },
+                                        "value": {
+                                            "type": "object",
+                                            "description": (
+                                                "Change payload: "
+                                                'set_cue→{"cue":str}, '
+                                                'set_days→{"days":[int,...]}, '
+                                                'rename→{"name":str}, '
+                                                "archive→{}"
+                                            ),
+                                        },
+                                    },
+                                    "required": ["habit", "display", "action", "value"],
+                                },
+                            }
+                        },
+                        "required": ["suggestions"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "habit_suggestions"},
+            system=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You're an Atomic Habits coach. For each struggling habit, produce one "
+                        "structured suggestion using James Clear's Four Laws: Obvious (clear cue), "
+                        "Attractive, Easy (two-minute rule), Satisfying.\n\n"
+                        "For each habit, pick ONE mechanical change that would most unblock it:\n"
+                        "- set_cue: add or improve the implementation intention "
+                        "('After [X], I will [habit]') — prefer this, it's highest-leverage\n"
+                        "- set_days: reduce the schedule (e.g. 7→3 days/week) to make success easier\n"
+                        "- rename: shrink to a two-minute version ('60 min workout' → "
+                        "'Put on gym clothes')\n"
+                        "- archive: park it — too much friction, revisit later\n\n"
+                        "days are 0=Mon,1=Tue,2=Wed,3=Thu,4=Fri,5=Sat,6=Sun.\n\n"
+                        "No shame, no moralizing, no lectures. Be concrete and small."
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": json.dumps(strugglers)}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                return block.input.get("suggestions", [])
+        return []
 
     async def weight_synopsis_cached(self) -> str | None:
         """The weight synopsis, generated once per weigh-in and reused thereafter.

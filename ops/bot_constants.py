@@ -26,6 +26,8 @@ PREFIXES = {
     "excused:": "#skip",
     "values:": "#values",
     "value:": "#values",
+    "discrete:": "#discrete",
+    "private:": "#discrete",
 }
 
 ENCOURAGEMENTS = [
@@ -53,7 +55,7 @@ HELP_SECTIONS = {
         "📅 Planning & Agenda",
         """/plan — generate today's agenda (also daily at 06:00)
 /agenda — open items with ✅ Done / ❌ Missed buttons
-/status — all items with their status
+/status — day snapshot: open habits, agenda, what's left on the calendar, and a read on how it's going
 /queue — queued future agenda items
 <code>schedule for Sunday: &lt;item&gt;</code> — add to a future day
 <code>done / missed &lt;N or name&gt;</code> — mark an item
@@ -73,10 +75,18 @@ HELP_SECTIONS = {
     "habits": (
         "🔥 Habits & Routines",
         """/habits — checklist with streaks 🔥, chain 🟩⬜, ⚠️ flags
+/addhabit — add a new habit (e.g. <code>/addhabit Stretch [mon,wed,fri]</code>)
+/edithabit — edit name, days, or section (e.g. <code>/edithabit Stretch: days=mon,wed,fri</code>)
+/managehabits — toggle tracking or delete habits
 /habitcue — set a habit's cue (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
 /identity — habits grouped by identities they vote for; a habit can vote for several (<code>/identity Strength: healthy, disciplined</code>; <code>-</code> to remove)
-/habitstrategy — a 4-Laws plan for habits you keep missing
+/habitstrategy — a 4-Laws plan for habits you keep missing (on demand)
+/weeklyhabits — run weekly habit suggestions now (also fires automatically Sunday 09:00)
 /habitnote — note on a habit (no args shows recent notes)
+/addslip — define a negative habit to track (e.g. <code>/addslip Late wake</code>)
+/slip — log a slip; resolves to your tracked list (e.g. <code>/slip slept in: stress</code>)
+/slips — summary counts by behavior; <code>/slips Late wake</code> for detail
+/manageslips — delete from the negative habit list
 /routines — habit-stack routines (<code>/addroutine</code>, <code>/routinestep</code> to edit)
 <code>habit: &lt;name&gt;</code> — log a completed habit
 <code>/backdate &lt;when&gt; &lt;entry&gt;</code> — log for a past day
@@ -90,6 +100,7 @@ HELP_SECTIONS = {
 /metrics — tracked metrics with trend (last 14 days)
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals
+/undofood — delete the most recently logged food entry today
 /grocery — shared grocery checklist
 /backlog — someday items, grouped by domain
 /logs — today's log entries
