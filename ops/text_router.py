@@ -1088,7 +1088,12 @@ class TextRouter:
             return
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
-        tag, content = await self._classify_entry_with_llm(text)
+        try:
+            tag, content = await self._classify_entry_with_llm(text)
+        except Exception:
+            # LLM unavailable or any other failure — fall back to prefix-only so the
+            # message is never lost. The user sees the correct (if less rich) tag.
+            tag, content = self._classify_entry(text)
 
         # Dispatch plugin-owned tags to the plugin that declared them. Each plugin
         # optionally implements handle_classified_text(tag, content, reply) → bool.
