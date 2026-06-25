@@ -27,6 +27,7 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
             services.context,
             services.allowed_user,
             services.planner,
+            quiet_window=getattr(services, "quiet_window", None),
         ),
         FoodHandlers(bot, services.logs, services.allowed_user),
         RoutineHandlers(bot, services.logs, services.context, services.allowed_user),

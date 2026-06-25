@@ -11,6 +11,7 @@ import html
 import re
 from datetime import date, timedelta
 
+import anthropic
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -66,6 +67,7 @@ class FoodHandlers:
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("food", self.cmd_food))
         app.add_handler(CommandHandler("foodlog", self.cmd_food))
+        app.add_handler(CommandHandler("foodaudit", self.cmd_food_audit))
 
     # --- Trackable capability ---
 
@@ -106,4 +108,79 @@ class FoodHandlers:
                 f"<td>{_fmt(totals['fat_g'])}g</td>"
                 f"<td>{_fmt(totals['carbs_g'])}g</td></tr></table>"
             )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def cmd_food_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/foodaudit — instrument food logging patterns: compare log rates for
+        healthy vs indulgent meals to separate friction from avoidance."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        await update.message.reply_text("🔍 Analysing food log patterns…")
+
+        days = 30
+        start = date.today() - timedelta(days=days - 1)
+        rows = self.logs.db.entries_for_range(start, date.today())
+        food_entries = [r for r in rows if r["tag"] == "food"]
+
+        if len(food_entries) < 3:
+            await update.message.reply_text(
+                "Not enough food entries to audit (need at least 3). Keep logging!"
+            )
+            return
+
+        # Ask Haiku to classify each entry as healthy/indulgent/mixed.
+        entries_text = "\n".join(
+            f"{r['date']} {r['ts'][11:16]}: {r['content']}" for r in food_entries
+        )
+        client = anthropic.AsyncAnthropic()
+        try:
+            resp = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=(
+                    "You are a nutrition analyst. Classify each food log entry as one of: "
+                    "healthy, indulgent, or mixed. Return JSON: "
+                    '{"classifications": [{"date": "YYYY-MM-DD", "time": "HH:MM", '
+                    '"label": "healthy|indulgent|mixed"}]}'
+                ),
+                messages=[{"role": "user", "content": entries_text}],
+            )
+            import json
+
+            data = json.loads(resp.content[0].text)
+            classifications = data.get("classifications", [])
+        except Exception as e:
+            await update.message.reply_text(f"Audit failed: {e}")
+            return
+
+        counts: dict[str, int] = {"healthy": 0, "indulgent": 0, "mixed": 0}
+        for c in classifications:
+            label = c.get("label", "mixed")
+            counts[label] = counts.get(label, 0) + 1
+
+        total = sum(counts.values())
+        if total == 0:
+            await update.message.reply_text("Classification returned no results.")
+            return
+
+        lines = [
+            f"🍽 <b>Food log audit — last {days} days</b>",
+            f"Total entries: <b>{len(food_entries)}</b>",
+            "",
+            f"🥗 Healthy:   <b>{counts['healthy']}</b> ({100*counts['healthy']//total}%)",
+            f"🍰 Indulgent: <b>{counts['indulgent']}</b> ({100*counts['indulgent']//total}%)",
+            f"🍱 Mixed:     <b>{counts['mixed']}</b> ({100*counts['mixed']//total}%)",
+            "",
+        ]
+
+        days_with_food = len({r["date"] for r in food_entries})
+        lines.append(
+            f"Logged on <b>{days_with_food}/{days}</b> days "
+            f"({100*days_with_food//days}% coverage)."
+        )
+        lines.append("")
+        lines.append(
+            "<i>If indulgent meals are under-represented vs your actual eating, "
+            "that's avoidance. If the ratio looks right, logging friction is the issue.</i>"
+        )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
