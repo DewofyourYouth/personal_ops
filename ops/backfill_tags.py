@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from classifier import _is_junk  # noqa: E402 (reuse the same junk predicate)
+from classifier import _MOJIBAKE_RE, _NUDGE_PREFIX, _is_junk  # noqa: E402
 from db import Database  # noqa: E402
 from llm import classify_entry  # noqa: E402
 from text_router import TextRouter, _is_nutrition_breakdown  # noqa: E402
@@ -57,13 +57,16 @@ _DIRECTIVE_MARKERS = (
     "agenda laundering",
 )
 _FIRST_PERSON_FEELING = re.compile(
-    r"\bi\s+(feel|am\s+feeling|felt|care|love|hate|want|wonder|think i'?m)\b", re.IGNORECASE
+    r"\bi\s+(feel|am\s+feeling|felt|care|love|hate|want|wonder|think i'?m)\b",
+    re.IGNORECASE,
 )
 
 
 def looks_like_directive(text: str) -> bool:
     t = text.lower()
-    return any(m in t for m in _DIRECTIVE_MARKERS) and not _FIRST_PERSON_FEELING.search(t)
+    return any(m in t for m in _DIRECTIVE_MARKERS) and not _FIRST_PERSON_FEELING.search(
+        t
+    )
 
 
 async def propose_tag(content: str, source_tag: str) -> str:
@@ -116,22 +119,67 @@ def _update_jsonl(ts: str, old_tag: str, content: str, new_tag: str | None) -> b
     return changed
 
 
+def is_pure_noise(content: str) -> bool:
+    """Delete-safe noise test: the recurring nudge prompt, dismissed-reminder checkins,
+    mojibake, and truly-empty rows. Deliberately does NOT use a length heuristic — short
+    real entries ("Anki", "Yoma") are legitimate habit logs and must never be deleted."""
+    c = content.strip()
+    if not c:
+        return True
+    if c.lower() == "reminder dismissed" or c.startswith(_NUDGE_PREFIX):
+        return True
+    return bool(_MOJIBAKE_RE.search(c)) or "�" in c
+
+
+def collect_noise(db) -> list[tuple]:
+    """All entries whose content is pure noise — proposed for DELETE. No LLM, no retag."""
+    changes = []
+    for r in db.query("SELECT id, ts, tag, content FROM entries"):
+        if is_pure_noise(r["content"]):
+            changes.append((r["id"], r["ts"], r["tag"], r["content"], "DELETE"))
+    return changes
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true", help="mutate DB + JSONL (default: dry-run)")
-    ap.add_argument("--tags", default="log,values", help="comma-separated source tags to review")
+    ap.add_argument(
+        "--apply", action="store_true", help="mutate DB + JSONL (default: dry-run)"
+    )
+    ap.add_argument(
+        "--tags", default="log,values", help="comma-separated source tags to review"
+    )
+    ap.add_argument(
+        "--purge-noise",
+        action="store_true",
+        help="delete-only sweep of junk rows across ALL tags (no reclassification)",
+    )
+    ap.add_argument(
+        "--values-only",
+        action="store_true",
+        help="only apply directive/discrete moves — the load-bearing values fix",
+    )
     args = ap.parse_args()
 
     db = Database(str(DB_PATH))
-    source_tags = [t.strip() for t in args.tags.split(",")]
-    rows = [dict(r) for tag in source_tags for r in db.entries_by_tag(tag)]
-    print(f"Reviewing {len(rows)} rows tagged {source_tags}…\n")
 
-    changes = []  # (id, ts, old_tag, content, action)
-    for r in rows:
-        action = await propose_tag(r["content"], r["tag"])
-        if action != r["tag"]:
-            changes.append((r["id"], r["ts"], r["tag"], r["content"], action))
+    if args.purge_noise:
+        changes = collect_noise(db)
+        rows = changes  # for the unchanged-count print below
+    else:
+        source_tags = [t.strip() for t in args.tags.split(",")]
+        rows = [dict(r) for tag in source_tags for r in db.entries_by_tag(tag)]
+        print(f"Reviewing {len(rows)} rows tagged {source_tags}…\n")
+        changes = []  # (id, ts, old_tag, content, action)
+        for r in rows:
+            action = await propose_tag(r["content"], r["tag"])
+            if action != r["tag"]:
+                changes.append((r["id"], r["ts"], r["tag"], r["content"], action))
+        if args.values_only:
+            changes = [
+                c
+                for c in changes
+                if c[2] == "values" and c[4] in ("directive", "discrete")
+            ]
 
     summary = Counter(f"{old} → {act}" for _, _, old, _, act in changes)
     print("=== Proposed changes ===")
