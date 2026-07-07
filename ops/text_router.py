@@ -36,7 +36,7 @@ from telegram.ext import (
 )
 
 from bot_constants import PREFIXES
-from habit_handlers import match_habit
+from habit_handlers import exact_habit_match, match_habit
 from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from media import send_sticker
 from tg_common import encourage, safe_answer
@@ -71,6 +71,44 @@ _NUM_WORDS = {
 }
 
 _UNICODE_JUNK = re.compile("[​-‏‪-‮⁠-⁤﻿]+")
+
+# A "structured" nutrition entry already carries a calorie figure AND a macro breakdown
+# (e.g. "chicken bowl — 550 kcal, 40g protein"). Requiring BOTH keeps offhand mentions
+# ("burned 500 calories on my walk" — a checkin) out of #food. Used by the rules-first
+# pass to tag these #food without an LLM call.
+_KCAL_RE = re.compile(r"\d+\s*k?cal(?:ories)?\b", re.IGNORECASE)
+_MACRO_RE = re.compile(
+    r"\d+\s*g(?:rams)?\s*(?:of\s+)?(?:protein|fat|carb)", re.IGNORECASE
+)
+
+
+def _is_nutrition_breakdown(text: str) -> bool:
+    return bool(_KCAL_RE.search(text) and _MACRO_RE.search(text))
+
+
+def _parse_metric_body(rest: str) -> tuple[str, float, str, str] | None:
+    """Parse the body of a `metric(s):` entry into (key, value, unit, raw_val).
+
+    Handles key/value in either order and tolerates a filler word between the prefix
+    and the key ("yesterday's steps 7095" → steps=7095). Returns None if no numeric
+    value is present. The key is the alphabetic word adjacent to the number (the one
+    before it when present, else the one after).
+    """
+    rest = rest.strip()
+    # A unit is only the letters glued directly to the number ("92.9kg"); a word after a
+    # space ("8000 steps") is the key, not a unit.
+    num_m = re.search(r"(\d[\d.]*)([A-Za-z%]*)", rest)
+    if not num_m:
+        return None
+    value = float(num_m.group(1))
+    unit = num_m.group(2)
+    raw_val = num_m.group(0).strip()
+    before = re.findall(r"[A-Za-z_][A-Za-z_-]*", rest[: num_m.start()])
+    after = re.findall(r"[A-Za-z_][A-Za-z_-]*", rest[num_m.end() :])
+    key_word = before[-1] if before else (after[0] if after else None)
+    if key_word is None:
+        return None
+    return key_word.lower().replace("-", "_"), value, unit, raw_val
 
 
 def _normalize(text: str) -> str:
@@ -706,6 +744,10 @@ class TextRouter:
                     r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE
                 ).strip()
                 return t.lstrip("#"), content
+        # Rules-first: an entry carrying an explicit calorie + macro breakdown is
+        # unambiguously food — tag it without an LLM call.
+        if _is_nutrition_breakdown(text):
+            return "food", text
         return "log", text
 
     def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
@@ -759,16 +801,34 @@ class TextRouter:
         are included in the LLM enum and prompt without hardcoding them here.
         """
         tag, content = self._classify_entry(text)
-        if tag == "log":
-            try:
-                extra_tags = [
-                    t
-                    for plugin in self.plugins
-                    for t in getattr(plugin, "classification_tags", [])
-                ]
+        if tag != "log":
+            return tag, content
+        # Rules-first: a bare entry that exactly matches a known habit string ("daily
+        # walk") is routed to #habit deterministically — no LLM classification call.
+        try:
+            if habit := exact_habit_match(text, self.logs.db):
+                return "habit", habit
+        except Exception:
+            pass
+        # Only the genuinely ambiguous middle reaches a classifier. Which classifier is
+        # swappable via OPS_CLASSIFIER ("llm" default, or "embedding" for the local KNN
+        # prototype in classifier.py) so the two can run side-by-side without a rewrite.
+        try:
+            extra_tags = [
+                t
+                for plugin in self.plugins
+                for t in getattr(plugin, "classification_tags", [])
+            ]
+            if os.environ.get("OPS_CLASSIFIER") == "embedding":
+                from classifier import classify_entry_embedding
+
+                tag = await classify_entry_embedding(
+                    text, self.logs.db, extra_tags=extra_tags or None
+                )
+            else:
                 tag = await classify_entry(text, extra_tags=extra_tags or None)
-            except Exception:
-                pass  # keep "log" on any LLM failure
+        except Exception:
+            pass  # keep "log" on any classifier failure
         return tag, content
 
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1064,20 +1124,18 @@ class TextRouter:
             await reply(f"Added to agenda: {item_text}")
             return
 
-        # metric: <key> <value> — structured metric entry
-        metric_m = re.match(r"^metric[,:.\s]\s*([\w\-]+)\s+(\S+)", text, re.IGNORECASE)
-        if metric_m:
-            key = metric_m.group(1).lower().replace("-", "_")
-            raw_val = metric_m.group(2)
-            # If key is numeric and value looks like a word, they're reversed — swap them
-            # e.g. "metric: 8000 steps" → key=steps, value=8000
-            if re.match(r"^[\d.]+$", key) and re.match(
-                r"^[a-z_]+$", raw_val, re.IGNORECASE
-            ):
-                key, raw_val = raw_val.lower().replace("-", "_"), key
-            num_m = re.match(r"^([\d.]+)", raw_val)
-            value = float(num_m.group(1)) if num_m else raw_val
-            unit = raw_val[len(num_m.group(1)) :] if num_m else ""
+        # metric(s): <key> <value> — structured metric entry. Accepts the plural
+        # "metrics:", key/value in either order, and a filler word before the key
+        # ("metrics: yesterday's steps 7095"). This was silently dropping plural /
+        # possessive entries to #log, losing quantified readings.
+        metric_prefix = re.match(
+            r"^metrics?\b[,:.\s]+(.+)$", text, re.IGNORECASE | re.DOTALL
+        )
+        parsed_metric = (
+            _parse_metric_body(metric_prefix.group(1)) if metric_prefix else None
+        )
+        if parsed_metric:
+            key, value, unit, raw_val = parsed_metric
             try:
                 self.logs.write_metric(key, value, unit)
             except Exception as e:

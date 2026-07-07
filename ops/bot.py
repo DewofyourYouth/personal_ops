@@ -851,7 +851,9 @@ def main():
     app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
-    app.add_handler(CommandHandler({"directives", "directive", "values", "v"}, cmd_directives))
+    app.add_handler(
+        CommandHandler({"directives", "directive", "values", "v"}, cmd_directives)
+    )
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))

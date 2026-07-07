@@ -16,7 +16,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from text_router import TextRouter
+from context import Context
+from habit_handlers import HabitStore, exact_habit_match
+from logs import Logs
+from text_router import (
+    TextRouter,
+    _is_nutrition_breakdown,
+    _parse_metric_body,
+)
 
 classify = TextRouter._classify_entry
 
@@ -57,9 +64,7 @@ def test_ambiguous_insight_or_checkin_falls_through_to_llm():
     The deterministic layer only fires on explicit prefixes; a bare reflective sentence
     returns 'log' so `classify_entry` (Haiku) can decide between insight and checkin.
     """
-    tag, content = classify(
-        "I notice I feel calmer on the days I walk before shul"
-    )
+    tag, content = classify("I notice I feel calmer on the days I walk before shul")
     assert tag == "log"
     assert content == "I notice I feel calmer on the days I walk before shul"
 
@@ -73,3 +78,59 @@ def test_values_prefix_no_longer_recognized():
     tag, _ = classify("values: I want to be more patient")
     assert tag != "values"
     assert tag != "directive"
+
+
+# --- Rules-first pass: nutrition, habit, metric (no LLM call) ---
+
+
+def test_structured_nutrition_routes_to_food_without_llm():
+    """An entry with an explicit calorie + macro breakdown is tagged #food deterministically."""
+    tag, content = classify("chicken bowl — 550 kcal, 40g protein")
+    assert tag == "food"
+    assert content == "chicken bowl — 550 kcal, 40g protein"
+    # The natural-language phrasing that had been leaking into #log now routes to food.
+    assert (
+        classify(
+            "drinking a protein-enhanced coffee, 25 grams of protein and 130 calories"
+        )[0]
+        == "food"
+    )
+
+
+def test_calorie_mention_without_macros_is_not_food():
+    """A calorie figure alone (no macro grams) is not enough to force #food.
+
+    'burned 500 calories on my walk' is a checkin, not a meal — it must fall through.
+    """
+    assert classify("burned 500 calories on my walk today")[0] == "log"
+
+
+def test_metric_parser_handles_plural_and_possessive():
+    """Regression: 'metrics:' (plural) and a possessive filler word used to drop to #log,
+    silently losing the reading. Key/value in either order must also parse."""
+    assert _parse_metric_body("weight 92.9") == ("weight", 92.9, "", "92.9")
+    assert _parse_metric_body("steps 12779") == ("steps", 12779.0, "", "12779")
+    assert _parse_metric_body("8000 steps") == ("steps", 8000.0, "", "8000")
+    assert _parse_metric_body("yesterday's steps 7095") == ("steps", 7095.0, "", "7095")
+
+
+def test_metric_body_requires_a_number():
+    """No numeric value → not a parseable metric (caller falls through to normal logging)."""
+    assert _parse_metric_body("feeling good") is None
+
+
+def test_nutrition_breakdown_predicate():
+    assert _is_nutrition_breakdown("550 kcal, 40g protein")
+    assert not _is_nutrition_breakdown("I feel tired today")
+
+
+def test_exact_habit_match_is_conservative(tmp_path):
+    """A bare known-habit string resolves to the canonical name (no LLM); a sentence that
+    merely contains the words does not — avoids false positives in the classifier."""
+    store = HabitStore(Logs(str(tmp_path)).db, Context(tmp_path))
+    store.add("Daily walk")
+    db = store.db
+    assert exact_habit_match("daily walk", db) == "Daily walk"
+    assert exact_habit_match("Daily Walk", db) == "Daily walk"
+    assert exact_habit_match("I should do my daily walk later", db) is None
+    assert exact_habit_match("some unrelated note", db) is None

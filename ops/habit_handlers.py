@@ -448,6 +448,21 @@ class HabitStore:
         )
 
 
+def exact_habit_match(content: str, db) -> str | None:
+    """Resolve a log entry to a canonical habit name by exact (normalized) match only.
+
+    No model call. Used by match_habit's fast path and by the rules-first classification
+    pass, which routes bare known-habit strings ("daily walk", "take morning meds") to
+    #habit without an LLM classification call. Matching is exact-after-normalization, so
+    "brush teeth" resolves but "I should brush teeth later" does not — deliberately
+    conservative to avoid false positives in the classifier.
+    """
+    rows = db.query("SELECT name FROM habits WHERE tracked = 1")
+    names = [Context.habit_display_name(r["name"]) for r in rows]
+    by_lower = {n.strip().lower(): n for n in names}
+    return by_lower.get(content.strip().lower())
+
+
 async def match_habit(content: str, db) -> str | None:
     """Resolve a free-text habit log to the canonical habit name it satisfies, or None.
 
@@ -455,13 +470,14 @@ async def match_habit(content: str, db) -> str | None:
     habit name (no model call), else asks the cheapest model to pick semantically
     (e.g. "took a stroll" -> "Daily walk"), constrained to the actual habit names.
     """
+    exact = exact_habit_match(content, db)
+    if exact:
+        return exact  # already a habit name — no model call
+
     rows = db.query("SELECT name FROM habits WHERE tracked = 1")
     names = [Context.habit_display_name(r["name"]) for r in rows]
     if not names:
         return None
-    by_lower = {n.strip().lower(): n for n in names}
-    if content.strip().lower() in by_lower:
-        return by_lower[content.strip().lower()]  # already a habit name — no model call
 
     client = anthropic.AsyncAnthropic()
     response = await client.messages.create(
