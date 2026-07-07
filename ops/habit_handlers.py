@@ -750,9 +750,10 @@ class HabitHandlers:
 
     # --- End-of-day check-in ---
 
-    def _pending_today_habits(self) -> list[dict]:
-        """Habit rows due today that have neither a done nor a missed log yet.
-        The shared core of the end-of-day check and the /status snapshot."""
+    def _pending_today_habits(self, for_date=None) -> list[dict]:
+        """Habit rows due `for_date` (default today) that have neither a done nor a missed
+        log yet. The shared core of the end-of-day check and the /status snapshot. Passing
+        a past `for_date` powers the morning-after grace window (checking yesterday)."""
         from datetime import date as _date
 
         target = for_date or _date.today()
@@ -819,10 +820,12 @@ class HabitHandlers:
             for h in all_visible
         ]
 
-    def _eod_message(self) -> tuple[str | None, InlineKeyboardMarkup | None]:
-        """Prompt for habits due today that have neither a done nor a missed log yet.
-        Returns (None, None) when nothing is pending."""
-        pending = self._pending_today_habits()
+    def _eod_message(
+        self, for_date=None
+    ) -> tuple[str | None, InlineKeyboardMarkup | None]:
+        """Prompt for habits due `for_date` (default today) that have neither a done nor a
+        missed log yet. Returns (None, None) when nothing is pending."""
+        pending = self._pending_today_habits(for_date)
         if not pending:
             return None, None
 

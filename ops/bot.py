@@ -301,7 +301,9 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest:
         pass
     if is_checkin:
-        logs.write("checkin", "reminder dismissed")
+        # Don't log the dismissal itself — it used to write a "reminder dismissed" checkin
+        # on every nudge, polluting checkin analytics and any classifier corpus with pure
+        # noise. The real signal (mood/energy) is captured as metrics by the keyboard below.
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="👋 How are you feeling right now?",

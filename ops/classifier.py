@@ -23,7 +23,6 @@ import asyncio
 import hashlib
 import json
 import re
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -133,10 +132,10 @@ class EmbeddingClassifier:
         q = _normalize(embed_texts([text]))[0]
         sims = self.vecs @ q
         top = np.argsort(-sims)[:k]
-        votes: Counter[str] = Counter()
+        votes: dict[str, float] = {}
         for i in top:
-            votes[self.labels[i]] += float(sims[i])  # similarity-weighted vote
-        return votes.most_common(1)[0][0]
+            votes[self.labels[i]] = votes.get(self.labels[i], 0.0) + float(sims[i])
+        return max(votes, key=lambda t: votes[t])  # similarity-weighted majority
 
 
 _singleton: EmbeddingClassifier | None = None

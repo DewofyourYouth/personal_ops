@@ -203,6 +203,9 @@ class Database:
     def delete_entry(self, entry_id: int) -> None:
         self.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
 
+    def update_entry_tag(self, entry_id: int, tag: str) -> None:
+        self.execute("UPDATE entries SET tag = ? WHERE id = ?", (tag, entry_id))
+
     def insert_entry(self, ts: str, date_str: str, tag: str, content: str):
         self._conn().execute(
             "INSERT INTO entries (ts, date, tag, content) VALUES (?, ?, ?, ?)",
