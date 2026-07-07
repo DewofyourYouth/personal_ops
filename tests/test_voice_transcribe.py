@@ -1,10 +1,11 @@
 """Regression guard for the voice-intake event-loop stall.
 
-transcribe() is synchronous and makes a multi-second Whisper network round-trip.
-The whole bot runs on one asyncio loop (PTB polling + the scheduler), so if the
-call runs inline on the loop it freezes everything until it returns. handle_voice
-must off-load it to a worker thread (asyncio.to_thread). We assert that by checking
-transcribe executes on a different thread with no running event loop — the
+transcribe_with_language_detection() is synchronous and makes a multi-second
+Whisper network round-trip (up to two passes for Arabic/Hebrew). The whole bot
+runs on one asyncio loop (PTB polling + the scheduler), so if the call runs
+inline on the loop it freezes everything until it returns. handle_voice must
+off-load it to a worker thread (asyncio.to_thread). We assert that by checking
+the function executes on a different thread with no running event loop — the
 inline-call bug would instead run it on the main thread with the loop running.
 """
 
@@ -50,9 +51,15 @@ async def test_voice_transcription_runs_off_event_loop(monkeypatch):
             calls["on_loop"] = True
         except RuntimeError:
             calls["on_loop"] = False
-        return "hello world"
+        return {
+            "text": "hello world",
+            "detected_language": "en",
+            "was_second_pass": False,
+        }
 
-    monkeypatch.setattr(text_router, "transcribe", fake_transcribe)
+    monkeypatch.setattr(
+        text_router, "transcribe_with_language_detection", fake_transcribe
+    )
     monkeypatch.setattr(text_router, "send_sticker", AsyncMock())
 
     update = MagicMock()

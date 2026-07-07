@@ -452,19 +452,22 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="HTML")
 
 
-async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_directives(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    rows = logs.db.entries_by_tag("values")
+    # Read the new `directive` tag plus any legacy `values` rows (not yet backfilled),
+    # merged chronologically so the evolution still reads top-to-bottom.
+    rows = logs.db.entries_by_tag("directive") + logs.db.entries_by_tag("values")
+    rows.sort(key=lambda r: r["ts"])
     if not rows:
         await update.message.reply_text(
-            "No values logged yet. Use <code>values: ...</code> to capture an impression or value "
-            "as the project evolves.",
+            "No directives logged yet. Use <code>directive: ...</code> to declare a standing "
+            "instruction to the app (e.g. <i>directive: more is not always better</i>).",
             parse_mode="HTML",
         )
         return
     # Chronological, grouped by date, so the evolution reads top-to-bottom
-    lines = ["🧭 <b>Values log</b> — how your thinking has evolved:\n"]
+    lines = ["🧭 <b>Directives</b> — standing instructions to the app:\n"]
     last_date = None
     for r in rows:
         if r["date"] != last_date:
@@ -475,7 +478,7 @@ async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     # If too long, show the most recent portion (keep the latest evolution visible)
     if len(text) > 4000:
-        text = "🧭 <b>Values log</b> (most recent):\n" + "\n".join(lines[-40:])
+        text = "🧭 <b>Directives</b> (most recent):\n" + "\n".join(lines[-40:])
         text = text[:4000]
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -848,7 +851,7 @@ def main():
     app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
-    app.add_handler(CommandHandler({"values", "v"}, cmd_values))
+    app.add_handler(CommandHandler({"directives", "directive", "values", "v"}, cmd_directives))
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))

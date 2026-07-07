@@ -37,7 +37,7 @@ from telegram.ext import (
 
 from bot_constants import PREFIXES
 from habit_handlers import match_habit
-from llm import classify_entry, parse_queue_entry, transcribe
+from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from media import send_sticker
 from tg_common import encourage, safe_answer
 
@@ -450,10 +450,12 @@ class TextRouter:
 
         try:
             await tg_file.download_to_drive(tmp_path)
-            # transcribe() is a synchronous, blocking Whisper round-trip. Off-load it to
-            # a thread so the single event loop (PTB polling + the scheduler) stays free
-            # — otherwise the whole bot stalls for the duration of every voice note.
-            text = await asyncio.to_thread(transcribe, tmp_path)
+            # Synchronous Whisper round-trip (may be two passes for Arabic/Hebrew).
+            # Off-load to a thread so the event loop stays free during the network call.
+            result = await asyncio.to_thread(
+                transcribe_with_language_detection, tmp_path
+            )
+            text = result["text"]
         finally:
             os.unlink(tmp_path)
 

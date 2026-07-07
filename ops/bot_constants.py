@@ -24,8 +24,8 @@ PREFIXES = {
     "skip:": "#skip",
     "excuse:": "#skip",
     "excused:": "#skip",
-    "values:": "#values",
-    "value:": "#values",
+    "directive:": "#directive",
+    "policy:": "#directive",
     "discrete:": "#discrete",
     "private:": "#discrete",
 }
@@ -116,7 +116,7 @@ HELP_SECTIONS = {
 🎙 start a voice note with <b>"grocery …"</b> to add items to the list
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric
 <code>did: &lt;text&gt;</code> — log a win
-<code>values: &lt;impression&gt;</code> — a project impression
+<code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred)
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 Anything else is logged as <code>#log</code>""",
