@@ -98,6 +98,7 @@ HELP_SECTIONS = {
 /digest — weekly AI review (also Sundays at 20:00)
 /insights — distil recurring insights from your logs
 /metrics — tracked metrics with trend (last 14 days)
+/mine — quantitative log-mining: weekday/mood patterns, correlations, habit→mood (<code>/mine advise</code> adds an AI read). Also runs Sundays.
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals
 /undofood — delete the most recently logged food entry today
@@ -115,6 +116,7 @@ HELP_SECTIONS = {
 🎙 <b>voice notes</b> are transcribed automatically
 🎙 start a voice note with <b>"grocery …"</b> to add items to the list
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric
+<code>slept 7 hours</code> or <code>/sleep 7</code> — log last night's sleep
 <code>did: &lt;text&gt;</code> — log a win
 <code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred)
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take

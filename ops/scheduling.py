@@ -74,6 +74,15 @@ def start(
         id="weekly_digest",
         replace_existing=True,
     )
+    scheduler.add_job(
+        jobs["weekly_mine"],
+        "cron",
+        day_of_week="sun",
+        hour=21,
+        minute=0,
+        id="weekly_mine",
+        replace_existing=True,
+    )
     for spec in extra_jobs:
         scheduler.add_job(
             spec["func"],

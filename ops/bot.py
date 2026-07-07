@@ -363,6 +363,76 @@ async def weekly_digest():
     await digest_feature.run_weekly()
 
 
+def _mine_db_path() -> str:
+    return os.path.join(LOG_DIR, "ops.db")
+
+
+async def _send_pre(send, text: str) -> None:
+    """Send a monospace report, chunked to stay under Telegram's 4096-char limit."""
+    limit = 3500
+    for i in range(0, len(text), limit):
+        await send(f"<pre>{html.escape(text[i : i + limit])}</pre>", parse_mode="HTML")
+
+
+async def cmd_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/sleep <hours> — log last night's sleep (e.g. /sleep 7 or /sleep 6.5)."""
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    args = (update.message.text or "").split(maxsplit=1)
+    m = re.search(r"\d+(?:\.\d+)?", args[1]) if len(args) > 1 else None
+    if not m:
+        await update.message.reply_text(
+            "Usage: <code>/sleep 7</code> (or 6.5) — logs last night's sleep in hours.",
+            parse_mode="HTML",
+        )
+        return
+    hours = float(m.group(0))
+    logs.write_metric("sleep", hours, "h")
+    await update.message.reply_text(f"😴 Sleep logged: {hours}h")
+
+
+async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/mine — quantitative log-mining report; /mine advise adds an LLM synthesis."""
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    import mine_logs
+
+    want_advice = "advise" in (update.message.text or "").lower()
+    await update.message.reply_text("⛏ Mining your logs…")
+    try:
+        report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())
+    except Exception as e:
+        await update.message.reply_text(f"Couldn't mine the logs: {e}")
+        return
+    await _send_pre(update.message.reply_text, report_text)
+    if want_advice:
+        try:
+            advice = await mine_logs.advise(report_text)
+            await update.message.reply_text(advice)
+        except Exception as e:
+            await update.message.reply_text(f"(Synthesis failed: {e})")
+
+
+async def weekly_mine():
+    """Weekly log-mining report + synthesis, sent Sundays. Guarded by Shabbat quiet."""
+    if shabbat_.quiet_now():
+        return
+    try:
+        import mine_logs
+
+        report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())
+        await _send_pre(
+            lambda t, **kw: _bot.send_message(chat_id=ALLOWED_USER, text=t, **kw),
+            report_text,
+        )
+        advice = await mine_logs.advise(report_text)
+        await _bot.send_message(
+            chat_id=ALLOWED_USER, text=f"⛏ <b>Weekly log-mining</b>\n\n{advice}"
+        )
+    except Exception:
+        pass
+
+
 async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -740,6 +810,7 @@ async def _post_init(application):
             "check_reminders": check_reminders,
             "daily_digest": scheduled_daily_digest,
             "weekly_digest": weekly_digest,
+            "weekly_mine": weekly_mine,
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
@@ -850,6 +921,8 @@ def main():
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler({"logs", "l"}, cmd_logs))
     app.add_handler(CommandHandler({"metrics", "m"}, cmd_metrics))
+    app.add_handler(CommandHandler("sleep", cmd_sleep))
+    app.add_handler(CommandHandler("mine", cmd_mine))
     app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))

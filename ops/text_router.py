@@ -1124,6 +1124,17 @@ class TextRouter:
             await reply(f"Added to agenda: {item_text}")
             return
 
+        # sleep: 7 / slept 7 hours — log last night's sleep as the `sleep` metric. Only
+        # fires when an explicit number is present, so "slept badly" stays a checkin.
+        # (_normalize already turned "slept seven hours" → "slept 7 hours".)
+        if re.match(r"^(?:sleep|slept)\b[:\s]", lower):
+            hours_m = re.search(r"\d+(?:\.\d+)?", lower)
+            if hours_m:
+                hours = float(hours_m.group(0))
+                self.logs.write_metric("sleep", hours, "h")
+                await reply(f"😴 Sleep logged: {hours}h")
+                return
+
         # metric(s): <key> <value> — structured metric entry. Accepts the plural
         # "metrics:", key/value in either order, and a filler word before the key
         # ("metrics: yesterday's steps 7095"). This was silently dropping plural /
