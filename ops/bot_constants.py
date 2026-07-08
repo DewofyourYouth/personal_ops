@@ -121,6 +121,7 @@ HELP_SECTIONS = {
 <code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred)
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take
 <code>note: / insight: / task: / hypothesis: / checkin</code>
+/hypotheses — open tests + their follow-ups
 Anything else is logged as <code>#log</code>""",
     ),
     "context": (

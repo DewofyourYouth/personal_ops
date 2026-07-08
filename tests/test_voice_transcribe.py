@@ -32,6 +32,7 @@ def _make_router():
         reminders=MagicMock(),
         gcal=MagicMock(),
         planner=MagicMock(),
+        hypotheses=MagicMock(),
     )
     return TextRouter(
         bot=AsyncMock(), services=services, shabbat=MagicMock(), allowed_user=123

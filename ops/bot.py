@@ -23,6 +23,8 @@ from config import Config
 from context import Context
 from digest import DigestHandlers
 from gcal import GCal
+from hypotheses import Hypotheses
+from hypothesis_handlers import HypothesisHandlers
 from logs import Logs
 from media import send_startup_animation
 from planner import Planner
@@ -78,6 +80,7 @@ agenda_ = Agenda(LOG_DIR)
 queue_ = AgendaQueue(LOG_DIR)
 backlog_ = Backlog(LOG_DIR)
 reminders = Reminders()
+hypotheses_ = Hypotheses(logs.db)
 gcal_ = GCal()
 context_ = Context()
 planner_ = Planner(MODEL, logs, context_)
@@ -91,6 +94,7 @@ agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
 router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
+hypothesis_feature: "HypothesisHandlers" = None  # type: ignore[assignment]
 status_feature: "StatusHandlers" = None  # type: ignore[assignment]
 plugins: list = []  # built in main(); _post_init reads their scheduled jobs
 
@@ -773,6 +777,11 @@ async def check_reminders():
     await reminders_feature.run_due_check()
 
 
+# Same pattern for the hypothesis follow-up job.
+async def check_hypotheses():
+    await hypothesis_feature.run_followups()
+
+
 # --- APScheduler lifecycle ---
 
 
@@ -808,6 +817,7 @@ async def _post_init(application):
             "morning_plan": morning_plan,
             "remind_upcoming": remind_upcoming,
             "check_reminders": check_reminders,
+            "check_hypotheses": check_hypotheses,
             "daily_digest": scheduled_daily_digest,
             "weekly_digest": weekly_digest,
             "weekly_mine": weekly_mine,
@@ -869,6 +879,7 @@ def main():
         backlog=backlog_,
         baseline=baseline_,
         reminders=reminders,
+        hypotheses=hypotheses_,
         allowed_user=ALLOWED_USER,
     )
     plugins = build_plugins(app.bot, services)
@@ -901,6 +912,12 @@ def main():
         app.bot, reminders, logs, shabbat_, ALLOWED_USER
     )
     reminders_feature.register(app)
+
+    # Hypothesis feature (/hypotheses list + resolve buttons + the daily follow-up
+    # job, wrapped by the module-level check_hypotheses for the job store).
+    global hypothesis_feature
+    hypothesis_feature = HypothesisHandlers(app.bot, hypotheses_, ALLOWED_USER)
+    hypothesis_feature.register(app)
 
     # Status snapshot (/status): a cross-cutting dashboard that composes the agenda
     # feature, the habit plugin, the calendar, and a planner synopsis. The habit

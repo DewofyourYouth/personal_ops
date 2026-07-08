@@ -313,6 +313,35 @@ def _food_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _hypothesis_summary(result: dict) -> str:
+    """Compact test-setup message for a logged hypothesis — a summary and the tracking
+    that's now live, not a prose read. Escapes user/LLM text for HTML parse mode."""
+
+    def esc(s: str) -> str:
+        return html.escape(s or "")
+
+    lines = [f"🔬 <b>{esc(result.get('restatement'))}</b>"]
+    if result.get("confirm_if"):
+        lines.append(f"✅ Confirm: {esc(result['confirm_if'])}")
+    if result.get("falsify_if"):
+        lines.append(f"❌ Falsify: {esc(result['falsify_if'])}")
+
+    if result.get("metrics"):
+        lines.append("")
+        for m in result["metrics"]:
+            key = esc(m["key"])
+            lines.append(
+                f"📊 <b>{key}</b> — {esc(m.get('description', ''))} "
+                f"(<code>metric: {key} &lt;value&gt;</code>)"
+            )
+    if result.get("habits"):
+        lines.append("👁 Watch: " + esc(", ".join(result["habits"])))
+    if result.get("follow_up_date"):
+        fu = date.fromisoformat(result["follow_up_date"])
+        lines.append(f"⏰ Check back {fu.strftime('%a %b %d')}")
+    return "\n".join(lines)
+
+
 def _format_food_estimate(raw: str, estimate: dict) -> str:
     """Telegram preview of the itemised estimate awaiting confirmation."""
     t = estimate["total"]
@@ -361,6 +390,7 @@ class TextRouter:
         self.reminders = services.reminders
         self.gcal = services.gcal
         self.planner = services.planner
+        self.hypotheses = services.hypotheses
         self.shabbat = shabbat
         self.allowed_user = allowed_user
         # Set by bot.py once both features exist — process_text commits user-added
@@ -1247,52 +1277,19 @@ class TextRouter:
         elif tag == "injection":
             await reply(f"💉 Injection logged: {html.escape(content)}")
         elif tag == "hypothesis":
-            await reply("Logged #hypothesis ✓ — thinking about it…")
+            await reply("Logged #hypothesis ✓ — setting up the test…")
             try:
                 result = await self.planner.evaluate_hypothesis(content)
-
-                # Show the narrative
-                await reply(result["narrative"])
-
-                # Set up tracking actions
-                actions = []
-
-                if result.get("metrics"):
-                    keys = ", ".join(
-                        f"<code>metric: {m['key']} &lt;value&gt;</code>"
-                        for m in result["metrics"]
-                    )
-                    descs = "\n".join(
-                        f"• <b>{m['key']}</b>: {m['description']}"
-                        for m in result["metrics"]
-                    )
-                    actions.append(
-                        f"📊 <b>Track these metrics:</b>\n{descs}\n\nLog with: {keys}"
-                    )
-
-                if result.get("habits"):
-                    actions.append(
-                        "👁 <b>Watch these habits:</b> " + ", ".join(result["habits"])
-                    )
-
-                if result.get("follow_up_date"):
-                    from datetime import date as _date
-
-                    fu_date = _date.fromisoformat(result["follow_up_date"])
-                    reminder_text = f"Hypothesis check-in: {result['follow_up_note']}"
-                    self.reminders.add(
-                        reminder_text,
-                        reminder_type="once",
-                        date=result["follow_up_date"],
-                        time="10:00",
-                    )
-                    actions.append(
-                        f"⏰ <b>Follow-up reminder set:</b> {fu_date.strftime('%A %b %d')} — {result['follow_up_note']}"
-                    )
-
-                if actions:
-                    await reply("\n\n".join(actions), parse_mode="HTML")
-
+                metric_keys = [m["key"] for m in result.get("metrics", [])]
+                self.hypotheses.add(
+                    content,
+                    restatement=result.get("restatement", ""),
+                    confirm_if=result.get("confirm_if", ""),
+                    falsify_if=result.get("falsify_if", ""),
+                    metric_keys=metric_keys,
+                    follow_up_date=result.get("follow_up_date", ""),
+                )
+                await reply(_hypothesis_summary(result), parse_mode="HTML")
             except Exception as e:
                 await reply(f"Hypothesis logged but evaluation failed: {e}")
         else:

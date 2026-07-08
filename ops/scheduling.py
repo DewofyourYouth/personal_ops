@@ -58,6 +58,14 @@ def start(
         replace_existing=True,
     )
     scheduler.add_job(
+        jobs["check_hypotheses"],
+        "cron",
+        hour=10,
+        minute=0,
+        id="check_hypotheses",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         jobs["daily_digest"],
         "cron",
         hour=22,
