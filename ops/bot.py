@@ -18,7 +18,12 @@ from agenda_handlers import AgendaHandlers
 from agenda_queue import AgendaQueue
 from backlog import Backlog
 from baseline_tracker import Baseline
-from bot_constants import HELP_INTRO, HELP_SECTIONS, HELP_TEXT  # noqa: F401
+from bot_constants import (  # noqa: F401
+    BOT_COMMANDS,
+    HELP_INTRO,
+    HELP_SECTIONS,
+    HELP_TEXT,
+)
 from config import Config
 from context import Context
 from digest import DigestHandlers
@@ -34,7 +39,7 @@ from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
 from status_handlers import StatusHandlers
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
@@ -443,6 +448,26 @@ async def weekly_mine():
         pass
 
 
+async def weekly_retrain():
+    """Weekly active-learning pass: fold the week's reclassify/confirm events
+    into the KNN classifier's reference set and report the before/after eval
+    delta. Guarded by Shabbat quiet; failures are logged, never silent."""
+    if shabbat_.quiet_now():
+        return
+    try:
+        import retrain
+
+        summary = await asyncio.to_thread(retrain.run_retrain, logs.db)
+        if summary.get("n_events"):
+            await _bot.send_message(
+                chat_id=ALLOWED_USER,
+                text=retrain.format_summary(summary),
+                parse_mode="HTML",
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("Weekly classifier retrain failed")
+
+
 async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -802,6 +827,14 @@ async def check_hypotheses():
 async def _post_init(application):
     global _bot
     _bot = application.bot
+    # Push the "/" command menu from the single source of truth in bot_constants,
+    # so Telegram's autocomplete never drifts from the registered handlers again.
+    try:
+        await application.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to set Telegram command menu")
     # Self-heal: replay any JSONL readings the DB missed (e.g. dropped by a
     # transient lock before the WAL/busy-timeout fix). Idempotent.
     recovered = 0
@@ -835,6 +868,7 @@ async def _post_init(application):
             "daily_digest": scheduled_daily_digest,
             "weekly_digest": weekly_digest,
             "weekly_mine": weekly_mine,
+            "weekly_retrain": weekly_retrain,
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,

@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS label_events (
 CREATE INDEX IF NOT EXISTS idx_label_events_ref ON label_events(ref_entry_id);
 """
 
+# One row per weekly active-learning pass: which label_events it consumed and
+# the before/after eval metrics (JSON), so regressions are visible, not silent.
+_CREATE_RETRAIN_RUNS = """
+CREATE TABLE IF NOT EXISTS retrain_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    events_through_id INTEGER NOT NULL,
+    n_events          INTEGER NOT NULL,
+    metrics           TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
 _CREATE_WEIGHT_CACHE = """
 CREATE TABLE IF NOT EXISTS weight_cache (
     basis_date TEXT PRIMARY KEY,
@@ -123,6 +135,7 @@ class Database:
         conn.executescript(_CREATE_METRICS)
         conn.executescript(_CREATE_REMINDERS)
         conn.executescript(_CREATE_LABEL_EVENTS)
+        conn.executescript(_CREATE_RETRAIN_RUNS)
         conn.executescript(_CREATE_WEIGHT_CACHE)
         conn.executescript(_CREATE_FOOD_SUMMARY)
         conn.commit()
@@ -274,6 +287,22 @@ class Database:
         """Label events newer than `after_id`, oldest first — the retrain loop's feed."""
         return self.query(
             "SELECT * FROM label_events WHERE id > ? ORDER BY id", (after_id,)
+        )
+
+    # --- Retrain runs (weekly active-learning bookkeeping) ---
+
+    def last_retrain_event_id(self) -> int:
+        """The last label_events id a retrain run consumed (0 if never run)."""
+        rows = self.query("SELECT MAX(events_through_id) AS m FROM retrain_runs")
+        return rows[0]["m"] or 0
+
+    def record_retrain_run(
+        self, ts: str, events_through_id: int, n_events: int, metrics_json: str
+    ) -> None:
+        self.execute(
+            "INSERT INTO retrain_runs (ts, events_through_id, n_events, metrics) "
+            "VALUES (?, ?, ?, ?)",
+            (ts, events_through_id, n_events, metrics_json),
         )
 
     def entries_by_tag(self, tag: str) -> list[sqlite3.Row]:

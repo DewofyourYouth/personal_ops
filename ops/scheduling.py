@@ -91,6 +91,15 @@ def start(
         id="weekly_mine",
         replace_existing=True,
     )
+    scheduler.add_job(
+        jobs["weekly_retrain"],
+        "cron",
+        day_of_week="sun",
+        hour=21,
+        minute=30,
+        id="weekly_retrain",
+        replace_existing=True,
+    )
     for spec in extra_jobs:
         scheduler.add_job(
             spec["func"],
