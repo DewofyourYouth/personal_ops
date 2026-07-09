@@ -16,3 +16,4 @@ ops/context
 draft-difficulty-post.md
 draft-difficulty-math.md
 .idea
+scripts/sync_db_from_vps.sh
