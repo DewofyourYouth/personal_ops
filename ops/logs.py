@@ -66,7 +66,9 @@ class Logs:
         content: str,
         extra: dict | None = None,
         when: datetime | None = None,
-    ):
+    ) -> int | None:
+        """Append the entry to JSONL and SQLite. Returns the entries row id
+        (None for metrics, which land in the metrics table instead)."""
         # `when` backdates the entry (e.g. logging yesterday's habit today). It drives the
         # ts, the day bucket, and the JSONL file alike, so the DB date (ts[:10] on replay)
         # and the recovery log stay consistent with a normal same-day write.
@@ -97,8 +99,8 @@ class Logs:
                     str(extra.get("value", "")),
                     extra.get("unit", ""),
                 )
-            else:
-                self.db.insert_entry(ts, date_str, tag, content)
+                return None
+            return self.db.insert_entry(ts, date_str, tag, content)
         except Exception:
             logger.exception("DB write FAILED (kept in JSONL for recovery): %s", entry)
             raise
@@ -109,6 +111,80 @@ class Logs:
             f"{key} {value}{unit}",
             extra={"key": key, "value": value, "unit": unit},
         )
+
+    def log_label_event(
+        self,
+        ref_entry_id: int,
+        event_type: str,
+        from_label: str,
+        to_label: str,
+        source: str = "user_tap",
+    ) -> int:
+        """Append a classifier correction/confirmation — append-only training data.
+
+        Same durability order as write(): JSONL first, then SQLite. The line is
+        tagged `label_event` so sync_jsonl_to_db never replays it into entries.
+        """
+        now = datetime.now(TZ)
+        record = {
+            "ts": now.isoformat(timespec="seconds"),
+            "tag": "label_event",
+            "type": event_type,
+            "ref": ref_entry_id,
+            "from_label": from_label,
+            "to_label": to_label,
+            "source": source,
+        }
+        try:
+            with open(self._jsonl_path(now.date()), "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.exception("Failed to append label event to JSONL: %s", record)
+        return self.db.insert_label_event(
+            record["ts"], ref_entry_id, event_type, from_label, to_label, source
+        )
+
+    def rewrite_jsonl_entry(
+        self,
+        ts: str,
+        content: str,
+        *,
+        new_tag: str | None = None,
+        new_content: str | None = None,
+    ) -> bool:
+        """Rewrite the JSONL line matching (ts, content) with a new tag/content.
+
+        Same convention as backfill_tags: sync_jsonl_to_db dedups replay by
+        (ts, tag), so retagging/rewriting the DB row alone would make the next
+        startup sync RE-INSERT the stale line as a duplicate. The append-only
+        audit trail for corrections lives in label_events, not here.
+        Returns True if a line was changed.
+        """
+        fp = self._jsonl_path(date.fromisoformat(ts[:10]))
+        if not fp.exists():
+            return False
+        lines = fp.read_text().splitlines()
+        out, changed = [], False
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                out.append(line)
+                continue
+            if not changed and obj.get("ts") == ts and obj.get("content") == content:
+                changed = True
+                if new_tag is not None:
+                    obj["tag"] = new_tag
+                if new_content is not None:
+                    obj["content"] = new_content
+                out.append(json.dumps(obj, ensure_ascii=False))
+            else:
+                out.append(line)
+        if changed:
+            fp.write_text("\n".join(out) + "\n")
+        return changed
 
     def sync_jsonl_to_db(self) -> int:
         """Replay JSONL entries that never made it into SQLite (e.g. a write
@@ -131,6 +207,8 @@ class Logs:
                 ts, tag = e.get("ts"), e.get("tag")
                 if not ts or not tag:
                     continue
+                if tag == "label_event":
+                    continue  # correction metadata, not an entry — lives in label_events
                 date_str = ts[:10]
                 if tag == "metric" and e.get("key"):
                     k = (ts, e["key"])

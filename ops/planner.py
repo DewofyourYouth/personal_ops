@@ -911,7 +911,7 @@ class Planner:
 
         for block in response.content:
             if block.type == "tool_use":
-                d = block.input
+                d = block.input if isinstance(block.input, dict) else {}
                 return self.insights.merge(
                     d.get("new_items", []), d.get("recurrences", [])
                 )
@@ -1218,35 +1218,38 @@ class Planner:
         return None
 
     async def evaluate_hypothesis(self, text: str) -> dict:
-        """Evaluate a hypothesis and return structured tracking actions + narrative.
+        """Turn a hypothesis into a runnable test: a sharp restatement, confirm/falsify
+        conditions, and the metrics/habits to track. Terse by design — the user reads a
+        summary and the test setup, not an essay.
 
         Returns a dict with:
-          - narrative: str — the response to show the user
+          - restatement: str — the hypothesis sharpened to one sentence
+          - confirm_if: str — what would confirm it (short phrase)
+          - falsify_if: str — what would falsify it (short phrase)
           - metrics: list of {"key": str, "description": str}
           - habits: list of str — habit names to watch
           - follow_up_days: int — days until check-in
-          - reminders: list of {"text": str, "date": str (YYYY-MM-DD), "time": str (HH:MM)}
+          - follow_up_date: str (YYYY-MM-DD)
+          - follow_up_note: str
         """
         client = anthropic.AsyncAnthropic(max_retries=2)
         today = date.today().isoformat()
         response = await client.messages.create(
             model=self.model,
-            max_tokens=800,
+            max_tokens=600,
             system=[
                 {
                     "type": "text",
                     "text": (
-                        "You are a thinking partner helping the user stress-test a hypothesis. "
-                        "Analyze the hypothesis and call the setup_hypothesis_tracking tool to structure your response.\n\n"
-                        "The narrative should:\n"
-                        "1. Restate the hypothesis sharply in one sentence\n"
-                        "2. Name what would confirm or falsify it\n"
-                        "3. Briefly explain what tracking you're setting up and why\n\n"
-                        "The tracking should be bot-native — metrics to log, habits to watch, "
-                        "a follow-up reminder in 2-3 weeks. Keep it minimal: 1-2 metrics max, "
-                        "only habits that are genuinely relevant. "
-                        "Metric keys should be short snake_case strings (e.g. shami_cards, retention_score). "
-                        "Be direct. No generic advice. No preamble."
+                        "You turn the user's hypothesis into a runnable test. Call "
+                        "setup_hypothesis_tracking. Be terse — the user reads the test setup, "
+                        "not prose. No preamble, no narrative, no advice.\n\n"
+                        "- restatement: sharpen the hypothesis to ONE sentence.\n"
+                        "- confirm_if / falsify_if: a short phrase each, not a paragraph.\n"
+                        "- metrics: 1-2 max, only what's genuinely measurable. Keys are short "
+                        "snake_case (e.g. shami_cards, prep_hours). description = what/when to log, terse.\n"
+                        "- habits: only existing/new habits genuinely relevant as signals; often none.\n"
+                        "- follow-up in 14-21 days."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -1263,9 +1266,17 @@ class Planner:
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "narrative": {
+                            "restatement": {
                                 "type": "string",
-                                "description": "The response to show the user — restatement, confirm/falsify conditions, brief tracking rationale",
+                                "description": "The hypothesis sharpened to one sentence",
+                            },
+                            "confirm_if": {
+                                "type": "string",
+                                "description": "What would confirm it — short phrase",
+                            },
+                            "falsify_if": {
+                                "type": "string",
+                                "description": "What would falsify it — short phrase",
                             },
                             "metrics": {
                                 "type": "array",
@@ -1300,7 +1311,9 @@ class Planner:
                             },
                         },
                         "required": [
-                            "narrative",
+                            "restatement",
+                            "confirm_if",
+                            "falsify_if",
                             "metrics",
                             "follow_up_days",
                             "follow_up_note",
@@ -1321,7 +1334,9 @@ class Planner:
                     date.today() + timedelta(days=d["follow_up_days"])
                 ).isoformat()
                 return {
-                    "narrative": d["narrative"],
+                    "restatement": d["restatement"],
+                    "confirm_if": d["confirm_if"],
+                    "falsify_if": d["falsify_if"],
                     "metrics": d.get("metrics", []),
                     "habits": d.get("habits", []),
                     "follow_up_days": d["follow_up_days"],
@@ -1330,7 +1345,9 @@ class Planner:
                 }
 
         return {
-            "narrative": "Couldn't evaluate hypothesis.",
+            "restatement": text,
+            "confirm_if": "",
+            "falsify_if": "",
             "metrics": [],
             "habits": [],
             "follow_up_days": 14,

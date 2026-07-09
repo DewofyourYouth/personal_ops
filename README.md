@@ -6,28 +6,79 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 
 - Proposes a daily agenda each morning using Claude, aware of your goals, priorities, calendar, and recent logs
 - Tracks agenda items (done/missed) and carries state across re-plans; calibrates to your real completion rate over time
+- Tracks habits (streaks, chains, implementation intentions, identities) and negative "slips", with habit-stack routines
+- Estimates nutrition for meals typed or photographed, and tracks weight progress with a chart
 - Creates and reads Google Calendar events via natural language
 - Sets one-time, daily, and interval reminders (with configurable quiet hours)
 - Transcribes voice notes via Whisper and processes them through the same pipeline
-- Logs structured entries (notes, insights, wins, metrics) to dated JSONL files
-- Weekly AI digest every Sunday summarising wins, patterns, and one suggested adjustment
+- Logs structured entries (notes, insights, wins, metrics, food, injections) to dated JSONL files
+- Daily + weekly AI digests, an insight ledger, and a quantitative log-mining report
 - Editable personal context files (goals, priorities, constraints, projects, principles) that inform all AI suggestions
 
 ## Commands
 
+`/help` opens a tap-through category menu of everything below. The Telegram "/" menu is
+generated from `BOT_COMMANDS` in `ops/bot_constants.py` and pushed via `set_my_commands`
+on startup, so it stays in sync with the handlers. Most primary commands have a
+single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`, `/d`).
+
+**Planning & agenda**
+
 | Command | Description |
 |---|---|
-| `/plan` | Generate today's agenda (also runs daily at configured hour) |
-| `/agenda` | View open items with Done / Missed buttons |
-| `/status` | View all items with their current status (done / missed / open) |
-| `/events` | Show today's calendar events |
-| `/reminders` | List all reminders (tap 🗑 to delete) |
-| `/digest` | AI review of the last 7 days (also runs every Sunday at 20:00) |
-| `/metrics` | Tracked metrics with trend (last 14 days) |
-| `/logs` | View today's log entries |
-| `/grocery` | Shared grocery checklist with check-off buttons and copyable text |
+| `/plan` | Generate today's agenda (also runs daily at the configured hour) |
+| `/agenda` | Open items with ✅ Done / ❌ Missed buttons |
+| `/status` | Day snapshot: open habits, agenda, calendar, and a read on how it's going |
+| `/queue` | Queued future agenda items |
+| `/events` | Today's calendar events |
+| `/reminders` | List reminders (tap 🗑 to delete) |
 | `/context` | View and edit goals, priorities, constraints, projects, principles |
-| `/help` | Show all commands |
+
+**Habits & routines**
+
+| Command | Description |
+|---|---|
+| `/habits` | Daily checklist with streaks 🔥, chain 🟩⬜, ⚠️ flags |
+| `/habitcheck` | On-demand end-of-day habit check (also runs nightly) |
+| `/addhabit`, `/edithabit`, `/managehabits` | Add / edit / delete or toggle habits |
+| `/habitcue` | Set an implementation intention / habit-stack anchor |
+| `/habitnote` | Attach a note to a habit (no args shows recent notes) |
+| `/identity` | Habits grouped by the identities they vote for |
+| `/habitstrategy` | A 4-Laws plan for a habit you keep missing |
+| `/weeklyhabits` | Run weekly habit suggestions now (also Sundays 09:00) |
+| `/routines`, `/addroutine`, `/routinestep`, `/delroutine` | Habit-stack routines |
+| `/slip`, `/slips`, `/addslip`, `/manageslips` | Track negative habits ("slips") |
+
+**Review & tracking**
+
+| Command | Description |
+|---|---|
+| `/daily` | End-of-day digest (also nightly at 22:30) |
+| `/digest` | Weekly AI review (also Sundays at 20:00) |
+| `/insights` | Distil recurring insights from your logs |
+| `/metrics` | Tracked metrics with trend (last 14 days) |
+| `/mine` | Quantitative log-mining report (`/mine advise` adds an AI read; also Sundays) |
+| `/weight` | Weight progress (% lost, rate, chart) |
+| `/foodlog`, `/undofood` | Today's food log with macro totals / delete an entry |
+| `/backlog` | Someday items, grouped by domain |
+| `/logs` | Today's log entries |
+| `/hypotheses` | Open hypotheses and their follow-ups |
+| `/directives` | Standing directives you've declared |
+
+**Grocery**
+
+| Command | Description |
+|---|---|
+| `/grocery` | Shared grocery checklist with check-off buttons |
+| `/addgrocery`, `/grocerycopy`, `/cleargrocery` | Add / copy as text / clear the list |
+
+**Capture & utilities**
+
+| Command | Description |
+|---|---|
+| `/backdate <when> <entry>` | Log an entry for a past day |
+| `/fix` | Reclassify the most recent logged entry |
+| `/help` | Category menu of everything |
 
 ## Message prefixes
 
@@ -41,9 +92,20 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 | `remind me <...>` | Set a reminder (one-time, daily, or every N minutes) |
 | `pick up eggs and milk at the grocery` | Add `eggs` and `milk` to the grocery list |
 | 🎙 voice note starting with `grocery …` | Itemize the spoken list into the grocery list (falls back to a log if it isn't one) |
+| `add X to my agenda` / `put X on the agenda` | Route X onto today's agenda (explicit destination) |
+| `food: <what you ate>` / 📷 food photo | Nutrition estimate to confirm, then log |
 | `metric: <key> <value>` | Log a structured metric (e.g. `metric: steps 8000`) |
+| `slept 7 hours` / `/sleep 7` | Log last night's sleep as a metric |
 | `did: <text>` | Log a spontaneous win (tagged `#win`) |
+| `habit: <name>` | Log a completed habit |
+| `injection: <dose>` | Log a Wegovy injection (`shot:` / `jab:` also work) |
+| `skip: <reason>` | Excuse today's habits (`excuse:` / `excused:` also work) |
+| `directive: <rule>` | A standing instruction to the app (`policy:` also works; `/directives` lists them) |
+| `discrete: <text>` / `private: <text>` | Log without echoing the content back |
+| `backlog: <text>` / `someday: <text>` | Add to the backlog |
+| `feedback: <idea/question>` | Log it and get Claude's take |
 | `note: / insight: / task: / hypothesis: / checkin` | Log a structured entry |
+| 📎 upload an HTML/text file | Extract tasks → `/backlog` and insights → log |
 | *(anything else)* | Logged as `#log` |
 
 Log entry format (JSONL):

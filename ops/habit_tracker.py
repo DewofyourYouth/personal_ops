@@ -92,6 +92,7 @@ def compute_streak(
     lookback: int = 365,
     due_weekdays: list[int] | None = None,
     logged_by_day: dict[str, list[str]] | None = None,
+    today: date | None = None,
 ) -> tuple[int, int]:
     """Return (current_streak, longest_streak).
 
@@ -99,8 +100,10 @@ def compute_streak(
     Non-due days (Shabbat, or unscheduled weekdays) are *bonus*: doing the habit on one
     extends the streak, but skipping it never breaks the streak. A single missed due day
     is forgiven (never miss twice); only two consecutive missed due days break the run.
+    `today` pins the reference date (useful for testing; defaults to date.today()).
     """
-    today = date.today()
+    if today is None:
+        today = date.today()
     current = 0
     longest = 0
     run = 0
@@ -137,10 +140,12 @@ def recent_chain(
     n: int = 14,
     lookback: int = 400,
     logged_by_day: dict[str, list[str]] | None = None,
+    today: date | None = None,
 ) -> list[bool]:
     """Done/not-done for the last `n` DUE days, oldest→newest — the 'don't break the
     chain' visual. Off/Shabbat days are skipped so the chain is pure hits and misses."""
-    today = date.today()
+    if today is None:
+        today = date.today()
     chain: list[bool] = []
     for i in range(lookback):
         if len(chain) >= n:
@@ -210,9 +215,11 @@ def missed_last_due_day(
     due_weekdays: list[int] | None = None,
     lookback: int = 400,
     logged_by_day: dict[str, list[str]] | None = None,
+    today: date | None = None,
 ) -> bool:
     """True if the most recent prior due day was missed — the 'never miss twice' trigger."""
-    today = date.today()
+    if today is None:
+        today = date.today()
     for i in range(1, lookback):
         d = today - timedelta(days=i)
         if not _is_due(d, due_weekdays):

@@ -460,6 +460,21 @@ class HabitStore:
         )
 
 
+def exact_habit_match(content: str, db) -> str | None:
+    """Resolve a log entry to a canonical habit name by exact (normalized) match only.
+
+    No model call. Used by match_habit's fast path and by the rules-first classification
+    pass, which routes bare known-habit strings ("daily walk", "take morning meds") to
+    #habit without an LLM classification call. Matching is exact-after-normalization, so
+    "brush teeth" resolves but "I should brush teeth later" does not — deliberately
+    conservative to avoid false positives in the classifier.
+    """
+    rows = db.query("SELECT name FROM habits WHERE tracked = 1")
+    names = [Context.habit_display_name(r["name"]) for r in rows]
+    by_lower = {n.strip().lower(): n for n in names}
+    return by_lower.get(content.strip().lower())
+
+
 async def match_habit(content: str, db) -> str | None:
     """Resolve a free-text habit log to the canonical habit name it satisfies, or None.
 
@@ -467,13 +482,14 @@ async def match_habit(content: str, db) -> str | None:
     habit name (no model call), else asks the cheapest model to pick semantically
     (e.g. "took a stroll" -> "Daily walk"), constrained to the actual habit names.
     """
+    exact = exact_habit_match(content, db)
+    if exact:
+        return exact  # already a habit name — no model call
+
     rows = db.query("SELECT name FROM habits WHERE tracked = 1")
     names = [Context.habit_display_name(r["name"]) for r in rows]
     if not names:
         return None
-    by_lower = {n.strip().lower(): n for n in names}
-    if content.strip().lower() in by_lower:
-        return by_lower[content.strip().lower()]  # already a habit name — no model call
 
     client = anthropic.AsyncAnthropic()
     response = await client.messages.create(
@@ -759,8 +775,9 @@ class HabitHandlers:
     # --- End-of-day check-in ---
 
     def _pending_today_habits(self, for_date=None) -> list[dict]:
-        """Habit rows due today (or for_date) that have neither a done nor a missed log yet.
-        The shared core of the end-of-day check and the /status snapshot."""
+        """Habit rows due `for_date` (default today) that have neither a done nor a missed
+        log yet. The shared core of the end-of-day check and the /status snapshot. Passing
+        a past `for_date` powers the morning-after grace window (checking yesterday)."""
         from datetime import date as _date
 
         target = for_date or _date.today()
@@ -802,11 +819,50 @@ class HabitHandlers:
         """Prompt for habits due on for_date (default: today) that haven't been logged yet.
         Returns (None, None) when nothing is pending."""
         pending = self._pending_today_habits(for_date=for_date)
+    def today_checklist(self) -> list[tuple[str, bool]]:
+        """(display name, done) for every habit due today — done = a completed
+        ('habit') log exists today. Feeds the /status rich-message checkbox list,
+        where done habits render checked and the rest unchecked. Does not consider
+        Shabbat; the caller suppresses it then."""
+        from datetime import date as _date
+
+        today_weekday = _date.today().weekday()
+        sections = self.store.sections()
+        logged_today = [
+            e["content"].strip()
+            for e in self.logs.read_today()
+            if e.get("tag") == "habit"
+        ]
+        all_visible = []
+        for habits in sections.values():
+            all_visible.extend(
+                h for h in habits if h["days"] is None or today_weekday in h["days"]
+            )
+        done_ids = set()
+        for logged in logged_today:
+            h = self._resolve_logged_to_habit(logged, all_visible)
+            if h:
+                done_ids.add(h["id"])
+        return [
+            (self.context.habit_display_name(h["name"]), h["id"] in done_ids)
+            for h in all_visible
+        ]
+
+    def _eod_message(
+        self, for_date=None
+    ) -> tuple[str | None, InlineKeyboardMarkup | None]:
+        """Prompt for habits due `for_date` (default today) that have neither a done nor a
+        missed log yet. Returns (None, None) when nothing is pending."""
+        pending = self._pending_today_habits(for_date)
         if not pending:
             return None, None
 
         day_label = "yesterday" if for_date is not None else "today"
-        lines = ["🌙 <b>End-of-day habit check</b>", f"Did you do these {day_label}?", ""]
+        lines = [
+            "🌙 <b>End-of-day habit check</b>",
+            f"Did you do these {day_label}?",
+            "",
+        ]
         rows = []
         for h in pending:
             name = self.context.habit_display_name(h["name"])
@@ -892,9 +948,11 @@ class HabitHandlers:
         TZ = ZoneInfo("Asia/Jerusalem")
         now_local = datetime.now(TZ)
         msg_local = query.message.date.astimezone(TZ)
-        eod_date = msg_local.date() if (
-            now_local.date() > msg_local.date() and now_local.hour < 12
-        ) else None
+        eod_date = (
+            msg_local.date()
+            if (now_local.date() > msg_local.date() and now_local.hour < 12)
+            else None
+        )
 
         self.logs.write(
             "habit" if action == "hbq_done" else "habit_missed",

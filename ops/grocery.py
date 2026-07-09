@@ -260,10 +260,21 @@ class GroceryHandlers:
         return True
 
     async def handle_classified_text(self, tag: str, text: str, reply) -> bool:
-        """Called by the text router when the LLM classifies a message as 'grocery'."""
+        """Called by the text router when the LLM classifies a message as 'grocery'.
+
+        Itemize via the LLM (same as the voice path) so a natural sentence like
+        "pick up cottage cheese next time I go to the store" becomes a clean
+        "cottage cheese" rather than being stored verbatim. The deterministic
+        splitter is the fallback when the LLM is unavailable or sees no items.
+        """
         if tag != "grocery":
             return False
-        items = split_grocery_items(text) or [text.strip()]
+        try:
+            items = await itemize_speech(text)
+        except Exception:
+            items = None
+        if not items:
+            items = split_grocery_items(text) or [text.strip()]
         self.store.add_items(items)
         msg, keyboard = self._message(f"Added: {', '.join(items)}")
         await reply(msg, parse_mode="HTML", reply_markup=keyboard)

@@ -58,6 +58,14 @@ def start(
         replace_existing=True,
     )
     scheduler.add_job(
+        jobs["check_hypotheses"],
+        "cron",
+        hour=10,
+        minute=0,
+        id="check_hypotheses",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         jobs["daily_digest"],
         "cron",
         hour=22,
@@ -72,6 +80,24 @@ def start(
         hour=20,
         minute=0,
         id="weekly_digest",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        jobs["weekly_mine"],
+        "cron",
+        day_of_week="sun",
+        hour=21,
+        minute=0,
+        id="weekly_mine",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        jobs["weekly_retrain"],
+        "cron",
+        day_of_week="sun",
+        hour=21,
+        minute=30,
+        id="weekly_retrain",
         replace_existing=True,
     )
     for spec in extra_jobs:

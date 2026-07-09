@@ -18,20 +18,28 @@ from agenda_handlers import AgendaHandlers
 from agenda_queue import AgendaQueue
 from backlog import Backlog
 from baseline_tracker import Baseline
-from bot_constants import HELP_INTRO, HELP_SECTIONS, HELP_TEXT  # noqa: F401
+from bot_constants import (  # noqa: F401
+    BOT_COMMANDS,
+    HELP_INTRO,
+    HELP_SECTIONS,
+    HELP_TEXT,
+)
 from config import Config
 from context import Context
 from digest import DigestHandlers
 from gcal import GCal
+from hypotheses import Hypotheses
+from hypothesis_handlers import HypothesisHandlers
 from logs import Logs
 from media import send_startup_animation
 from planner import Planner
 from plugins import build_plugins, collect_jobs
+from reclassify_handlers import ReclassifyHandlers
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
 from status_handlers import StatusHandlers
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
@@ -48,7 +56,7 @@ from text_router import (
     _mood_energy_keyboard,
     _parse_queue_date,
 )
-from tg_common import safe_answer
+from tg_common import mono_table, safe_answer
 from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
@@ -78,6 +86,7 @@ agenda_ = Agenda(LOG_DIR)
 queue_ = AgendaQueue(LOG_DIR)
 backlog_ = Backlog(LOG_DIR)
 reminders = Reminders()
+hypotheses_ = Hypotheses(logs.db)
 gcal_ = GCal()
 context_ = Context()
 planner_ = Planner(MODEL, logs, context_)
@@ -100,6 +109,8 @@ agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
 router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
+hypothesis_feature: "HypothesisHandlers" = None  # type: ignore[assignment]
+reclassify_feature: "ReclassifyHandlers" = None  # type: ignore[assignment]
 status_feature: "StatusHandlers" = None  # type: ignore[assignment]
 plugins: list = []  # built in main(); _post_init reads their scheduled jobs
 
@@ -128,7 +139,9 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
                     text=f"⚠️ Couldn't send that response (formatting error). Check /logs or try again.\n({type(context.error).__name__}: {context.error})",
                 )
         except Exception:
-            logging.getLogger(__name__).exception("Failed to notify user about BadRequest")
+            logging.getLogger(__name__).exception(
+                "Failed to notify user about BadRequest"
+            )
         return
     # Never fail silently on a real error: log it AND tell the user their
     # message wasn't handled, so a dropped entry can't disappear unnoticed.
@@ -196,6 +209,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # intercept reminder edit reply (owned by the reminders feature)
     if await reminders_feature.try_handle_edit_reply(update):
+        return
+
+    # intercept entry-content edit reply (owned by the reclassify feature)
+    if await reclassify_feature.try_handle_edit_reply(update):
         return
 
     # intercept context file edit
@@ -308,7 +325,9 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest:
         pass
     if is_checkin:
-        logs.write("checkin", "reminder dismissed")
+        # Don't log the dismissal itself — it used to write a "reminder dismissed" checkin
+        # on every nudge, polluting checkin analytics and any classifier corpus with pure
+        # noise. The real signal (mood/energy) is captured as metrics by the keyboard below.
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="👋 How are you feeling right now?",
@@ -370,6 +389,94 @@ async def weekly_digest():
 
 async def _staleness_check():
     await staleness_.check_and_prompt(_bot, ALLOWED_USER)
+def _mine_db_path() -> str:
+    return os.path.join(LOG_DIR, "ops.db")
+
+
+async def _send_pre(send, text: str) -> None:
+    """Send a monospace report, chunked to stay under Telegram's 4096-char limit."""
+    limit = 3500
+    for i in range(0, len(text), limit):
+        await send(f"<pre>{html.escape(text[i : i + limit])}</pre>", parse_mode="HTML")
+
+
+async def cmd_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/sleep <hours> — log last night's sleep (e.g. /sleep 7 or /sleep 6.5)."""
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    args = (update.message.text or "").split(maxsplit=1)
+    m = re.search(r"\d+(?:\.\d+)?", args[1]) if len(args) > 1 else None
+    if not m:
+        await update.message.reply_text(
+            "Usage: <code>/sleep 7</code> (or 6.5) — logs last night's sleep in hours.",
+            parse_mode="HTML",
+        )
+        return
+    hours = float(m.group(0))
+    logs.write_metric("sleep", hours, "h")
+    await update.message.reply_text(f"😴 Sleep logged: {hours}h")
+
+
+async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/mine — quantitative log-mining report; /mine advise adds an LLM synthesis."""
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    import mine_logs
+
+    want_advice = "advise" in (update.message.text or "").lower()
+    await update.message.reply_text("⛏ Mining your logs…")
+    try:
+        report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())
+    except Exception as e:
+        await update.message.reply_text(f"Couldn't mine the logs: {e}")
+        return
+    await _send_pre(update.message.reply_text, report_text)
+    if want_advice:
+        try:
+            advice = await mine_logs.advise(report_text)
+            await update.message.reply_text(advice)
+        except Exception as e:
+            await update.message.reply_text(f"(Synthesis failed: {e})")
+
+
+async def weekly_mine():
+    """Weekly log-mining report + synthesis, sent Sundays. Guarded by Shabbat quiet."""
+    if shabbat_.quiet_now():
+        return
+    try:
+        import mine_logs
+
+        report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())
+        await _send_pre(
+            lambda t, **kw: _bot.send_message(chat_id=ALLOWED_USER, text=t, **kw),
+            report_text,
+        )
+        advice = await mine_logs.advise(report_text)
+        await _bot.send_message(
+            chat_id=ALLOWED_USER, text=f"⛏ <b>Weekly log-mining</b>\n\n{advice}"
+        )
+    except Exception:
+        pass
+
+
+async def weekly_retrain():
+    """Weekly active-learning pass: fold the week's reclassify/confirm events
+    into the KNN classifier's reference set and report the before/after eval
+    delta. Guarded by Shabbat quiet; failures are logged, never silent."""
+    if shabbat_.quiet_now():
+        return
+    try:
+        import retrain
+
+        summary = await asyncio.to_thread(retrain.run_retrain, logs.db)
+        if summary.get("n_events"):
+            await _bot.send_message(
+                chat_id=ALLOWED_USER,
+                text=retrain.format_summary(summary),
+                parse_mode="HTML",
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("Weekly classifier retrain failed")
 
 
 async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,20 +505,17 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tod = logs.mood_energy_by_time_of_day(days=14)
     if tod:
-        lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
-        lines.append(
-            "<table><tr><th>Time</th><th>Mood</th><th>Energy</th><th>n</th></tr>"
-        )
+        table_rows = []
         for label in ("late night", "morning", "afternoon", "evening"):
             if label not in tod:
                 continue
             b = tod[label]
             mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
             energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
-            lines.append(
-                f"<tr><td>{label}</td><td>{mood}</td><td>{energy}</td><td>{b['n']}</td></tr>"
-            )
-        lines.append("</table>")
+            table_rows.append([label, str(mood), str(energy), str(b["n"])])
+        if table_rows:
+            lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
+            lines.append(mono_table(["Time", "Mood", "Energy", "n"], table_rows))
 
     text = "\n".join(lines)
     if len(text) > 4000:
@@ -463,19 +567,22 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="HTML")
 
 
-async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_directives(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
-    rows = logs.db.entries_by_tag("values")
+    # Read the new `directive` tag plus any legacy `values` rows (not yet backfilled),
+    # merged chronologically so the evolution still reads top-to-bottom.
+    rows = logs.db.entries_by_tag("directive") + logs.db.entries_by_tag("values")
+    rows.sort(key=lambda r: r["ts"])
     if not rows:
         await update.message.reply_text(
-            "No values logged yet. Use <code>values: ...</code> to capture an impression or value "
-            "as the project evolves.",
+            "No directives logged yet. Use <code>directive: ...</code> to declare a standing "
+            "instruction to the app (e.g. <i>directive: more is not always better</i>).",
             parse_mode="HTML",
         )
         return
     # Chronological, grouped by date, so the evolution reads top-to-bottom
-    lines = ["🧭 <b>Values log</b> — how your thinking has evolved:\n"]
+    lines = ["🧭 <b>Directives</b> — standing instructions to the app:\n"]
     last_date = None
     for r in rows:
         if r["date"] != last_date:
@@ -486,7 +593,7 @@ async def cmd_values(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     # If too long, show the most recent portion (keep the latest evolution visible)
     if len(text) > 4000:
-        text = "🧭 <b>Values log</b> (most recent):\n" + "\n".join(lines[-40:])
+        text = "🧭 <b>Directives</b> (most recent):\n" + "\n".join(lines[-40:])
         text = text[:4000]
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -515,9 +622,20 @@ async def handle_mood_energy_callback(
                 for e, v in ENERGY_OPTIONS:
                     if e in btn.text and not locked_energy:
                         locked_energy = v
+    # Preserve any non-mood rows (the reclassify/self-rating buttons ride on the
+    # same message for checkins) — rebuilding only the me_ rows used to drop them.
+    other_rows = [
+        list(row)
+        for row in query.message.reply_markup.inline_keyboard or []
+        if not any((btn.callback_data or "").startswith("me_") for btn in row)
+        and not all(btn.callback_data == "noop" for btn in row)
+    ]
+    rebuilt = [
+        list(r) for r in _mood_energy_keyboard(locked_mood, locked_energy).inline_keyboard
+    ]
     try:
         await query.edit_message_reply_markup(
-            reply_markup=_mood_energy_keyboard(locked_mood, locked_energy)
+            reply_markup=InlineKeyboardMarkup(rebuilt + other_rows)
         )
     except Exception:
         pass
@@ -709,12 +827,25 @@ async def check_reminders():
     await reminders_feature.run_due_check()
 
 
+# Same pattern for the hypothesis follow-up job.
+async def check_hypotheses():
+    await hypothesis_feature.run_followups()
+
+
 # --- APScheduler lifecycle ---
 
 
 async def _post_init(application):
     global _bot
     _bot = application.bot
+    # Push the "/" command menu from the single source of truth in bot_constants,
+    # so Telegram's autocomplete never drifts from the registered handlers again.
+    try:
+        await application.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to set Telegram command menu")
     # Self-heal: replay any JSONL readings the DB missed (e.g. dropped by a
     # transient lock before the WAL/busy-timeout fix). Idempotent.
     recovered = 0
@@ -744,8 +875,11 @@ async def _post_init(application):
             "morning_plan": morning_plan,
             "remind_upcoming": remind_upcoming,
             "check_reminders": check_reminders,
+            "check_hypotheses": check_hypotheses,
             "daily_digest": scheduled_daily_digest,
             "weekly_digest": weekly_digest,
+            "weekly_mine": weekly_mine,
+            "weekly_retrain": weekly_retrain,
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
@@ -812,6 +946,7 @@ def main():
         backlog=backlog_,
         baseline=baseline_,
         reminders=reminders,
+        hypotheses=hypotheses_,
         allowed_user=ALLOWED_USER,
         quiet_window=quiet_window_,
     )
@@ -819,11 +954,21 @@ def main():
     for plugin in plugins:
         plugin.register(app)
 
+    # Reclassify feature (Edit/Reclassify buttons on classified messages, /fix,
+    # the low-confidence picker). Built before the router, which attaches its
+    # keyboards to every classification confirmation.
+    global reclassify_feature
+    reclassify_feature = ReclassifyHandlers(
+        app.bot, logs, ALLOWED_USER, config.reclassify_confidence_threshold
+    )
+    reclassify_feature.register(app)
+
     # Central inbound-message router: owns process_text + the candle/reminder-time/
     # voice flows. It commits user-added agenda items through the agenda feature.
     global router
     router = TextRouter(app.bot, services, quiet_window_, ALLOWED_USER)
     router.agenda_feature = agenda_feature
+    router.reclassify = reclassify_feature
     # Hand the grocery plugin to the router so confirmed voice transcripts opening
     # with "grocery"/"groceries" route into the list (the plugin owns the logic).
     router.grocery = next((p for p in plugins if hasattr(p, "handle_voice_text")), None)
@@ -846,6 +991,12 @@ def main():
     )
     reminders_feature.register(app)
 
+    # Hypothesis feature (/hypotheses list + resolve buttons + the daily follow-up
+    # job, wrapped by the module-level check_hypotheses for the job store).
+    global hypothesis_feature
+    hypothesis_feature = HypothesisHandlers(app.bot, hypotheses_, ALLOWED_USER)
+    hypothesis_feature.register(app)
+
     # Status snapshot (/status): a cross-cutting dashboard that composes the agenda
     # feature, the habit plugin, the calendar, and a planner synopsis. The habit
     # plugin is found by duck-typing (same pattern as router.grocery above).
@@ -865,10 +1016,14 @@ def main():
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler({"logs", "l"}, cmd_logs))
     app.add_handler(CommandHandler({"metrics", "m"}, cmd_metrics))
+    app.add_handler(CommandHandler("sleep", cmd_sleep))
+    app.add_handler(CommandHandler("mine", cmd_mine))
     app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
-    app.add_handler(CommandHandler({"values", "v"}, cmd_values))
+    app.add_handler(
+        CommandHandler({"directives", "directive", "values", "v"}, cmd_directives)
+    )
     app.add_handler(CallbackQueryHandler(handle_backlog_callback, pattern="^bl_"))
     app.add_handler(CallbackQueryHandler(handle_dismiss, pattern="^remind_dismiss"))
     app.add_handler(CallbackQueryHandler(handle_context_callback, pattern="^ctx_"))

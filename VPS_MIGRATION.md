@@ -3,9 +3,10 @@
 ## Status
 - [x] SQLite migration (done 2026-06-01)
 - [x] APScheduler (done 2026-06-01)
-- [ ] Docker build verified locally
-- [ ] VPS provisioned
-- [ ] Deployed and running on VPS
+- [x] Docker build verified locally
+- [x] VPS provisioned (Hetzner CX23, Ubuntu 26.04, hel1, 62.238.5.255) — 2026-07-07
+- [x] Deployed and running on VPS (2026-07-07) — data rsynced from Mac, Mac container stopped
+- [ ] CI/CD auto-deploy (GitHub Actions SSH pipeline in DEPLOY.md) — needs deploy keys wired up
 - [ ] Public repo
 - [ ] Hume AI voice affect
 - [ ] Public dashboard

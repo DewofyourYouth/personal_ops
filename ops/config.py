@@ -40,6 +40,11 @@ class Config:
     timezone: str = "Asia/Jerusalem"
     plan_hour: int = 8
     plan_minute: int = 0
+    # Below this classifier vote-share the bot shows the category picker right away
+    # instead of the collapsed Edit/Reclassify buttons. Only the embedding classifier
+    # reports confidence (the LLM path doesn't), so this only bites when
+    # OPS_CLASSIFIER=embedding. Tune so it fires on roughly 5-10% of messages.
+    reclassify_confidence_threshold: float = 0.55
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -54,6 +59,9 @@ class Config:
             timezone=os.environ.get("OPS_TIMEZONE", "Asia/Jerusalem"),
             plan_hour=int(os.environ.get("OPS_PLAN_HOUR", "8")),
             plan_minute=int(os.environ.get("OPS_PLAN_MINUTE", "0")),
+            reclassify_confidence_threshold=float(
+                os.environ.get("OPS_RECLASSIFY_CONF", "0.55")
+            ),
         )
 
     @cached_property

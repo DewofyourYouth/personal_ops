@@ -16,6 +16,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from logs import Logs
+from tg_common import mono_table
 
 # The macro summary line written by text_router._food_log_content, e.g.
 # "lasagna and salad — ~480 kcal, 24g protein, 21g fat, 47g carbs".
@@ -100,13 +101,19 @@ class FoodHandlers:
 
         totals = _macro_totals([e["content"] for e in entries])
         if totals:
+            lines.append("\n<b>Totals (approx)</b>")
             lines.append(
-                "\n<b>Totals (approx)</b>\n"
-                "<table><tr><th>kcal</th><th>Protein</th><th>Fat</th><th>Carbs</th></tr>"
-                f"<tr><td>~{_fmt(totals['kcal'])}</td>"
-                f"<td>{_fmt(totals['protein_g'])}g</td>"
-                f"<td>{_fmt(totals['fat_g'])}g</td>"
-                f"<td>{_fmt(totals['carbs_g'])}g</td></tr></table>"
+                mono_table(
+                    ["kcal", "Protein", "Fat", "Carbs"],
+                    [
+                        [
+                            f"~{_fmt(totals['kcal'])}",
+                            f"{_fmt(totals['protein_g'])}g",
+                            f"{_fmt(totals['fat_g'])}g",
+                            f"{_fmt(totals['carbs_g'])}g",
+                        ]
+                    ],
+                )
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 

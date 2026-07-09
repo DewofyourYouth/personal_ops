@@ -36,8 +36,8 @@ from telegram.ext import (
 )
 
 from bot_constants import PREFIXES
-from habit_handlers import match_habit
-from llm import classify_entry, parse_queue_entry, transcribe
+from habit_handlers import exact_habit_match, match_habit
+from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from media import send_sticker
 from tg_common import encourage, safe_answer
 
@@ -71,6 +71,70 @@ _NUM_WORDS = {
 }
 
 _UNICODE_JUNK = re.compile("[​-‏‪-‮⁠-⁤﻿]+")
+
+# A "structured" nutrition entry already carries a calorie figure AND a macro breakdown
+# (e.g. "chicken bowl — 550 kcal, 40g protein"). Requiring BOTH keeps offhand mentions
+# ("burned 500 calories on my walk" — a checkin) out of #food. Used by the rules-first
+# pass to tag these #food without an LLM call.
+_KCAL_RE = re.compile(r"\d+\s*k?cal(?:ories)?\b", re.IGNORECASE)
+_MACRO_RE = re.compile(
+    r"\d+\s*g(?:rams)?\s*(?:of\s+)?(?:protein|fat|carb)", re.IGNORECASE
+)
+
+
+def _is_nutrition_breakdown(text: str) -> bool:
+    return bool(_KCAL_RE.search(text) and _MACRO_RE.search(text))
+
+
+# An explicitly stated agenda destination ("add X to my agenda", "put X on the agenda").
+# The classifier only extracts an action TYPE (→ #task) and silently drops the stated
+# destination, so the item never reaches /agenda — this rules-first match routes it there.
+_AGENDA_DEST_RE = re.compile(
+    r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
+)
+
+
+def _extract_agenda_item(text: str) -> str:
+    """Pull the item out of a 'add X to my agenda' utterance.
+
+    Takes everything before the '… to/on my agenda' phrase and strips a leading
+    imperative verb, so 'Add goal reflection to my agenda and …' → 'goal reflection'.
+    """
+    m = re.search(
+        r"^(.*?)\s+(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    item = (m.group(1) if m else text).strip()
+    item = re.sub(
+        r"^(?:please\s+)?(?:add|put|note|log)\s+", "", item, flags=re.IGNORECASE
+    ).strip()
+    return item.strip(" .,:;-")
+
+
+def _parse_metric_body(rest: str) -> tuple[str, float, str, str] | None:
+    """Parse the body of a `metric(s):` entry into (key, value, unit, raw_val).
+
+    Handles key/value in either order and tolerates a filler word between the prefix
+    and the key ("yesterday's steps 7095" → steps=7095). Returns None if no numeric
+    value is present. The key is the alphabetic word adjacent to the number (the one
+    before it when present, else the one after).
+    """
+    rest = rest.strip()
+    # A unit is only the letters glued directly to the number ("92.9kg"); a word after a
+    # space ("8000 steps") is the key, not a unit.
+    num_m = re.search(r"(\d[\d.]*)([A-Za-z%]*)", rest)
+    if not num_m:
+        return None
+    value = float(num_m.group(1))
+    unit = num_m.group(2)
+    raw_val = num_m.group(0).strip()
+    before = re.findall(r"[A-Za-z_][A-Za-z_-]*", rest[: num_m.start()])
+    after = re.findall(r"[A-Za-z_][A-Za-z_-]*", rest[num_m.end() :])
+    key_word = before[-1] if before else (after[0] if after else None)
+    if key_word is None:
+        return None
+    return key_word.lower().replace("-", "_"), value, unit, raw_val
 
 
 def _normalize(text: str) -> str:
@@ -275,6 +339,35 @@ def _food_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _hypothesis_summary(result: dict) -> str:
+    """Compact test-setup message for a logged hypothesis — a summary and the tracking
+    that's now live, not a prose read. Escapes user/LLM text for HTML parse mode."""
+
+    def esc(s: str) -> str:
+        return html.escape(s or "")
+
+    lines = [f"🔬 <b>{esc(result.get('restatement'))}</b>"]
+    if result.get("confirm_if"):
+        lines.append(f"✅ Confirm: {esc(result['confirm_if'])}")
+    if result.get("falsify_if"):
+        lines.append(f"❌ Falsify: {esc(result['falsify_if'])}")
+
+    if result.get("metrics"):
+        lines.append("")
+        for m in result["metrics"]:
+            key = esc(m["key"])
+            lines.append(
+                f"📊 <b>{key}</b> — {esc(m.get('description', ''))} "
+                f"(<code>metric: {key} &lt;value&gt;</code>)"
+            )
+    if result.get("habits"):
+        lines.append("👁 Watch: " + esc(", ".join(result["habits"])))
+    if result.get("follow_up_date"):
+        fu = date.fromisoformat(result["follow_up_date"])
+        lines.append(f"⏰ Check back {fu.strftime('%a %b %d')}")
+    return "\n".join(lines)
+
+
 def _format_food_estimate(raw: str, estimate: dict) -> str:
     """Telegram preview of the itemised estimate awaiting confirmation."""
     t = estimate["total"]
@@ -323,6 +416,7 @@ class TextRouter:
         self.reminders = services.reminders
         self.gcal = services.gcal
         self.planner = services.planner
+        self.hypotheses = services.hypotheses
         self.shabbat = shabbat
         self.allowed_user = allowed_user
         # Set by bot.py once both features exist — process_text commits user-added
@@ -334,6 +428,9 @@ class TextRouter:
         # Set by bot.py after plugins are built — used to collect plugin classification
         # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
         self.plugins: list = []
+        # Set by bot.py — the reclassify feature, which owns the Edit/Reclassify
+        # buttons attached to every classified message and the low-confidence picker.
+        self.reclassify = None
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -450,10 +547,12 @@ class TextRouter:
 
         try:
             await tg_file.download_to_drive(tmp_path)
-            # transcribe() is a synchronous, blocking Whisper round-trip. Off-load it to
-            # a thread so the single event loop (PTB polling + the scheduler) stays free
-            # — otherwise the whole bot stalls for the duration of every voice note.
-            text = await asyncio.to_thread(transcribe, tmp_path)
+            # Synchronous Whisper round-trip (may be two passes for Arabic/Hebrew).
+            # Off-load to a thread so the event loop stays free during the network call.
+            result = await asyncio.to_thread(
+                transcribe_with_language_detection, tmp_path
+            )
+            text = result["text"]
         finally:
             os.unlink(tmp_path)
 
@@ -704,6 +803,10 @@ class TextRouter:
                     r"^\w+[,:.\s]\s*", "", text, count=1, flags=re.IGNORECASE
                 ).strip()
                 return t.lstrip("#"), content
+        # Rules-first: an entry carrying an explicit calorie + macro breakdown is
+        # unambiguously food — tag it without an LLM call.
+        if _is_nutrition_breakdown(text):
+            return "food", text
         return "log", text
 
     def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
@@ -750,6 +853,48 @@ class TextRouter:
                 text, parse_mode="HTML", reply_markup=keyboard
             )
 
+    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str, float | None]:
+        """Like _classify_entry but falls back to Haiku when no prefix is detected.
+
+        Gathers classification_tags from registered plugins so each plugin's tags
+        are included in the LLM enum and prompt without hardcoding them here.
+
+        Returns (tag, content, confidence). Confidence is only reported by the
+        embedding classifier (its KNN vote share); prefix rules and the LLM path
+        return None, which downstream treats as "no low-confidence prompt".
+        """
+        tag, content = self._classify_entry(text)
+        if tag != "log":
+            return tag, content, None
+        # Rules-first: a bare entry that exactly matches a known habit string ("daily
+        # walk") is routed to #habit deterministically — no LLM classification call.
+        try:
+            if habit := exact_habit_match(text, self.logs.db):
+                return "habit", habit, None
+        except Exception:
+            pass
+        # Only the genuinely ambiguous middle reaches a classifier. Which classifier is
+        # swappable via OPS_CLASSIFIER ("llm" default, or "embedding" for the local KNN
+        # prototype in classifier.py) so the two can run side-by-side without a rewrite.
+        confidence = None
+        try:
+            extra_tags = [
+                t
+                for plugin in self.plugins
+                for t in getattr(plugin, "classification_tags", [])
+            ]
+            if os.environ.get("OPS_CLASSIFIER") == "embedding":
+                from classifier import classify_entry_embedding_confidence
+
+                tag, confidence = await classify_entry_embedding_confidence(
+                    text, self.logs.db, extra_tags=extra_tags or None
+                )
+            else:
+                tag = await classify_entry(text, extra_tags=extra_tags or None)
+        except Exception:
+            pass  # keep "log" on any classifier failure
+        return tag, content, confidence
+
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
         Daf Yomi that never got logged). The remainder is parsed exactly like a normal
@@ -782,7 +927,7 @@ class TextRouter:
             )
             return
 
-        tag, content = await self._classify_entry_with_llm(entry_text)
+        tag, content, _ = await self._classify_entry_with_llm(entry_text)
 
         # Resolve free-text habit logs to a defined habit name, same as the live path, so
         # the backfilled day matches the checklist exactly and counts toward the streak.
@@ -1021,6 +1166,17 @@ class TextRouter:
                 await reply("🕯️ What time is candle lighting?")
             return
 
+        # "add X to my agenda" / "X on the agenda" — an explicitly stated destination.
+        # Must run before the queue matcher below (whose "add to" prefix would otherwise
+        # swallow "add to my agenda") and before LLM classification (which would tag it
+        # #task and drop the destination, so it never reached /agenda).
+        if _AGENDA_DEST_RE.search(lower) and self.agenda_feature:
+            item = _extract_agenda_item(text)
+            if item:
+                self.agenda_feature.commit_agenda([item], source="user")
+                await reply(f"🗓 Added to agenda: {item}")
+                return
+
         # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
         if re.match(r"^(?:queue|schedule|defer|add to)\b", lower):
             parsed = await parse_queue_entry(text)
@@ -1043,20 +1199,29 @@ class TextRouter:
             await reply(f"Added to agenda: {item_text}")
             return
 
-        # metric: <key> <value> — structured metric entry
-        metric_m = re.match(r"^metric[,:.\s]\s*([\w\-]+)\s+(\S+)", text, re.IGNORECASE)
-        if metric_m:
-            key = metric_m.group(1).lower().replace("-", "_")
-            raw_val = metric_m.group(2)
-            # If key is numeric and value looks like a word, they're reversed — swap them
-            # e.g. "metric: 8000 steps" → key=steps, value=8000
-            if re.match(r"^[\d.]+$", key) and re.match(
-                r"^[a-z_]+$", raw_val, re.IGNORECASE
-            ):
-                key, raw_val = raw_val.lower().replace("-", "_"), key
-            num_m = re.match(r"^([\d.]+)", raw_val)
-            value = float(num_m.group(1)) if num_m else raw_val
-            unit = raw_val[len(num_m.group(1)) :] if num_m else ""
+        # sleep: 7 / slept 7 hours — log last night's sleep as the `sleep` metric. Only
+        # fires when an explicit number is present, so "slept badly" stays a checkin.
+        # (_normalize already turned "slept seven hours" → "slept 7 hours".)
+        if re.match(r"^(?:sleep|slept)\b[:\s]", lower):
+            hours_m = re.search(r"\d+(?:\.\d+)?", lower)
+            if hours_m:
+                hours = float(hours_m.group(0))
+                self.logs.write_metric("sleep", hours, "h")
+                await reply(f"😴 Sleep logged: {hours}h")
+                return
+
+        # metric(s): <key> <value> — structured metric entry. Accepts the plural
+        # "metrics:", key/value in either order, and a filler word before the key
+        # ("metrics: yesterday's steps 7095"). This was silently dropping plural /
+        # possessive entries to #log, losing quantified readings.
+        metric_prefix = re.match(
+            r"^metrics?\b[,:.\s]+(.+)$", text, re.IGNORECASE | re.DOTALL
+        )
+        parsed_metric = (
+            _parse_metric_body(metric_prefix.group(1)) if metric_prefix else None
+        )
+        if parsed_metric:
+            key, value, unit, raw_val = parsed_metric
             try:
                 self.logs.write_metric(key, value, unit)
             except Exception as e:
@@ -1089,11 +1254,12 @@ class TextRouter:
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
         try:
-            tag, content = await self._classify_entry_with_llm(text)
+            tag, content, confidence = await self._classify_entry_with_llm(text)
         except Exception:
             # LLM unavailable or any other failure — fall back to prefix-only so the
             # message is never lost. The user sees the correct (if less rich) tag.
             tag, content = self._classify_entry(text)
+            confidence = None
 
         # Dispatch plugin-owned tags to the plugin that declared them. Each plugin
         # optionally implements handle_classified_text(tag, content, reply) → bool.
@@ -1126,8 +1292,11 @@ class TextRouter:
                 )
                 return
             # No usable estimate — fall back to logging the raw description.
-            self.logs.write(tag, content)
-            await reply(f"🍽 Logged: {content}")
+            entry_id = self.logs.write(tag, content)
+            await reply(
+                f"🍽 Logged: {content}",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
             return
 
         # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
@@ -1145,65 +1314,80 @@ class TextRouter:
         # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
         # backup. Writing the file directly here bypassed the DB — the bug that made
         # prefix entries (values, insight, note, …) invisible to /values and other readers.
-        self.logs.write(tag, content)
+        entry_id = self.logs.write(tag, content)
 
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")
 
         if tag == "discrete":
-            await reply("🔒 Logged.")
+            await reply(
+                "🔒 Logged.", reply_markup=self._entry_keyboard(entry_id, tag, confidence)
+            )
         elif tag == "checkin":
-            await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
+            # Mood/energy rows stay on top; the Edit/Reclassify row (or the
+            # low-confidence picker) rides along underneath.
+            mood_rows = [list(r) for r in _mood_energy_keyboard().inline_keyboard]
+            keyboard = self._entry_keyboard(entry_id, tag, confidence)
+            rc_rows = [list(r) for r in keyboard.inline_keyboard] if keyboard else []
+            await reply(
+                f"Logged #{tag} ✓",
+                reply_markup=InlineKeyboardMarkup(mood_rows + rc_rows),
+            )
         elif tag == "injection":
-            await reply(f"💉 Injection logged: {html.escape(content)}")
+            await reply(
+                f"💉 Injection logged: {html.escape(content)}",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
         elif tag == "hypothesis":
-            await reply("Logged #hypothesis ✓ — thinking about it…")
+            await reply(
+                "Logged #hypothesis ✓ — setting up the test…",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
             try:
                 result = await self.planner.evaluate_hypothesis(content)
-
-                # Show the narrative
-                await reply(result["narrative"])
-
-                # Set up tracking actions
-                actions = []
-
-                if result.get("metrics"):
-                    keys = ", ".join(
-                        f"<code>metric: {m['key']} &lt;value&gt;</code>"
-                        for m in result["metrics"]
-                    )
-                    descs = "\n".join(
-                        f"• <b>{m['key']}</b>: {m['description']}"
-                        for m in result["metrics"]
-                    )
-                    actions.append(
-                        f"📊 <b>Track these metrics:</b>\n{descs}\n\nLog with: {keys}"
-                    )
-
-                if result.get("habits"):
-                    actions.append(
-                        "👁 <b>Watch these habits:</b> " + ", ".join(result["habits"])
-                    )
-
-                if result.get("follow_up_date"):
-                    from datetime import date as _date
-
-                    fu_date = _date.fromisoformat(result["follow_up_date"])
-                    reminder_text = f"Hypothesis check-in: {result['follow_up_note']}"
-                    self.reminders.add(
-                        reminder_text,
-                        reminder_type="once",
-                        date=result["follow_up_date"],
-                        time="10:00",
-                    )
-                    actions.append(
-                        f"⏰ <b>Follow-up reminder set:</b> {fu_date.strftime('%A %b %d')} — {result['follow_up_note']}"
-                    )
-
-                if actions:
-                    await reply("\n\n".join(actions), parse_mode="HTML")
-
+                metric_keys = [m["key"] for m in result.get("metrics", [])]
+                self.hypotheses.add(
+                    content,
+                    restatement=result.get("restatement", ""),
+                    confirm_if=result.get("confirm_if", ""),
+                    falsify_if=result.get("falsify_if", ""),
+                    metric_keys=metric_keys,
+                    follow_up_date=result.get("follow_up_date", ""),
+                )
+                await reply(_hypothesis_summary(result), parse_mode="HTML")
             except Exception as e:
                 await reply(f"Hypothesis logged but evaluation failed: {e}")
         else:
-            await reply(f"Logged #{tag} ✓")
+            if self._is_low_confidence(confidence):
+                await reply(
+                    f"Logged #{tag} ✓ — not sure about that tag. Right one?",
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                )
+            else:
+                await reply(
+                    f"Logged #{tag} ✓",
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                )
+
+    # --- Reclassify keyboard helpers ---
+
+    def _is_low_confidence(self, confidence: float | None) -> bool:
+        return (
+            self.reclassify is not None
+            and confidence is not None
+            and confidence < self.reclassify.confidence_threshold
+        )
+
+    def _entry_keyboard(
+        self, entry_id: int | None, tag: str, confidence: float | None
+    ) -> InlineKeyboardMarkup | None:
+        """Per-entry action buttons for a just-logged message: the collapsed
+        Edit/Reclassify pair normally, or the full category picker immediately
+        (top guess pre-marked) when the classifier's confidence is low."""
+        if self.reclassify is None or entry_id is None:
+            return None
+        from reclassify_handlers import entry_actions_keyboard, picker_keyboard
+
+        if self._is_low_confidence(confidence):
+            return picker_keyboard(entry_id, tag)
+        return entry_actions_keyboard(entry_id)

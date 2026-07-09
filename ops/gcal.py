@@ -78,19 +78,24 @@ class GCal:
             .execute()
         )
 
-    def format_events(self, events: list) -> str:
-        if not events:
-            return "No events today."
-        lines = []
+    def event_rows(self, events: list) -> list[tuple[str, str]]:
+        """(time, summary) per event — 'HH:MM' for timed events, 'All day' otherwise.
+        The structured form callers render into a table or a text list."""
+        rows = []
         for e in events:
             start = e["start"].get("dateTime", e["start"].get("date", ""))
             summary = e.get("summary", "(no title)")
             if "T" in start:
                 t = datetime.fromisoformat(start).astimezone(TZ).strftime("%H:%M")
-                lines.append(f"• {t} — {summary}")
             else:
-                lines.append(f"• All day — {summary}")
-        return "\n".join(lines)
+                t = "All day"
+            rows.append((t, summary))
+        return rows
+
+    def format_events(self, events: list) -> str:
+        if not events:
+            return "No events today."
+        return "\n".join(f"• {t} — {s}" for t, s in self.event_rows(events))
 
     def _service(self):
         if self.service_account_file.exists():

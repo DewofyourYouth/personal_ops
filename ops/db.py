@@ -60,6 +60,35 @@ CREATE TABLE IF NOT EXISTS reminders (
 """
 
 
+# Append-only correction/confirmation events for classifier labels. A row is
+# training data ("this text should be labelled X") and an audit trail — the
+# original entry's first label survives here even after entries.tag is updated
+# to the corrected value for the rest of the app to read.
+_CREATE_LABEL_EVENTS = """
+CREATE TABLE IF NOT EXISTS label_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL,
+    ref_entry_id INTEGER NOT NULL,
+    event_type   TEXT NOT NULL,
+    from_label   TEXT NOT NULL,
+    to_label     TEXT NOT NULL,
+    source       TEXT NOT NULL DEFAULT 'user_tap'
+);
+CREATE INDEX IF NOT EXISTS idx_label_events_ref ON label_events(ref_entry_id);
+"""
+
+# One row per weekly active-learning pass: which label_events it consumed and
+# the before/after eval metrics (JSON), so regressions are visible, not silent.
+_CREATE_RETRAIN_RUNS = """
+CREATE TABLE IF NOT EXISTS retrain_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    events_through_id INTEGER NOT NULL,
+    n_events          INTEGER NOT NULL,
+    metrics           TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
 _CREATE_WEIGHT_CACHE = """
 CREATE TABLE IF NOT EXISTS weight_cache (
     basis_date TEXT PRIMARY KEY,
@@ -105,6 +134,8 @@ class Database:
         conn.executescript(_CREATE_ENTRIES)
         conn.executescript(_CREATE_METRICS)
         conn.executescript(_CREATE_REMINDERS)
+        conn.executescript(_CREATE_LABEL_EVENTS)
+        conn.executescript(_CREATE_RETRAIN_RUNS)
         conn.executescript(_CREATE_WEIGHT_CACHE)
         conn.executescript(_CREATE_FOOD_SUMMARY)
         conn.commit()
@@ -203,12 +234,76 @@ class Database:
     def delete_entry(self, entry_id: int) -> None:
         self.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
 
-    def insert_entry(self, ts: str, date_str: str, tag: str, content: str):
-        self._conn().execute(
+    def update_entry_tag(self, entry_id: int, tag: str) -> None:
+        self.execute("UPDATE entries SET tag = ? WHERE id = ?", (tag, entry_id))
+
+    def insert_entry(self, ts: str, date_str: str, tag: str, content: str) -> int:
+        cur = self._conn().execute(
             "INSERT INTO entries (ts, date, tag, content) VALUES (?, ?, ?, ?)",
             (ts, date_str, tag, content),
         )
         self._conn().commit()
+        return cur.lastrowid
+
+    def entry_by_id(self, entry_id: int) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM entries WHERE id = ?", (entry_id,))
+        return rows[0] if rows else None
+
+    def update_entry_content(self, entry_id: int, content: str) -> None:
+        self.execute(
+            "UPDATE entries SET content = ? WHERE id = ?", (content, entry_id)
+        )
+
+    def latest_entry(self, exclude_tags: tuple[str, ...] = ()) -> sqlite3.Row | None:
+        """The most recent entry, skipping the given tags — used by /fix to find
+        the last message that actually went through classification."""
+        placeholders = ",".join("?" * len(exclude_tags))
+        where = f"WHERE tag NOT IN ({placeholders})" if exclude_tags else ""
+        rows = self.query(
+            f"SELECT * FROM entries {where} ORDER BY id DESC LIMIT 1", exclude_tags
+        )
+        return rows[0] if rows else None
+
+    # --- Label events (append-only classifier corrections/confirmations) ---
+
+    def insert_label_event(
+        self,
+        ts: str,
+        ref_entry_id: int,
+        event_type: str,
+        from_label: str,
+        to_label: str,
+        source: str = "user_tap",
+    ) -> int:
+        cur = self._conn().execute(
+            "INSERT INTO label_events (ts, ref_entry_id, event_type, from_label, to_label, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (ts, ref_entry_id, event_type, from_label, to_label, source),
+        )
+        self._conn().commit()
+        return cur.lastrowid
+
+    def label_events_after(self, after_id: int) -> list[sqlite3.Row]:
+        """Label events newer than `after_id`, oldest first — the retrain loop's feed."""
+        return self.query(
+            "SELECT * FROM label_events WHERE id > ? ORDER BY id", (after_id,)
+        )
+
+    # --- Retrain runs (weekly active-learning bookkeeping) ---
+
+    def last_retrain_event_id(self) -> int:
+        """The last label_events id a retrain run consumed (0 if never run)."""
+        rows = self.query("SELECT MAX(events_through_id) AS m FROM retrain_runs")
+        return rows[0]["m"] or 0
+
+    def record_retrain_run(
+        self, ts: str, events_through_id: int, n_events: int, metrics_json: str
+    ) -> None:
+        self.execute(
+            "INSERT INTO retrain_runs (ts, events_through_id, n_events, metrics) "
+            "VALUES (?, ?, ?, ?)",
+            (ts, events_through_id, n_events, metrics_json),
+        )
 
     def entries_by_tag(self, tag: str) -> list[sqlite3.Row]:
         """All entries with a given tag, chronological — for reviewing evolution over time."""

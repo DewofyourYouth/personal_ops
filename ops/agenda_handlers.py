@@ -129,6 +129,11 @@ class AgendaHandlers:
             return None
         return self._status_message(items)
 
+    def status_items(self) -> list:
+        """Today's agenda items with their status, for callers that render their own
+        layout (e.g. the /status rich-message snapshot) rather than the text above."""
+        return self.agenda.get_status()
+
     # --- Commands ---
 
     async def cmd_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
