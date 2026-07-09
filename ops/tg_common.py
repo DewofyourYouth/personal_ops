@@ -7,6 +7,7 @@ without a circular import.
 import html
 import random
 
+from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest
 
 from bot_constants import ENCOURAGEMENTS
@@ -62,6 +63,51 @@ async def safe_answer(query, text: str = "") -> None:
         await query.answer(text)
     except BadRequest:
         pass  # query expired (bot restarted, old button tapped)
+
+
+class _InlineKeyboardMarkupProxy:
+    """Fallback for Telegram packages that serialize markups but don't expose rows."""
+
+    def __init__(self, markup, rows: tuple[tuple, ...]) -> None:
+        self._markup = markup
+        self.inline_keyboard = rows
+
+    def __getattr__(self, name):
+        return getattr(self._markup, name)
+
+    def to_dict(self) -> dict:
+        if hasattr(self._markup, "to_dict"):
+            return self._markup.to_dict()
+        return {"inline_keyboard": self.inline_keyboard}
+
+
+def inline_keyboard_markup(rows: list | tuple) -> InlineKeyboardMarkup:
+    """Create an inline keyboard with a stable `.inline_keyboard` accessor.
+
+    python-telegram-bot exposes `.inline_keyboard`, but some `telegram` package
+    variants only serialize the markup. Tests and keyboard-composition code need
+    row access, so attach the normalized rows when the object does not provide it.
+    """
+    normalized = tuple(tuple(row) for row in rows)
+    markup = InlineKeyboardMarkup(normalized)
+    if hasattr(markup, "inline_keyboard"):
+        return markup
+    try:
+        markup.inline_keyboard = normalized
+        return markup
+    except Exception:
+        return _InlineKeyboardMarkupProxy(markup, normalized)
+
+
+def inline_keyboard_rows(markup) -> list[list]:
+    if markup is None:
+        return []
+    rows = getattr(markup, "inline_keyboard", None)
+    if rows is None:
+        rows = getattr(markup, "keyboard", None)
+    if rows is None:
+        return []
+    return [list(row) for row in rows]
 
 
 def encourage() -> str:

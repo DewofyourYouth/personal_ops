@@ -40,7 +40,12 @@ from bot_constants import PREFIXES
 from habit_handlers import exact_habit_match, match_habit
 from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from media import send_sticker
-from tg_common import encourage, safe_answer
+from tg_common import (
+    encourage,
+    inline_keyboard_markup,
+    inline_keyboard_rows,
+    safe_answer,
+)
 
 
 # Matches "feedback:", "feedback request", "question:", "I have a question", etc.
@@ -325,11 +330,11 @@ def _mood_energy_keyboard(
         )
         for e, v in ENERGY_OPTIONS
     ]
-    return InlineKeyboardMarkup([mood_row, energy_row])
+    return inline_keyboard_markup([mood_row, energy_row])
 
 
 def _food_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return inline_keyboard_markup(
         [
             [
                 InlineKeyboardButton("✅ Log it", callback_data="food_confirm"),
@@ -475,7 +480,7 @@ class TextRouter:
         ):
             text = update.message.text.strip()
             self._awaiting_voice_edit[chat_id] = text
-            keyboard = InlineKeyboardMarkup(
+            keyboard = inline_keyboard_markup(
                 [
                     [
                         InlineKeyboardButton("✅ OK", callback_data="voice_ok"),
@@ -574,7 +579,7 @@ class TextRouter:
 
         await send_sticker(self.bot, chat_id, "voice")
         self._awaiting_voice_edit[chat_id] = text
-        keyboard = InlineKeyboardMarkup(
+        keyboard = inline_keyboard_markup(
             [
                 [
                     InlineKeyboardButton("✅ OK", callback_data="voice_ok"),
@@ -781,7 +786,7 @@ class TextRouter:
             pending["adjusting"] = False
             await update.message.reply_text(
                 "Couldn't re-estimate that. Log the original estimate, or cancel?",
-                reply_markup=InlineKeyboardMarkup(
+                reply_markup=inline_keyboard_markup(
                     [
                         [
                             InlineKeyboardButton(
@@ -835,7 +840,7 @@ class TextRouter:
         rows = self.logs.db.entries_for_date(today)
         food_rows = [r for r in rows if r["tag"] == "food"]
         if not food_rows:
-            return "No food logged today.", InlineKeyboardMarkup([])
+            return "No food logged today.", inline_keyboard_markup([])
         kbd_rows = []
         for r in food_rows:
             label = r["content"][:40] + ("…" if len(r["content"]) > 40 else "")
@@ -846,7 +851,7 @@ class TextRouter:
                     InlineKeyboardButton("🗑", callback_data=f"food_del:{r['id']}"),
                 ]
             )
-        return "🍽 <b>Today's food — tap 🗑 to delete:</b>", InlineKeyboardMarkup(
+        return "🍽 <b>Today's food — tap 🗑 to delete:</b>", inline_keyboard_markup(
             kbd_rows
         )
 
@@ -867,7 +872,7 @@ class TextRouter:
         entry_id = int(query.data.split(":", 1)[1])
         self.logs.db.delete_entry(entry_id)
         text, keyboard = self._food_manage_message()
-        if not keyboard.inline_keyboard:
+        if not inline_keyboard_rows(keyboard):
             await query.edit_message_text("🗑 Removed. No more food entries today.")
         else:
             await query.edit_message_text(
@@ -1354,12 +1359,12 @@ class TextRouter:
         elif tag == "checkin":
             # Mood/energy rows stay on top; the Edit/Reclassify row (or the
             # low-confidence picker) rides along underneath.
-            mood_rows = [list(r) for r in _mood_energy_keyboard().inline_keyboard]
+            mood_rows = inline_keyboard_rows(_mood_energy_keyboard())
             keyboard = self._entry_keyboard(entry_id, tag, confidence, extra)
-            rc_rows = [list(r) for r in keyboard.inline_keyboard] if keyboard else []
+            rc_rows = inline_keyboard_rows(keyboard)
             await reply(
                 f"Logged #{tag} ✓",
-                reply_markup=InlineKeyboardMarkup(mood_rows + rc_rows),
+                reply_markup=inline_keyboard_markup(mood_rows + rc_rows),
             )
         elif tag == "injection":
             await reply(

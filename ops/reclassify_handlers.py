@@ -30,7 +30,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from llm import _BASE_CLASSIFICATION_TAGS
-from tg_common import safe_answer
+from tg_common import inline_keyboard_markup, inline_keyboard_rows, safe_answer
 
 # Categories offered in the picker: the classifier enum plus the rules-routed
 # tags a message realistically gets misfiled into or out of.
@@ -48,7 +48,7 @@ def entry_actions_keyboard(
         InlineKeyboardButton("✏️ Edit", callback_data=f"rc:edit:{entry_id}"),
         InlineKeyboardButton("🏷 Reclassify", callback_data=f"rc:menu:{entry_id}"),
     ]
-    return InlineKeyboardMarkup([row] + list(extra_rows or []))
+    return inline_keyboard_markup([row] + list(extra_rows or []))
 
 
 def picker_keyboard(
@@ -70,7 +70,7 @@ def picker_keyboard(
             )
     rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
     rows.append([InlineKeyboardButton("Cancel", callback_data=f"rc:cancel:{entry_id}")])
-    return InlineKeyboardMarkup(rows + list(extra_rows or []))
+    return inline_keyboard_markup(rows + list(extra_rows or []))
 
 
 # 1-5 self-rating for voice notes, matching the mood metric's 1-5 scale — the
@@ -93,7 +93,7 @@ def mood_rating_row(entry_id: int, locked: int | None = None) -> list:
 def _carried_rows(query) -> list:
     """Rows from the message's existing keyboard that aren't ours (e.g. the
     mood/energy or self-rating rows) — preserved across keyboard swaps."""
-    keyboard = query.message.reply_markup.inline_keyboard if query.message else ()
+    keyboard = inline_keyboard_rows(query.message.reply_markup) if query.message else ()
     kept = []
     for row in keyboard or ():
         if not any((btn.callback_data or "").startswith("rc:") for btn in row):
@@ -247,14 +247,14 @@ class ReclassifyHandlers:
         _, entry_id, rating = query.data.split(":")  # sm:<entry_id>:<n>
         self.logs.write_metric("self_mood_rating", int(rating))
         rows = []
-        for row in query.message.reply_markup.inline_keyboard or ():
+        for row in inline_keyboard_rows(query.message.reply_markup):
             if any((btn.callback_data or "").startswith("sm:") for btn in row):
                 rows.append(mood_rating_row(int(entry_id), locked=int(rating)))
             else:
                 rows.append(list(row))
         try:
             await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup(rows)
+                reply_markup=inline_keyboard_markup(rows)
             )
         except Exception:
             pass  # unchanged markup / expired query — the metric is saved either way
