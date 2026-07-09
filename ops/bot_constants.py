@@ -122,6 +122,8 @@ HELP_SECTIONS = {
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 /hypotheses — open tests + their follow-ups
+/fix — reclassify the most recent logged entry
+🏷 every logged entry has Edit / Reclassify buttons to correct its tag
 Anything else is logged as <code>#log</code>""",
     ),
     "context": (

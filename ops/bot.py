@@ -29,6 +29,7 @@ from logs import Logs
 from media import send_startup_animation
 from planner import Planner
 from plugins import build_plugins, collect_jobs
+from reclassify_handlers import ReclassifyHandlers
 from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
@@ -95,6 +96,7 @@ router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
 hypothesis_feature: "HypothesisHandlers" = None  # type: ignore[assignment]
+reclassify_feature: "ReclassifyHandlers" = None  # type: ignore[assignment]
 status_feature: "StatusHandlers" = None  # type: ignore[assignment]
 plugins: list = []  # built in main(); _post_init reads their scheduled jobs
 
@@ -193,6 +195,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # intercept reminder edit reply (owned by the reminders feature)
     if await reminders_feature.try_handle_edit_reply(update):
+        return
+
+    # intercept entry-content edit reply (owned by the reclassify feature)
+    if await reclassify_feature.try_handle_edit_reply(update):
         return
 
     # intercept context file edit
@@ -580,9 +586,20 @@ async def handle_mood_energy_callback(
                 for e, v in ENERGY_OPTIONS:
                     if e in btn.text and not locked_energy:
                         locked_energy = v
+    # Preserve any non-mood rows (the reclassify/self-rating buttons ride on the
+    # same message for checkins) — rebuilding only the me_ rows used to drop them.
+    other_rows = [
+        list(row)
+        for row in query.message.reply_markup.inline_keyboard or []
+        if not any((btn.callback_data or "").startswith("me_") for btn in row)
+        and not all(btn.callback_data == "noop" for btn in row)
+    ]
+    rebuilt = [
+        list(r) for r in _mood_energy_keyboard(locked_mood, locked_energy).inline_keyboard
+    ]
     try:
         await query.edit_message_reply_markup(
-            reply_markup=_mood_energy_keyboard(locked_mood, locked_energy)
+            reply_markup=InlineKeyboardMarkup(rebuilt + other_rows)
         )
     except Exception:
         pass
@@ -883,11 +900,21 @@ def main():
     for plugin in plugins:
         plugin.register(app)
 
+    # Reclassify feature (Edit/Reclassify buttons on classified messages, /fix,
+    # the low-confidence picker). Built before the router, which attaches its
+    # keyboards to every classification confirmation.
+    global reclassify_feature
+    reclassify_feature = ReclassifyHandlers(
+        app.bot, logs, ALLOWED_USER, config.reclassify_confidence_threshold
+    )
+    reclassify_feature.register(app)
+
     # Central inbound-message router: owns process_text + the candle/reminder-time/
     # voice flows. It commits user-added agenda items through the agenda feature.
     global router
     router = TextRouter(app.bot, services, shabbat_, ALLOWED_USER)
     router.agenda_feature = agenda_feature
+    router.reclassify = reclassify_feature
     # Hand the grocery plugin to the router so confirmed voice transcripts opening
     # with "grocery"/"groceries" route into the list (the plugin owns the logic).
     router.grocery = next((p for p in plugins if hasattr(p, "handle_voice_text")), None)

@@ -428,6 +428,9 @@ class TextRouter:
         # Set by bot.py after plugins are built — used to collect plugin classification
         # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
         self.plugins: list = []
+        # Set by bot.py — the reclassify feature, which owns the Edit/Reclassify
+        # buttons attached to every classified message and the low-confidence picker.
+        self.reclassify = None
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -850,25 +853,30 @@ class TextRouter:
                 text, parse_mode="HTML", reply_markup=keyboard
             )
 
-    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str]:
+    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str, float | None]:
         """Like _classify_entry but falls back to Haiku when no prefix is detected.
 
         Gathers classification_tags from registered plugins so each plugin's tags
         are included in the LLM enum and prompt without hardcoding them here.
+
+        Returns (tag, content, confidence). Confidence is only reported by the
+        embedding classifier (its KNN vote share); prefix rules and the LLM path
+        return None, which downstream treats as "no low-confidence prompt".
         """
         tag, content = self._classify_entry(text)
         if tag != "log":
-            return tag, content
+            return tag, content, None
         # Rules-first: a bare entry that exactly matches a known habit string ("daily
         # walk") is routed to #habit deterministically — no LLM classification call.
         try:
             if habit := exact_habit_match(text, self.logs.db):
-                return "habit", habit
+                return "habit", habit, None
         except Exception:
             pass
         # Only the genuinely ambiguous middle reaches a classifier. Which classifier is
         # swappable via OPS_CLASSIFIER ("llm" default, or "embedding" for the local KNN
         # prototype in classifier.py) so the two can run side-by-side without a rewrite.
+        confidence = None
         try:
             extra_tags = [
                 t
@@ -876,16 +884,16 @@ class TextRouter:
                 for t in getattr(plugin, "classification_tags", [])
             ]
             if os.environ.get("OPS_CLASSIFIER") == "embedding":
-                from classifier import classify_entry_embedding
+                from classifier import classify_entry_embedding_confidence
 
-                tag = await classify_entry_embedding(
+                tag, confidence = await classify_entry_embedding_confidence(
                     text, self.logs.db, extra_tags=extra_tags or None
                 )
             else:
                 tag = await classify_entry(text, extra_tags=extra_tags or None)
         except Exception:
             pass  # keep "log" on any classifier failure
-        return tag, content
+        return tag, content, confidence
 
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
@@ -919,7 +927,7 @@ class TextRouter:
             )
             return
 
-        tag, content = await self._classify_entry_with_llm(entry_text)
+        tag, content, _ = await self._classify_entry_with_llm(entry_text)
 
         # Resolve free-text habit logs to a defined habit name, same as the live path, so
         # the backfilled day matches the checklist exactly and counts toward the streak.
@@ -1246,11 +1254,12 @@ class TextRouter:
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
         try:
-            tag, content = await self._classify_entry_with_llm(text)
+            tag, content, confidence = await self._classify_entry_with_llm(text)
         except Exception:
             # LLM unavailable or any other failure — fall back to prefix-only so the
             # message is never lost. The user sees the correct (if less rich) tag.
             tag, content = self._classify_entry(text)
+            confidence = None
 
         # Dispatch plugin-owned tags to the plugin that declared them. Each plugin
         # optionally implements handle_classified_text(tag, content, reply) → bool.
@@ -1283,8 +1292,11 @@ class TextRouter:
                 )
                 return
             # No usable estimate — fall back to logging the raw description.
-            self.logs.write(tag, content)
-            await reply(f"🍽 Logged: {content}")
+            entry_id = self.logs.write(tag, content)
+            await reply(
+                f"🍽 Logged: {content}",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
             return
 
         # For free-text habit logs (e.g. "habit: took a stroll"), resolve which defined
@@ -1302,19 +1314,35 @@ class TextRouter:
         # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
         # backup. Writing the file directly here bypassed the DB — the bug that made
         # prefix entries (values, insight, note, …) invisible to /values and other readers.
-        self.logs.write(tag, content)
+        entry_id = self.logs.write(tag, content)
 
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")
 
         if tag == "discrete":
-            await reply("🔒 Logged.")
+            await reply(
+                "🔒 Logged.", reply_markup=self._entry_keyboard(entry_id, tag, confidence)
+            )
         elif tag == "checkin":
-            await reply(f"Logged #{tag} ✓", reply_markup=_mood_energy_keyboard())
+            # Mood/energy rows stay on top; the Edit/Reclassify row (or the
+            # low-confidence picker) rides along underneath.
+            mood_rows = [list(r) for r in _mood_energy_keyboard().inline_keyboard]
+            keyboard = self._entry_keyboard(entry_id, tag, confidence)
+            rc_rows = [list(r) for r in keyboard.inline_keyboard] if keyboard else []
+            await reply(
+                f"Logged #{tag} ✓",
+                reply_markup=InlineKeyboardMarkup(mood_rows + rc_rows),
+            )
         elif tag == "injection":
-            await reply(f"💉 Injection logged: {html.escape(content)}")
+            await reply(
+                f"💉 Injection logged: {html.escape(content)}",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
         elif tag == "hypothesis":
-            await reply("Logged #hypothesis ✓ — setting up the test…")
+            await reply(
+                "Logged #hypothesis ✓ — setting up the test…",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+            )
             try:
                 result = await self.planner.evaluate_hypothesis(content)
                 metric_keys = [m["key"] for m in result.get("metrics", [])]
@@ -1330,4 +1358,36 @@ class TextRouter:
             except Exception as e:
                 await reply(f"Hypothesis logged but evaluation failed: {e}")
         else:
-            await reply(f"Logged #{tag} ✓")
+            if self._is_low_confidence(confidence):
+                await reply(
+                    f"Logged #{tag} ✓ — not sure about that tag. Right one?",
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                )
+            else:
+                await reply(
+                    f"Logged #{tag} ✓",
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                )
+
+    # --- Reclassify keyboard helpers ---
+
+    def _is_low_confidence(self, confidence: float | None) -> bool:
+        return (
+            self.reclassify is not None
+            and confidence is not None
+            and confidence < self.reclassify.confidence_threshold
+        )
+
+    def _entry_keyboard(
+        self, entry_id: int | None, tag: str, confidence: float | None
+    ) -> InlineKeyboardMarkup | None:
+        """Per-entry action buttons for a just-logged message: the collapsed
+        Edit/Reclassify pair normally, or the full category picker immediately
+        (top guess pre-marked) when the classifier's confidence is low."""
+        if self.reclassify is None or entry_id is None:
+            return None
+        from reclassify_handlers import entry_actions_keyboard, picker_keyboard
+
+        if self._is_low_confidence(confidence):
+            return picker_keyboard(entry_id, tag)
+        return entry_actions_keyboard(entry_id)

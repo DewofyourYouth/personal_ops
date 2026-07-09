@@ -128,6 +128,14 @@ class EmbeddingClassifier:
         self.vecs = _normalize(embed_texts(list(ref_texts)))
 
     def classify(self, text: str, k: int | None = None) -> str:
+        return self.classify_with_confidence(text, k)[0]
+
+    def classify_with_confidence(
+        self, text: str, k: int | None = None
+    ) -> tuple[str, float]:
+        """(tag, confidence) — confidence is the winner's share of the similarity-
+        weighted vote (1.0 = unanimous neighbours, ~1/n_labels = a coin toss).
+        Drives the low-confidence reclassify prompt."""
         k = k or self.k
         q = _normalize(embed_texts([text]))[0]
         sims = self.vecs @ q
@@ -135,19 +143,28 @@ class EmbeddingClassifier:
         votes: dict[str, float] = {}
         for i in top:
             votes[self.labels[i]] = votes.get(self.labels[i], 0.0) + float(sims[i])
-        return max(votes, key=lambda t: votes[t])  # similarity-weighted majority
+        winner = max(votes, key=lambda t: votes[t])  # similarity-weighted majority
+        total = sum(votes.values())
+        return winner, (votes[winner] / total if total > 0 else 0.0)
 
 
 _singleton: EmbeddingClassifier | None = None
 
 
-def _classify_sync(text: str, db, extra_tags: list[dict] | None) -> str:
+def _classify_sync(text: str, db, extra_tags: list[dict] | None) -> tuple[str, float]:
     global _singleton
     if _singleton is None:
         tags = _INFERENCE_TAGS + [t["tag"] for t in (extra_tags or [])]
         texts, labels = build_reference_set(db, tags)
         _singleton = EmbeddingClassifier(texts, labels)
-    return _singleton.classify(text)
+    return _singleton.classify_with_confidence(text)
+
+
+def reset_singleton() -> None:
+    """Drop the cached classifier so the next call rebuilds its reference set —
+    called after reclassifications/retrains change the underlying labels."""
+    global _singleton
+    _singleton = None
 
 
 async def classify_entry_embedding(
@@ -160,4 +177,11 @@ async def classify_entry_embedding(
     can be routed too. The blocking embed/vote runs in a thread so the bot's event loop
     stays free, matching how the LLM/transcription calls are offloaded elsewhere.
     """
+    return (await classify_entry_embedding_confidence(text, db, extra_tags))[0]
+
+
+async def classify_entry_embedding_confidence(
+    text: str, db, extra_tags: list[dict] | None = None
+) -> tuple[str, float]:
+    """Like classify_entry_embedding, but also returns the vote-share confidence."""
     return await asyncio.to_thread(_classify_sync, text, db, extra_tags)
