@@ -15,7 +15,16 @@ def _stub_telegram() -> None:
     """Insert minimal fakes for the telegram package and its submodules."""
 
     def _cls(name: str):
-        t = type(name, (), {"__init__": lambda *a, **kw: None})
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+            if name == "InlineKeyboardButton" and args:
+                self.text = args[0]
+            if name == "InlineKeyboardMarkup" and args:
+                self.inline_keyboard = tuple(tuple(row) for row in args[0])
+
+        t = type(name, (), {"__init__": __init__})
         t.DEFAULT_TYPE = None
         return t
 
