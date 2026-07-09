@@ -1,0 +1,67 @@
+[
+  {
+    "name": "Rosh Hashana 5786 day 1",
+    "quiet_start": "2025-09-21T18:00:00+03:00",
+    "quiet_end": "2025-09-22T21:00:00+03:00"
+  },
+  {
+    "name": "Rosh Hashana 5786 day 2",
+    "quiet_start": "2025-09-22T21:00:00+03:00",
+    "quiet_end": "2025-09-23T21:00:00+03:00"
+  },
+  {
+    "name": "Yom Kippur 5786",
+    "quiet_start": "2025-10-01T17:30:00+03:00",
+    "quiet_end": "2025-10-02T21:00:00+03:00"
+  },
+  {
+    "name": "Sukkot 5786 (first day, Israel)",
+    "quiet_start": "2025-10-06T18:00:00+03:00",
+    "quiet_end": "2025-10-07T20:30:00+03:00"
+  },
+  {
+    "name": "Shemini Atzeret / Simchat Torah 5786 (Israel)",
+    "quiet_start": "2025-10-13T18:00:00+03:00",
+    "quiet_end": "2025-10-14T20:00:00+03:00"
+  },
+  {
+    "name": "Pesach 5786 first day (Israel)",
+    "quiet_start": "2026-04-01T18:30:00+03:00",
+    "quiet_end": "2026-04-02T20:30:00+03:00"
+  },
+  {
+    "name": "Pesach 5786 last day (Israel)",
+    "quiet_start": "2026-04-07T18:30:00+03:00",
+    "quiet_end": "2026-04-08T20:30:00+03:00"
+  },
+  {
+    "name": "Shavuot 5786 (Israel)",
+    "quiet_start": "2026-05-21T19:00:00+03:00",
+    "quiet_end": "2026-05-22T21:00:00+03:00"
+  },
+  {
+    "name": "Rosh Hashana 5787 day 1",
+    "quiet_start": "2026-09-10T18:00:00+03:00",
+    "quiet_end": "2026-09-11T21:00:00+03:00"
+  },
+  {
+    "name": "Rosh Hashana 5787 day 2",
+    "quiet_start": "2026-09-11T21:00:00+03:00",
+    "quiet_end": "2026-09-12T21:00:00+03:00"
+  },
+  {
+    "name": "Yom Kippur 5787",
+    "quiet_start": "2026-09-19T17:30:00+03:00",
+    "quiet_end": "2026-09-20T21:00:00+03:00"
+  },
+  {
+    "name": "Sukkot 5787 (first day, Israel)",
+    "quiet_start": "2026-09-24T18:00:00+03:00",
+    "quiet_end": "2026-09-25T20:30:00+03:00"
+  },
+  {
+    "name": "Shemini Atzeret / Simchat Torah 5787 (Israel)",
+    "quiet_start": "2026-10-01T18:00:00+03:00",
+    "quiet_end": "2026-10-02T20:30:00+03:00"
+  }
+]

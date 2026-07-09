@@ -94,6 +94,15 @@ baseline_ = Baseline(LOG_DIR)
 weight_ = Weight(logs.db)
 shabbat_ = Shabbat(LOG_DIR)
 
+from pathlib import Path as _Path
+from quiet_window import QuietWindow as _QuietWindow
+from staleness import StalenessChecker as _StalenessChecker
+
+_CHAGIM_PATH = _Path(__file__).parent / "chagim.json"
+_STALENESS_CONFIG_PATH = _Path(__file__).parent / "staleness_config.json"
+quiet_window_ = _QuietWindow(shabbat_, chagim_path=_CHAGIM_PATH)
+staleness_ = _StalenessChecker(logs.db, quiet_window_, config_path=_STALENESS_CONFIG_PATH)
+
 
 # Feature handler instances, created in main() once app.bot exists.
 agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
@@ -378,6 +387,8 @@ async def weekly_digest():
     await digest_feature.run_weekly()
 
 
+async def _staleness_check():
+    await staleness_.check_and_prompt(_bot, ALLOWED_USER)
 def _mine_db_path() -> str:
     return os.path.join(LOG_DIR, "ops.db")
 
@@ -872,7 +883,15 @@ async def _post_init(application):
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
-        extra_jobs=collect_jobs(plugins),
+        extra_jobs=[
+            *collect_jobs(plugins),
+            {
+                "id": "staleness_check",
+                "func": _staleness_check,
+                "trigger": "interval",
+                "kwargs": {"minutes": 30},
+            },
+        ],
     )
 
 
@@ -929,6 +948,7 @@ def main():
         reminders=reminders,
         hypotheses=hypotheses_,
         allowed_user=ALLOWED_USER,
+        quiet_window=quiet_window_,
     )
     plugins = build_plugins(app.bot, services)
     for plugin in plugins:
@@ -946,7 +966,7 @@ def main():
     # Central inbound-message router: owns process_text + the candle/reminder-time/
     # voice flows. It commits user-added agenda items through the agenda feature.
     global router
-    router = TextRouter(app.bot, services, shabbat_, ALLOWED_USER)
+    router = TextRouter(app.bot, services, quiet_window_, ALLOWED_USER)
     router.agenda_feature = agenda_feature
     router.reclassify = reclassify_feature
     # Hand the grocery plugin to the router so confirmed voice transcripts opening
@@ -959,7 +979,7 @@ def main():
     # the module-level scheduled_daily_digest / weekly_digest for the job store.
     global digest_feature
     digest_feature = DigestHandlers(
-        app.bot, planner_, baseline_, logs, context_, shabbat_, ALLOWED_USER
+        app.bot, planner_, baseline_, logs, context_, quiet_window_, ALLOWED_USER
     )
     digest_feature.register(app)
 
@@ -967,7 +987,7 @@ def main():
     # wrapped by the module-level check_reminders for the job store).
     global reminders_feature
     reminders_feature = ReminderHandlers(
-        app.bot, reminders, logs, shabbat_, ALLOWED_USER
+        app.bot, reminders, logs, quiet_window_, ALLOWED_USER
     )
     reminders_feature.register(app)
 
@@ -982,7 +1002,7 @@ def main():
     # plugin is found by duck-typing (same pattern as router.grocery above).
     global status_feature
     status_feature = StatusHandlers(
-        app.bot, agenda_feature, gcal_, planner_, shabbat_, ALLOWED_USER
+        app.bot, agenda_feature, gcal_, planner_, quiet_window_, ALLOWED_USER
     )
     status_feature.habits = next(
         (p for p in plugins if hasattr(p, "pending_today")), None

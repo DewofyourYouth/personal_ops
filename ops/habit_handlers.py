@@ -30,6 +30,18 @@ from shabbat import Shabbat
 from tg_common import safe_answer
 
 
+def _make_quiet_window(shabbat):
+    """Build a QuietWindow from a Shabbat instance if quiet_window.py is available."""
+    try:
+        from pathlib import Path
+        from quiet_window import QuietWindow
+
+        chagim = Path(__file__).parent / "chagim.json"
+        return QuietWindow(shabbat, chagim_path=chagim)
+    except ImportError:
+        return shabbat
+
+
 def _match_key(s: str) -> str:
     """Normalise a habit name for forgiving exact-match: lowercase, drop parenthetical
     schedule annotations like "(07:00–08:00)", and strip surrounding punctuation/space.
@@ -572,16 +584,22 @@ async def match_slip(content: str, db) -> str | None:
 
 class HabitHandlers:
     def __init__(
-        self, bot: Bot, logs: Logs, context: Context, allowed_user: int, planner=None
+        self,
+        bot: Bot,
+        logs: Logs,
+        context: Context,
+        allowed_user: int,
+        planner=None,
+        quiet_window=None,
     ) -> None:
         self.bot = bot
         self.logs = logs
         self.context = context
         self.allowed_user = allowed_user
         self.planner = planner  # for the failing-habit strategy (4-Laws) call
-        self.shabbat = Shabbat(
-            logs.log_dir
-        )  # to know when it's actually Shabbat vs motzei
+        self.shabbat = Shabbat(logs.log_dir)
+        # Use QuietWindow if provided; otherwise fall back to building one from shabbat.
+        self.quiet_window = quiet_window if quiet_window is not None else _make_quiet_window(self.shabbat)
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
@@ -589,7 +607,13 @@ class HabitHandlers:
                 "id": "habit_eod_check",
                 "func": self.daily_habit_check,
                 "trigger": "cron",
-                "kwargs": {"hour": 23, "minute": 30},
+                "kwargs": {"hour": 22, "minute": 15},
+            },
+            {
+                "id": "habit_eod_auto_miss",
+                "func": self.auto_miss_pending,
+                "trigger": "cron",
+                "kwargs": {"hour": 22, "minute": 45},
             },
             {
                 "id": "habit_weekly_suggestions",
@@ -661,9 +685,9 @@ class HabitHandlers:
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
 
-        # Only suppress the list while it's actually Shabbat — once it's out (motzei
-        # shabbat, Saturday night), the list comes back so the week can start.
-        if self.shabbat.quiet_now():
+        # Only suppress the list while it's actually a quiet window — once it's out
+        # (motzei Shabbat, after chag), the list comes back so the next period can start.
+        if self.quiet_window.is_quiet_at():
             return (
                 "🕯 <b>Shabbat</b> — habits aren't tracked now, and Shabbat never counts "
                 "against a streak. Rest.",
@@ -791,6 +815,10 @@ class HabitHandlers:
             for h in self._pending_today_habits()
         ]
 
+    def _eod_message(self, for_date=None) -> tuple[str | None, InlineKeyboardMarkup | None]:
+        """Prompt for habits due on for_date (default: today) that haven't been logged yet.
+        Returns (None, None) when nothing is pending."""
+        pending = self._pending_today_habits(for_date=for_date)
     def today_checklist(self) -> list[tuple[str, bool]]:
         """(display name, done) for every habit due today — done = a completed
         ('habit') log exists today. Feeds the /status rich-message checkbox list,
@@ -851,13 +879,10 @@ class HabitHandlers:
         return "\n".join(lines), InlineKeyboardMarkup(rows)
 
     async def daily_habit_check(self, force: bool = False) -> None:
-        """Scheduled 23:30 prompt asking whether today's still-unlogged habits got done.
-        Skips Fri/Sat (Shabbat — habits aren't tracked) and stays silent if nothing's
-        pending. `force` bypasses the Shabbat skip (used by the preview fire)."""
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-
-        if not force and datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() in (4, 5):
+        """Scheduled 22:15 prompt asking whether today's still-unlogged habits got done.
+        Suppressed during Shabbat/chag quiet windows. `force` bypasses the quiet check
+        (used by /habitcheck on demand)."""
+        if not force and self.quiet_window.is_quiet_at():
             return
         text, keyboard = self._eod_message()
         if text is None:
@@ -868,6 +893,31 @@ class HabitHandlers:
             text=text,
             parse_mode="HTML",
             reply_markup=keyboard,
+        )
+
+    async def auto_miss_pending(self) -> None:
+        """Scheduled 22:45 grace-cutoff: auto-log any habits still pending as missed.
+
+        Fires 30 min after the 22:15 EOD check. If the user hasn't responded by then,
+        all still-unlogged habits for today are marked missed automatically. Suppressed
+        during quiet windows (items that couldn't be logged aren't failures)."""
+        if self.quiet_window.is_quiet_at():
+            return
+        pending = self._pending_today_habits()
+        if not pending:
+            return
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        for h in pending:
+            self.logs.write("habit_missed", h["name"])
+        names = ", ".join(
+            self.context.habit_display_name(h["name"]) for h in pending
+        )
+        await self.bot.send_message(
+            chat_id=self.allowed_user,
+            text=f"🌙 Grace period ended — auto-marked as missed: {names}",
         )
 
     async def cmd_habit_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1466,6 +1516,8 @@ class HabitHandlers:
 
     async def weekly_habit_suggestions(self) -> None:
         """Sunday 09:00 — send Atomic Habits suggestions for struggling habits."""
+        if self.quiet_window.is_quiet_at():
+            return
         from habit_tracker import struggling_habits
 
         strugglers = struggling_habits(self.logs)
