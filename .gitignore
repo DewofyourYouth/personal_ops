@@ -10,7 +10,9 @@ ops/.DS_Store
 .DS_Store
 ops/reminders.json
 .obsidian
-ops/context/digests
+# ops/context is its own git checkout (personal-ops-context repo); tracked
+# there, not duplicated here.
+ops/context
 draft-difficulty-post.md
 draft-difficulty-math.md
 .idea
