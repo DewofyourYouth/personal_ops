@@ -73,6 +73,23 @@ def picker_keyboard(
     return InlineKeyboardMarkup(rows + list(extra_rows or []))
 
 
+# 1-5 self-rating for voice notes, matching the mood metric's 1-5 scale — the
+# ground truth the local affect features get checked against later.
+_MOOD_RATING_EMOJI = {1: "😞", 2: "😕", 3: "😐", 4: "😊", 5: "😄"}
+
+
+def mood_rating_row(entry_id: int, locked: int | None = None) -> list:
+    """The optional "how did you feel?" row on voice-note confirmations.
+    Taps log a self_mood_rating metric; `locked` re-renders the chosen value."""
+    return [
+        InlineKeyboardButton(
+            f"✅{n}" if locked == n else f"{_MOOD_RATING_EMOJI[n]}{n}",
+            callback_data="noop" if locked is not None else f"sm:{entry_id}:{n}",
+        )
+        for n in sorted(_MOOD_RATING_EMOJI)
+    ]
+
+
 def _carried_rows(query) -> list:
     """Rows from the message's existing keyboard that aren't ours (e.g. the
     mood/energy or self-rating rows) — preserved across keyboard swaps."""
@@ -97,6 +114,7 @@ class ReclassifyHandlers:
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("fix", self.cmd_fix))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^rc:"))
+        app.add_handler(CallbackQueryHandler(self.handle_mood_rating, pattern="^sm:"))
 
     # --- The correction/confirmation writes ---
 
@@ -216,6 +234,30 @@ class ReclassifyHandlers:
                     f"<code>{html.escape(entry['content'])}</code>",
                     parse_mode="HTML",
                 )
+
+    async def handle_mood_rating(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """A self_mood_rating tap on a voice-note message: log the metric and
+        lock the row in place (other rows on the message stay live)."""
+        query = update.callback_query
+        await safe_answer(query)
+        if query.from_user.id != self.allowed_user:
+            return
+        _, entry_id, rating = query.data.split(":")  # sm:<entry_id>:<n>
+        self.logs.write_metric("self_mood_rating", int(rating))
+        rows = []
+        for row in query.message.reply_markup.inline_keyboard or ():
+            if any((btn.callback_data or "").startswith("sm:") for btn in row):
+                rows.append(mood_rating_row(int(entry_id), locked=int(rating)))
+            else:
+                rows.append(list(row))
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+        except Exception:
+            pass  # unchanged markup / expired query — the metric is saved either way
 
     @staticmethod
     async def _show_confirmed(query, label: str) -> None:

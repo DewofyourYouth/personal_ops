@@ -18,6 +18,7 @@ circular import (this module never imports bot.py).
 import asyncio
 import difflib
 import html
+import logging
 import os
 import re
 import tempfile
@@ -435,6 +436,9 @@ class TextRouter:
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
         self._awaiting_voice_edit: dict = {}  # chat_id -> pending transcript text
+        # chat_id -> prosodic features of the pending voice note (survives the
+        # transcript-edit loop — the audio doesn't change when the text does).
+        self._pending_affect: dict = {}
         # chat_id -> {"raw", "estimate", "adjusting": bool} for the food confirm flow
         self._awaiting_food: dict = {}
 
@@ -545,6 +549,7 @@ class TextRouter:
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
 
+        chat_id = update.effective_chat.id
         try:
             await tg_file.download_to_drive(tmp_path)
             # Synchronous Whisper round-trip (may be two passes for Arabic/Hebrew).
@@ -553,10 +558,20 @@ class TextRouter:
                 transcribe_with_language_detection, tmp_path
             )
             text = result["text"]
+            # Local prosodic features from the same audio (librosa, no network).
+            # Best-effort: a failed feature pass must never block the transcript.
+            try:
+                from affect import extract_affect
+
+                self._pending_affect[chat_id] = await asyncio.to_thread(
+                    extract_affect, tmp_path, len(text.split())
+                )
+            except Exception:
+                logging.getLogger(__name__).exception("Affect extraction failed")
+                self._pending_affect.pop(chat_id, None)
         finally:
             os.unlink(tmp_path)
 
-        chat_id = update.effective_chat.id
         await send_sticker(self.bot, chat_id, "voice")
         self._awaiting_voice_edit[chat_id] = text
         keyboard = InlineKeyboardMarkup(
@@ -696,11 +711,17 @@ class TextRouter:
             def reply(msg, **kw):
                 return context.bot.send_message(chat_id=chat_id, text=msg, **kw)
 
+            affect = self._pending_affect.pop(chat_id, None)
             # "grocery …" voice notes go to the grocery list; anything else (or a
             # note that only looked like groceries) falls through to a normal log.
             if self.grocery and await self.grocery.handle_voice_text(text, reply):
                 return
-            await self.process_text(text, reply, chat_id=chat_id)
+            await self.process_text(
+                text,
+                reply,
+                chat_id=chat_id,
+                extra={"affect_features": affect} if affect else None,
+            )
 
         elif query.data == "voice_edit":
             current = self._awaiting_voice_edit.get(chat_id, "")
@@ -853,7 +874,9 @@ class TextRouter:
                 text, parse_mode="HTML", reply_markup=keyboard
             )
 
-    async def _classify_entry_with_llm(self, text: str) -> tuple[str, str, float | None]:
+    async def _classify_entry_with_llm(
+        self, text: str
+    ) -> tuple[str, str, float | None]:
         """Like _classify_entry but falls back to Haiku when no prefix is detected.
 
         Gathers classification_tags from registered plugins so each plugin's tags
@@ -955,7 +978,11 @@ class TextRouter:
             parse_mode="HTML",
         )
 
-    async def process_text(self, text: str, reply, chat_id: int = 0) -> None:
+    async def process_text(
+        self, text: str, reply, chat_id: int = 0, extra: dict | None = None
+    ) -> None:
+        # `extra` rides on the logged entry's record (DB extra column + JSONL
+        # line) — today that's a voice note's affect_features from handle_voice.
         text = _UNICODE_JUNK.sub("", text).strip()
         update_chat_id = chat_id
         lower = _normalize(text.lower()).strip(".,!?;: ")
@@ -1292,10 +1319,10 @@ class TextRouter:
                 )
                 return
             # No usable estimate — fall back to logging the raw description.
-            entry_id = self.logs.write(tag, content)
+            entry_id = self.logs.write(tag, content, extra=extra)
             await reply(
                 f"🍽 Logged: {content}",
-                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
             )
             return
 
@@ -1314,20 +1341,21 @@ class TextRouter:
         # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
         # backup. Writing the file directly here bypassed the DB — the bug that made
         # prefix entries (values, insight, note, …) invisible to /values and other readers.
-        entry_id = self.logs.write(tag, content)
+        entry_id = self.logs.write(tag, content, extra=extra)
 
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")
 
         if tag == "discrete":
             await reply(
-                "🔒 Logged.", reply_markup=self._entry_keyboard(entry_id, tag, confidence)
+                "🔒 Logged.",
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
             )
         elif tag == "checkin":
             # Mood/energy rows stay on top; the Edit/Reclassify row (or the
             # low-confidence picker) rides along underneath.
             mood_rows = [list(r) for r in _mood_energy_keyboard().inline_keyboard]
-            keyboard = self._entry_keyboard(entry_id, tag, confidence)
+            keyboard = self._entry_keyboard(entry_id, tag, confidence, extra)
             rc_rows = [list(r) for r in keyboard.inline_keyboard] if keyboard else []
             await reply(
                 f"Logged #{tag} ✓",
@@ -1336,12 +1364,12 @@ class TextRouter:
         elif tag == "injection":
             await reply(
                 f"💉 Injection logged: {html.escape(content)}",
-                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
             )
         elif tag == "hypothesis":
             await reply(
                 "Logged #hypothesis ✓ — setting up the test…",
-                reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
             )
             try:
                 result = await self.planner.evaluate_hypothesis(content)
@@ -1361,12 +1389,12 @@ class TextRouter:
             if self._is_low_confidence(confidence):
                 await reply(
                     f"Logged #{tag} ✓ — not sure about that tag. Right one?",
-                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
                 )
             else:
                 await reply(
                     f"Logged #{tag} ✓",
-                    reply_markup=self._entry_keyboard(entry_id, tag, confidence),
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
                 )
 
     # --- Reclassify keyboard helpers ---
@@ -1379,15 +1407,28 @@ class TextRouter:
         )
 
     def _entry_keyboard(
-        self, entry_id: int | None, tag: str, confidence: float | None
+        self,
+        entry_id: int | None,
+        tag: str,
+        confidence: float | None,
+        extra: dict | None = None,
     ) -> InlineKeyboardMarkup | None:
         """Per-entry action buttons for a just-logged message: the collapsed
         Edit/Reclassify pair normally, or the full category picker immediately
-        (top guess pre-marked) when the classifier's confidence is low."""
+        (top guess pre-marked) when the classifier's confidence is low. Voice
+        notes (extra carries affect_features) also get the optional 1-5
+        self-mood-rating row — the ground truth for the local affect proxy."""
         if self.reclassify is None or entry_id is None:
             return None
-        from reclassify_handlers import entry_actions_keyboard, picker_keyboard
+        from reclassify_handlers import (
+            entry_actions_keyboard,
+            mood_rating_row,
+            picker_keyboard,
+        )
 
+        extra_rows = (
+            [mood_rating_row(entry_id)] if extra and extra.get("affect_features") else []
+        )
         if self._is_low_confidence(confidence):
-            return picker_keyboard(entry_id, tag)
-        return entry_actions_keyboard(entry_id)
+            return picker_keyboard(entry_id, tag, extra_rows=extra_rows)
+        return entry_actions_keyboard(entry_id, extra_rows=extra_rows)

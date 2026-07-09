@@ -617,10 +617,10 @@ async def handle_mood_energy_callback(
         list(row)
         for row in query.message.reply_markup.inline_keyboard or []
         if not any((btn.callback_data or "").startswith("me_") for btn in row)
-        and not all(btn.callback_data == "noop" for btn in row)
     ]
     rebuilt = [
-        list(r) for r in _mood_energy_keyboard(locked_mood, locked_energy).inline_keyboard
+        list(r)
+        for r in _mood_energy_keyboard(locked_mood, locked_energy).inline_keyboard
     ]
     try:
         await query.edit_message_reply_markup(

@@ -138,6 +138,12 @@ class Database:
         conn.executescript(_CREATE_RETRAIN_RUNS)
         conn.executescript(_CREATE_WEIGHT_CACHE)
         conn.executescript(_CREATE_FOOD_SUMMARY)
+        # Migration: entries.extra — optional JSON riding on the same row as the
+        # entry it describes (e.g. a voice note's affect_features). ALTER has no
+        # IF NOT EXISTS, so guard with the live column list.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(entries)")}
+        if "extra" not in cols:
+            conn.execute("ALTER TABLE entries ADD COLUMN extra TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
     # --- Weight cache ---
@@ -237,10 +243,12 @@ class Database:
     def update_entry_tag(self, entry_id: int, tag: str) -> None:
         self.execute("UPDATE entries SET tag = ? WHERE id = ?", (tag, entry_id))
 
-    def insert_entry(self, ts: str, date_str: str, tag: str, content: str) -> int:
+    def insert_entry(
+        self, ts: str, date_str: str, tag: str, content: str, extra_json: str = ""
+    ) -> int:
         cur = self._conn().execute(
-            "INSERT INTO entries (ts, date, tag, content) VALUES (?, ?, ?, ?)",
-            (ts, date_str, tag, content),
+            "INSERT INTO entries (ts, date, tag, content, extra) VALUES (?, ?, ?, ?, ?)",
+            (ts, date_str, tag, content, extra_json),
         )
         self._conn().commit()
         return cur.lastrowid
@@ -250,9 +258,7 @@ class Database:
         return rows[0] if rows else None
 
     def update_entry_content(self, entry_id: int, content: str) -> None:
-        self.execute(
-            "UPDATE entries SET content = ? WHERE id = ?", (content, entry_id)
-        )
+        self.execute("UPDATE entries SET content = ? WHERE id = ?", (content, entry_id))
 
     def latest_entry(self, exclude_tags: tuple[str, ...] = ()) -> sqlite3.Row | None:
         """The most recent entry, skipping the given tags — used by /fix to find

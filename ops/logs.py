@@ -100,7 +100,10 @@ class Logs:
                     extra.get("unit", ""),
                 )
                 return None
-            return self.db.insert_entry(ts, date_str, tag, content)
+            # Non-metric extras (e.g. a voice note's affect_features) ride on the
+            # same row as the entry, mirroring the JSONL line above.
+            extra_json = json.dumps(extra, ensure_ascii=False) if extra else ""
+            return self.db.insert_entry(ts, date_str, tag, content, extra_json)
         except Exception:
             logger.exception("DB write FAILED (kept in JSONL for recovery): %s", entry)
             raise
@@ -227,7 +230,19 @@ class Logs:
                     k = (ts, tag)
                     if k in have_entries:
                         continue
-                    self.db.insert_entry(ts, date_str, tag, str(e.get("content", "")))
+                    # Preserve non-core fields (e.g. affect_features) on recovery.
+                    residual = {
+                        key: v
+                        for key, v in e.items()
+                        if key not in ("ts", "tag", "content")
+                    }
+                    self.db.insert_entry(
+                        ts,
+                        date_str,
+                        tag,
+                        str(e.get("content", "")),
+                        json.dumps(residual, ensure_ascii=False) if residual else "",
+                    )
                     have_entries.add(k)
                     inserted += 1
         if inserted:
