@@ -75,6 +75,30 @@ def test_merge_ignores_bad_input(ledger):
     assert summary["total"] == 1
 
 
+def test_merge_survives_malformed_extractor_shapes(ledger):
+    """Regression for the /insights crash ('str' object has no attribute 'get').
+
+    The extractor is an LLM and, despite the tool schema, sometimes returns bare
+    strings for new_items or bare ints for recurrences. merge() must coerce those
+    instead of raising — a crash here took the whole /insights command down.
+    """
+    ledger.merge(
+        [{"kind": "concern", "text": "I keep missing Shacharit"}],
+        [],
+        on_date=date(2026, 6, 1),
+    )
+    summary = ledger.merge(
+        new_items=["a bare-string reflection", {"kind": "idea", "text": "a dict one"}],
+        recurrences=[1, {"id": 1}, "garbage"],  # bare int, dict, junk
+        on_date=date(2026, 6, 8),
+    )
+    # Both new items landed (the string coerced to a #insight); the recurrence bumped once.
+    assert len(summary["added"]) == 2
+    kinds = {it["kind"] for it in ledger.load()["items"]}
+    assert "insight" in kinds and "idea" in kinds
+    assert len(summary["recurred"]) == 1  # id 1, idempotent within the day
+
+
 def test_format_for_prompt_shows_recurrence_count(ledger):
     """Prompt formatting shows recurrence count, date range, and insight text."""
     ledger.merge(

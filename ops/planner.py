@@ -911,7 +911,7 @@ class Planner:
 
         for block in response.content:
             if block.type == "tool_use":
-                d = block.input
+                d = block.input if isinstance(block.input, dict) else {}
                 return self.insights.merge(
                     d.get("new_items", []), d.get("recurrences", [])
                 )

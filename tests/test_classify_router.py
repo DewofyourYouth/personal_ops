@@ -21,6 +21,8 @@ from habit_handlers import HabitStore, exact_habit_match
 from logs import Logs
 from text_router import (
     TextRouter,
+    _AGENDA_DEST_RE,
+    _extract_agenda_item,
     _is_nutrition_breakdown,
     _parse_metric_body,
 )
@@ -122,6 +124,33 @@ def test_metric_body_requires_a_number():
 def test_nutrition_breakdown_predicate():
     assert _is_nutrition_breakdown("550 kcal, 40g protein")
     assert not _is_nutrition_breakdown("I feel tired today")
+
+
+# --- Explicit agenda destination ("... to my agenda") ---
+
+
+def test_agenda_destination_is_detected_and_item_extracted():
+    """Regression: a stated destination ('to my agenda') used to be discarded by the
+    classifier, which tagged the utterance #task and dropped it so it never reached
+    /agenda. The rules-first match must fire and pull out the item text."""
+    u = "Add goal reflection to my agenda and it should include putting it in personal ops."
+    assert _AGENDA_DEST_RE.search(u.lower())
+    assert _extract_agenda_item(u) == "goal reflection"
+
+    for text, item in [
+        ("put the dentist call on the agenda", "the dentist call"),
+        ("add finish the deck to my agenda", "finish the deck"),
+        ("note buy milk on my agenda", "buy milk"),
+    ]:
+        assert _AGENDA_DEST_RE.search(text.lower()), text
+        assert _extract_agenda_item(text) == item, text
+
+
+def test_agenda_destination_does_not_fire_without_the_phrase():
+    """The phrase must be an explicit destination — an ordinary mention of the word
+    'agenda' elsewhere, or none at all, must not trigger agenda routing."""
+    assert not _AGENDA_DEST_RE.search("the meeting agenda was long")
+    assert not _AGENDA_DEST_RE.search("add milk to the shopping list")
 
 
 def test_exact_habit_match_is_conservative(tmp_path):

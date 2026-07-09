@@ -50,7 +50,7 @@ from text_router import (
     _mood_energy_keyboard,
     _parse_queue_date,
 )
-from tg_common import safe_answer
+from tg_common import mono_table, safe_answer
 from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
@@ -463,20 +463,17 @@ async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tod = logs.mood_energy_by_time_of_day(days=14)
     if tod:
-        lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
-        lines.append(
-            "<table><tr><th>Time</th><th>Mood</th><th>Energy</th><th>n</th></tr>"
-        )
+        table_rows = []
         for label in ("late night", "morning", "afternoon", "evening"):
             if label not in tod:
                 continue
             b = tod[label]
             mood = b["mood_avg"] if b["mood_avg"] is not None else "—"
             energy = b["energy_avg"] if b["energy_avg"] is not None else "—"
-            lines.append(
-                f"<tr><td>{label}</td><td>{mood}</td><td>{energy}</td><td>{b['n']}</td></tr>"
-            )
-        lines.append("</table>")
+            table_rows.append([label, str(mood), str(energy), str(b["n"])])
+        if table_rows:
+            lines.append("\n🕐 <b>Mood/energy by time of day:</b>")
+            lines.append(mono_table(["Time", "Mood", "Energy", "n"], table_rows))
 
     text = "\n".join(lines)
     if len(text) > 4000:

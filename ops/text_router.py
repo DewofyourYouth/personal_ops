@@ -86,6 +86,32 @@ def _is_nutrition_breakdown(text: str) -> bool:
     return bool(_KCAL_RE.search(text) and _MACRO_RE.search(text))
 
 
+# An explicitly stated agenda destination ("add X to my agenda", "put X on the agenda").
+# The classifier only extracts an action TYPE (→ #task) and silently drops the stated
+# destination, so the item never reaches /agenda — this rules-first match routes it there.
+_AGENDA_DEST_RE = re.compile(
+    r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
+)
+
+
+def _extract_agenda_item(text: str) -> str:
+    """Pull the item out of a 'add X to my agenda' utterance.
+
+    Takes everything before the '… to/on my agenda' phrase and strips a leading
+    imperative verb, so 'Add goal reflection to my agenda and …' → 'goal reflection'.
+    """
+    m = re.search(
+        r"^(.*?)\s+(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    item = (m.group(1) if m else text).strip()
+    item = re.sub(
+        r"^(?:please\s+)?(?:add|put|note|log)\s+", "", item, flags=re.IGNORECASE
+    ).strip()
+    return item.strip(" .,:;-")
+
+
 def _parse_metric_body(rest: str) -> tuple[str, float, str, str] | None:
     """Parse the body of a `metric(s):` entry into (key, value, unit, raw_val).
 
@@ -1131,6 +1157,17 @@ class TextRouter:
                 self._awaiting_candles[update_chat_id] = True
                 await reply("🕯️ What time is candle lighting?")
             return
+
+        # "add X to my agenda" / "X on the agenda" — an explicitly stated destination.
+        # Must run before the queue matcher below (whose "add to" prefix would otherwise
+        # swallow "add to my agenda") and before LLM classification (which would tag it
+        # #task and drop the destination, so it never reached /agenda).
+        if _AGENDA_DEST_RE.search(lower) and self.agenda_feature:
+            item = _extract_agenda_item(text)
+            if item:
+                self.agenda_feature.commit_agenda([item], source="user")
+                await reply(f"🗓 Added to agenda: {item}")
+                return
 
         # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
         if re.match(r"^(?:queue|schedule|defer|add to)\b", lower):

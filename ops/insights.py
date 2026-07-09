@@ -90,6 +90,13 @@ class Insights:
         added, recurred = [], []
 
         for item in new_items:
+            # The extractor is an LLM: despite the tool schema it sometimes returns a bare
+            # string instead of {"kind","text"}. Coerce that rather than crash with
+            # 'str' object has no attribute 'get' (which broke /insights entirely).
+            if isinstance(item, str):
+                item = {"kind": "insight", "text": item}
+            elif not isinstance(item, dict):
+                continue
             kind = item.get("kind", "insight")
             text = (item.get("text") or "").strip()
             if not text or kind not in KINDS:
@@ -108,6 +115,12 @@ class Insights:
             added.append(new)
 
         for rec in recurrences:
+            # Same defensiveness: the extractor may return a bare id (int) instead of
+            # {"id": ...}. Coerce it; skip anything else.
+            if isinstance(rec, int):
+                rec = {"id": rec}
+            elif not isinstance(rec, dict):
+                continue
             item = by_id.get(rec.get("id"))
             if item is None:  # ignore ids the extractor invented
                 continue
