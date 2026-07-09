@@ -599,7 +599,11 @@ class HabitHandlers:
         self.planner = planner  # for the failing-habit strategy (4-Laws) call
         self.shabbat = Shabbat(logs.log_dir)
         # Use QuietWindow if provided; otherwise fall back to building one from shabbat.
-        self.quiet_window = quiet_window if quiet_window is not None else _make_quiet_window(self.shabbat)
+        self.quiet_window = (
+            quiet_window
+            if quiet_window is not None
+            else _make_quiet_window(self.shabbat)
+        )
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
@@ -815,10 +819,13 @@ class HabitHandlers:
             for h in self._pending_today_habits()
         ]
 
-    def _eod_message(self, for_date=None) -> tuple[str | None, InlineKeyboardMarkup | None]:
+    def _eod_message(
+        self, for_date=None
+    ) -> tuple[str | None, InlineKeyboardMarkup | None]:
         """Prompt for habits due on for_date (default: today) that haven't been logged yet.
         Returns (None, None) when nothing is pending."""
         pending = self._pending_today_habits(for_date=for_date)
+
     def today_checklist(self) -> list[tuple[str, bool]]:
         """(display name, done) for every habit due today — done = a completed
         ('habit') log exists today. Feeds the /status rich-message checkbox list,
@@ -912,9 +919,7 @@ class HabitHandlers:
         now = datetime.now(ZoneInfo("Asia/Jerusalem"))
         for h in pending:
             self.logs.write("habit_missed", h["name"])
-        names = ", ".join(
-            self.context.habit_display_name(h["name"]) for h in pending
-        )
+        names = ", ".join(self.context.habit_display_name(h["name"]) for h in pending)
         await self.bot.send_message(
             chat_id=self.allowed_user,
             text=f"🌙 Grace period ended — auto-marked as missed: {names}",

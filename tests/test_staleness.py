@@ -16,6 +16,7 @@ _TZ_STR = "Asia/Jerusalem"
 
 def _dt(iso: str) -> datetime:
     from zoneinfo import ZoneInfo
+
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(_TZ_STR))
 
 
@@ -33,7 +34,9 @@ def _make_db(last_entry_ts: str | None = None, last_prompted_ts: str | None = No
         if "FROM staleness_prompts" in sql:
             if last_prompted_ts:
                 row = MagicMock()
-                row.__getitem__ = lambda _, k: last_prompted_ts if k == "last_prompted_at" else None
+                row.__getitem__ = lambda _, k: (
+                    last_prompted_ts if k == "last_prompted_at" else None
+                )
                 return [row]
             return []
         return []
@@ -73,26 +76,33 @@ class TestStaleTracks:
 
     def test_recent_entry_is_not_stale(self):
         # Entry logged 1 hour ago; threshold is 4h → not stale
-        recent = (datetime.now(__import__("zoneinfo").ZoneInfo(_TZ_STR)) - timedelta(hours=1)).isoformat()
+        recent = (
+            datetime.now(__import__("zoneinfo").ZoneInfo(_TZ_STR)) - timedelta(hours=1)
+        ).isoformat()
         checker = self._checker(last_entry_ts=recent)
         assert checker.stale_tracks() == []
 
     def test_old_entry_is_stale(self):
         from zoneinfo import ZoneInfo
+
         old = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=5)).isoformat()
         checker = self._checker(last_entry_ts=old)
         assert "checkin" in checker.stale_tracks()
 
     def test_recently_prompted_suppresses_nudge(self):
         from zoneinfo import ZoneInfo
+
         # Both entry and prompt are old, but prompt was recent enough
         old_entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=5)).isoformat()
-        recent_prompt = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)).isoformat()
+        recent_prompt = (
+            datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)
+        ).isoformat()
         checker = self._checker(last_entry_ts=old_entry, last_prompted_ts=recent_prompt)
         assert checker.stale_tracks() == []
 
     def test_old_prompt_allows_new_nudge(self):
         from zoneinfo import ZoneInfo
+
         old_entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=6)).isoformat()
         old_prompt = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=5)).isoformat()
         checker = self._checker(last_entry_ts=old_entry, last_prompted_ts=old_prompt)
@@ -104,6 +114,7 @@ class TestStaleTracks:
 
     def test_custom_threshold_respected(self):
         from zoneinfo import ZoneInfo
+
         # Entry 3 hours ago; custom threshold = 2h → stale
         entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=3)).isoformat()
         checker = self._checker(last_entry_ts=entry, config={"checkin": 2})
@@ -111,6 +122,7 @@ class TestStaleTracks:
 
     def test_custom_threshold_not_yet_exceeded(self):
         from zoneinfo import ZoneInfo
+
         # Entry 1 hour ago; custom threshold = 2h → not stale
         entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)).isoformat()
         checker = self._checker(last_entry_ts=entry, config={"checkin": 2})
@@ -165,9 +177,7 @@ class TestConfigLoading:
         from staleness import StalenessChecker
 
         config = {"checkin": 6, "food": 8}
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config, f)
             path = f.name
 

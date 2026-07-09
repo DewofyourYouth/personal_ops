@@ -1432,7 +1432,9 @@ class TextRouter:
         )
 
         extra_rows = (
-            [mood_rating_row(entry_id)] if extra and extra.get("affect_features") else []
+            [mood_rating_row(entry_id)]
+            if extra and extra.get("affect_features")
+            else []
         )
         if self._is_low_confidence(confidence):
             return picker_keyboard(entry_id, tag, extra_rows=extra_rows)

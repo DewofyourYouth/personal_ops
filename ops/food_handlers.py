@@ -174,16 +174,16 @@ class FoodHandlers:
             f"🍽 <b>Food log audit — last {days} days</b>",
             f"Total entries: <b>{len(food_entries)}</b>",
             "",
-            f"🥗 Healthy:   <b>{counts['healthy']}</b> ({100*counts['healthy']//total}%)",
-            f"🍰 Indulgent: <b>{counts['indulgent']}</b> ({100*counts['indulgent']//total}%)",
-            f"🍱 Mixed:     <b>{counts['mixed']}</b> ({100*counts['mixed']//total}%)",
+            f"🥗 Healthy:   <b>{counts['healthy']}</b> ({100 * counts['healthy'] // total}%)",
+            f"🍰 Indulgent: <b>{counts['indulgent']}</b> ({100 * counts['indulgent'] // total}%)",
+            f"🍱 Mixed:     <b>{counts['mixed']}</b> ({100 * counts['mixed'] // total}%)",
             "",
         ]
 
         days_with_food = len({r["date"] for r in food_entries})
         lines.append(
             f"Logged on <b>{days_with_food}/{days}</b> days "
-            f"({100*days_with_food//days}% coverage)."
+            f"({100 * days_with_food // days}% coverage)."
         )
         lines.append("")
         lines.append(

@@ -17,6 +17,7 @@ _TZ_STR = "Asia/Jerusalem"
 
 def _dt(iso: str) -> datetime:
     from zoneinfo import ZoneInfo
+
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(_TZ_STR))
 
 
@@ -46,6 +47,7 @@ class TestShabbatQuiet:
 
     def test_friday_before_candles_not_quiet(self):
         from datetime import time
+
         # Candles at 19:30; 20-min buffer → quiet from 19:10
         qw = QuietWindow(_make_shabbat(candle_time=time(19, 30)))
         dt = _dt("2026-06-19T18:00:00+03:00")
@@ -53,6 +55,7 @@ class TestShabbatQuiet:
 
     def test_friday_after_candle_buffer_is_quiet(self):
         from datetime import time
+
         qw = QuietWindow(_make_shabbat(candle_time=time(19, 30)))
         # 19:10 is exactly at the quiet-start (19:30 - 20 min)
         dt = _dt("2026-06-19T19:15:00+03:00")
@@ -72,10 +75,10 @@ class TestShabbatQuiet:
 
 class TestChagQuietWindow:
     def _qw_with_chag(self, quiet_start: str, quiet_end: str) -> QuietWindow:
-        chagim = [{"name": "Test Chag", "quiet_start": quiet_start, "quiet_end": quiet_end}]
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        chagim = [
+            {"name": "Test Chag", "quiet_start": quiet_start, "quiet_end": quiet_end}
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(chagim, f)
             path = f.name
         return QuietWindow(_make_shabbat(), chagim_path=path)
@@ -115,9 +118,7 @@ class TestChagQuietWindow:
         assert qw.is_quiet_at(dt) is False
 
     def test_malformed_chag_file_is_safe(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("not json at all {{{")
             path = f.name
         qw = QuietWindow(_make_shabbat(), chagim_path=path)

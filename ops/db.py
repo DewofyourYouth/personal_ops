@@ -143,7 +143,9 @@ class Database:
         # IF NOT EXISTS, so guard with the live column list.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(entries)")}
         if "extra" not in cols:
-            conn.execute("ALTER TABLE entries ADD COLUMN extra TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "ALTER TABLE entries ADD COLUMN extra TEXT NOT NULL DEFAULT ''"
+            )
         conn.commit()
 
     # --- Weight cache ---

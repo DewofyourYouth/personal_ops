@@ -106,7 +106,9 @@ from staleness import StalenessChecker as _StalenessChecker
 _CHAGIM_PATH = _Path(__file__).parent / "chagim.json"
 _STALENESS_CONFIG_PATH = _Path(__file__).parent / "staleness_config.json"
 quiet_window_ = _QuietWindow(shabbat_, chagim_path=_CHAGIM_PATH)
-staleness_ = _StalenessChecker(logs.db, quiet_window_, config_path=_STALENESS_CONFIG_PATH)
+staleness_ = _StalenessChecker(
+    logs.db, quiet_window_, config_path=_STALENESS_CONFIG_PATH
+)
 
 
 # Feature handler instances, created in main() once app.bot exists.
@@ -394,6 +396,8 @@ async def weekly_digest():
 
 async def _staleness_check():
     await staleness_.check_and_prompt(_bot, ALLOWED_USER)
+
+
 def _mine_db_path() -> str:
     return os.path.join(LOG_DIR, "ops.db")
 

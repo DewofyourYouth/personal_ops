@@ -36,7 +36,9 @@ _NUDGES: dict[str, str] = {
 
 
 class StalenessChecker:
-    def __init__(self, db, quiet_window, config_path: "Path | str | None" = None) -> None:
+    def __init__(
+        self, db, quiet_window, config_path: "Path | str | None" = None
+    ) -> None:
         self._db = db
         self._qw = quiet_window
         self._config: dict[str, int] = dict(_DEFAULT_CONFIG)
@@ -105,5 +107,7 @@ class StalenessChecker:
         now = datetime.now(_TZ)
         for track in tracks:
             self._record_prompted(track, now)
-            msg = _NUDGES.get(track, f"📝 No {track} log in a while — anything to note?")
+            msg = _NUDGES.get(
+                track, f"📝 No {track} log in a while — anything to note?"
+            )
             await bot.send_message(chat_id=chat_id, text=msg)

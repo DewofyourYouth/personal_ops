@@ -29,7 +29,13 @@ def _stub_telegram() -> None:
         return t
 
     t = types.ModuleType("telegram")
-    for name in ["Bot", "Update", "InlineKeyboardButton", "InlineKeyboardMarkup", "Message"]:
+    for name in [
+        "Bot",
+        "Update",
+        "InlineKeyboardButton",
+        "InlineKeyboardMarkup",
+        "Message",
+    ]:
         setattr(t, name, _cls(name))
 
     e = types.ModuleType("telegram.ext")

@@ -14,14 +14,13 @@ _TZ_STR = "Asia/Jerusalem"
 
 def _dt(iso: str) -> datetime:
     from zoneinfo import ZoneInfo
+
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(_TZ_STR))
 
 
 def _make_store(habits: list[dict] | None = None):
     store = MagicMock()
-    store.sections.return_value = (
-        {"Morning": habits} if habits else {}
-    )
+    store.sections.return_value = {"Morning": habits} if habits else {}
     return store
 
 
@@ -75,7 +74,13 @@ def _make_habit_handlers(habits=None, entries=None, is_quiet=False):
 class TestEodMessagePending:
     def test_returns_none_when_all_habits_logged(self):
         habits = [{"id": 1, "name": "Drink water", "days": None}]
-        entries = [{"tag": "habit", "content": "Drink water", "ts": "2026-06-22T09:00:00+03:00"}]
+        entries = [
+            {
+                "tag": "habit",
+                "content": "Drink water",
+                "ts": "2026-06-22T09:00:00+03:00",
+            }
+        ]
         h = _make_habit_handlers(habits=habits, entries=entries)
         text, keyboard = h._eod_message()
         assert text is None
@@ -91,6 +96,7 @@ class TestEodMessagePending:
     def test_for_date_shows_yesterday_label(self):
         yesterday = date.today()
         from datetime import timedelta
+
         yesterday = date.today() - timedelta(days=1)
         habits = [{"id": 1, "name": "Drink water", "days": None}]
         h = _make_habit_handlers(habits=habits, entries=[])
@@ -139,7 +145,9 @@ class TestAutoMissPending:
     @pytest.mark.asyncio
     async def test_auto_miss_silent_when_nothing_pending(self):
         habits = [{"id": 1, "name": "Meditate", "days": None}]
-        entries = [{"tag": "habit", "content": "Meditate", "ts": "2026-06-22T09:00:00+03:00"}]
+        entries = [
+            {"tag": "habit", "content": "Meditate", "ts": "2026-06-22T09:00:00+03:00"}
+        ]
         h = _make_habit_handlers(habits=habits, entries=entries)
 
         await h.auto_miss_pending()
@@ -186,7 +194,9 @@ class TestDailyHabitCheckQuietWindow:
     @pytest.mark.asyncio
     async def test_silent_when_all_done(self):
         habits = [{"id": 1, "name": "Exercise", "days": None}]
-        entries = [{"tag": "habit", "content": "Exercise", "ts": "2026-06-22T09:00:00+03:00"}]
+        entries = [
+            {"tag": "habit", "content": "Exercise", "ts": "2026-06-22T09:00:00+03:00"}
+        ]
         h = _make_habit_handlers(habits=habits, entries=entries, is_quiet=False)
 
         with patch("habit_handlers.send_sticker", new=AsyncMock()):
@@ -206,7 +216,9 @@ class TestJobTimings:
 
         with patch("habit_handlers.HabitStore", return_value=MagicMock()):
             with patch("habit_handlers.Shabbat", return_value=MagicMock()):
-                with patch("habit_handlers._make_quiet_window", return_value=MagicMock()):
+                with patch(
+                    "habit_handlers._make_quiet_window", return_value=MagicMock()
+                ):
                     h = HabitHandlers(bot, logs, ctx, 12345)
 
         eod_job = next(j for j in h.jobs if j["id"] == "habit_eod_check")
@@ -222,7 +234,9 @@ class TestJobTimings:
 
         with patch("habit_handlers.HabitStore", return_value=MagicMock()):
             with patch("habit_handlers.Shabbat", return_value=MagicMock()):
-                with patch("habit_handlers._make_quiet_window", return_value=MagicMock()):
+                with patch(
+                    "habit_handlers._make_quiet_window", return_value=MagicMock()
+                ):
                     h = HabitHandlers(bot, logs, ctx, 12345)
 
         auto_miss_job = next(j for j in h.jobs if j["id"] == "habit_eod_auto_miss")
