@@ -56,7 +56,12 @@ from text_router import (
     _mood_energy_keyboard,
     _parse_queue_date,
 )
-from tg_common import mono_table, safe_answer
+from tg_common import (
+    inline_keyboard_markup,
+    inline_keyboard_rows,
+    mono_table,
+    safe_answer,
+)
 from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
@@ -613,7 +618,7 @@ async def handle_mood_energy_callback(
     locked_mood = value if kind == "mood" else ""
     locked_energy = value if kind == "energy" else ""
     # carry over previously locked value from existing keyboard if present
-    for row in query.message.reply_markup.inline_keyboard or []:
+    for row in inline_keyboard_rows(query.message.reply_markup):
         for btn in row:
             if btn.callback_data == "noop" and btn.text.startswith("✅"):
                 for e, v in MOOD_OPTIONS:
@@ -626,16 +631,13 @@ async def handle_mood_energy_callback(
     # same message for checkins) — rebuilding only the me_ rows used to drop them.
     other_rows = [
         list(row)
-        for row in query.message.reply_markup.inline_keyboard or []
+        for row in inline_keyboard_rows(query.message.reply_markup)
         if not any((btn.callback_data or "").startswith("me_") for btn in row)
     ]
-    rebuilt = [
-        list(r)
-        for r in _mood_energy_keyboard(locked_mood, locked_energy).inline_keyboard
-    ]
+    rebuilt = inline_keyboard_rows(_mood_energy_keyboard(locked_mood, locked_energy))
     try:
         await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(rebuilt + other_rows)
+            reply_markup=inline_keyboard_markup(rebuilt + other_rows)
         )
     except Exception:
         pass
