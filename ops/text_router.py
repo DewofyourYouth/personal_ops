@@ -1422,7 +1422,9 @@ class TextRouter:
         Edit/Reclassify pair normally, or the full category picker immediately
         (top guess pre-marked) when the classifier's confidence is low. Voice
         notes (extra carries affect_features) also get the optional 1-5
-        self-mood-rating row — the ground truth for the local affect proxy."""
+        self-mood-rating row — the ground truth for the local affect proxy.
+        Skipped for checkins: the mood/energy row already captures a 1-5
+        self-reported mood, so the rating row would be duplicate signal."""
         if self.reclassify is None or entry_id is None:
             return None
         from reclassify_handlers import (
@@ -1433,7 +1435,7 @@ class TextRouter:
 
         extra_rows = (
             [mood_rating_row(entry_id)]
-            if extra and extra.get("affect_features")
+            if extra and extra.get("affect_features") and tag != "checkin"
             else []
         )
         if self._is_low_confidence(confidence):
