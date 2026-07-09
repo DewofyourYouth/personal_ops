@@ -158,7 +158,9 @@ def run_retrain(db) -> dict:
         "n_confirm": sum(1 for e in events if e["event_type"] == "confirm"),
     }
     if not events:
-        logger.info("retrain: no new label events since id %d — nothing to do", after_id)
+        logger.info(
+            "retrain: no new label events since id %d — nothing to do", after_id
+        )
         return summary
 
     if examples:
@@ -189,9 +191,7 @@ def format_summary(summary: dict) -> str:
     if "accuracy_before" in summary:
         before, after = summary["accuracy_before"], summary["accuracy_after"]
         arrow = "↑" if after > before else ("↓" if after < before else "→")
-        lines.append(
-            f"Accuracy on corrected texts: {before:.0%} → {after:.0%} {arrow}"
-        )
+        lines.append(f"Accuracy on corrected texts: {before:.0%} → {after:.0%} {arrow}")
         lines.append(
             f"Mean confidence: {summary['mean_confidence_after']:.0%} "
             f"(reference set: {summary['n_reference']})"

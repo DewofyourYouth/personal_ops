@@ -31,7 +31,9 @@ def test_write_returns_entry_id(tmp_path):
     assert isinstance(entry_id, int)
     assert logs.db.entry_by_id(entry_id)["content"] == "first"
     # metrics land in the metrics table — no entries row id
-    assert logs.write("metric", "steps 100", extra={"key": "steps", "value": 100}) is None
+    assert (
+        logs.write("metric", "steps 100", extra={"key": "steps", "value": 100}) is None
+    )
 
 
 def test_reclassify_appends_event_and_updates_live_tag(tmp_path):
@@ -104,7 +106,9 @@ def test_content_edit_updates_db_and_jsonl(tmp_path):
     entry_id = logs.write("note", "call the dentst")
     entry = logs.db.entry_by_id(entry_id)
     logs.db.update_entry_content(entry_id, "call the dentist")
-    logs.rewrite_jsonl_entry(entry["ts"], entry["content"], new_content="call the dentist")
+    logs.rewrite_jsonl_entry(
+        entry["ts"], entry["content"], new_content="call the dentist"
+    )
 
     assert logs.db.entry_by_id(entry_id)["content"] == "call the dentist"
     assert logs.sync_jsonl_to_db() == 0  # no stale resurrection
