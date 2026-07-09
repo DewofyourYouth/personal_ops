@@ -75,6 +75,7 @@ HELP_SECTIONS = {
     "habits": (
         "🔥 Habits & Routines",
         """/habits — checklist with streaks 🔥, chain 🟩⬜, ⚠️ flags
+/habitcheck — on-demand end-of-day habit check (also runs nightly)
 /addhabit — add a new habit (e.g. <code>/addhabit Stretch [mon,wed,fri]</code>)
 /edithabit — edit name, days, or section (e.g. <code>/edithabit Stretch: days=mon,wed,fri</code>)
 /managehabits — toggle tracking or delete habits
@@ -87,7 +88,7 @@ HELP_SECTIONS = {
 /slip — log a slip; resolves to your tracked list (e.g. <code>/slip slept in: stress</code>)
 /slips — summary counts by behavior; <code>/slips Late wake</code> for detail
 /manageslips — delete from the negative habit list
-/routines — habit-stack routines (<code>/addroutine</code>, <code>/routinestep</code> to edit)
+/routines — habit-stack routines (<code>/addroutine</code>, <code>/routinestep</code> to edit, <code>/delroutine</code> to remove)
 <code>habit: &lt;name&gt;</code> — log a completed habit
 <code>/backdate &lt;when&gt; &lt;entry&gt;</code> — log for a past day
 <code>skip: &lt;reason&gt;</code> — excuse habits today""",
@@ -102,7 +103,7 @@ HELP_SECTIONS = {
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals
 /undofood — delete the most recently logged food entry today
-/grocery — shared grocery checklist
+/grocery — shared grocery checklist (<code>/addgrocery</code> to add, <code>/grocerycopy</code> to copy, <code>/cleargrocery</code> to reset)
 /backlog — someday items, grouped by domain
 /logs — today's log entries
 <code>injection: &lt;dose&gt;</code> — log a Wegovy injection""",
@@ -118,7 +119,7 @@ HELP_SECTIONS = {
 <code>metric: &lt;key&gt; &lt;value&gt;</code> — log a metric
 <code>slept 7 hours</code> or <code>/sleep 7</code> — log last night's sleep
 <code>did: &lt;text&gt;</code> — log a win
-<code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred)
+<code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred); /directives lists them
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 /hypotheses — open tests + their follow-ups
@@ -136,3 +137,67 @@ Anything else is logged as <code>#log</code>""",
 HELP_TEXT = "\n\n".join(
     f"<b>{title}</b>\n{body}" for title, body in HELP_SECTIONS.values()
 )
+
+
+# --- Telegram command menu (the "/" autocomplete list) -----------------------------
+#
+# Single source of truth for the command menu Telegram shows. `bot.py` pushes this to
+# Telegram via `set_my_commands` on startup, so the menu never drifts from the handlers
+# again. Aliases (/p, /a, /s, /h, /l, /m, /w, /v, /b, /r, /d) still work but are left out
+# of the menu to keep it scannable. Order here is the order Telegram displays.
+#
+# To regenerate the BotFather paste-list (for @BotFather → /setcommands):
+#     python -c "from bot_constants import BOT_COMMANDS; \
+#         print('\n'.join(f'{c} - {d}' for c, d in BOT_COMMANDS))"
+BOT_COMMANDS = [
+    # Daily drivers
+    ("plan", "Generate the morning plan for today"),
+    ("agenda", "View today's agenda"),
+    ("status", "Full status snapshot (agenda + habits + calendar)"),
+    ("events", "Today's calendar events"),
+    ("queue", "Queued future agenda items"),
+    # Habits & routines
+    ("habits", "Daily habits checklist"),
+    ("habitcheck", "On-demand end-of-day habit check"),
+    ("addhabit", "Add a new habit"),
+    ("edithabit", "Edit an existing habit"),
+    ("managehabits", "Delete or toggle habits"),
+    ("habitcue", "Set an implementation intention / habit-stack anchor"),
+    ("habitnote", "Attach a note to a habit"),
+    ("identity", "Habits grouped by the identities they vote for"),
+    ("habitstrategy", "A 4-Laws plan for a habit you keep missing"),
+    ("weeklyhabits", "Run weekly habit suggestions now"),
+    ("routines", "Habit-stack routines"),
+    ("addroutine", "Add a habit-stack routine"),
+    ("delroutine", "Delete a routine"),
+    ("routinestep", "Add or edit a step in a routine"),
+    ("slip", "Log a slip (negative habit)"),
+    ("slips", "Slip summary counts by behavior"),
+    ("addslip", "Define a negative habit to track"),
+    ("manageslips", "Delete from the negative-habit list"),
+    # Review & tracking
+    ("daily", "End-of-day digest"),
+    ("digest", "Weekly AI review"),
+    ("insights", "Distil recurring insights from your logs"),
+    ("metrics", "Tracked metrics with 14-day trend"),
+    ("mine", "Quantitative log-mining report"),
+    ("weight", "Weight progress (% lost, rate, chart)"),
+    ("foodlog", "Today's food log with macro totals"),
+    ("undofood", "Delete a food entry from today"),
+    ("backlog", "Someday items, grouped by domain"),
+    ("logs", "Today's log entries"),
+    ("hypotheses", "Open hypotheses and their follow-ups"),
+    ("directives", "Standing directives you've declared"),
+    # Reminders
+    ("reminders", "List reminders (tap to delete)"),
+    # Grocery
+    ("grocery", "Shared grocery checklist"),
+    ("addgrocery", "Add an item to the grocery list"),
+    ("grocerycopy", "Copy the grocery list as text"),
+    ("cleargrocery", "Clear the grocery list"),
+    # Capture & utilities
+    ("backdate", "Log an entry for a past day"),
+    ("fix", "Reclassify the most recent logged entry"),
+    ("context", "View and edit your goals, priorities, constraints, projects"),
+    ("help", "Category menu of everything the bot can do"),
+]
