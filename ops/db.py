@@ -109,6 +109,25 @@ CREATE TABLE IF NOT EXISTS food_summary (
 );
 """
 
+# Append-only negations against a food entry — "didn't finish the X" / /undofood.
+# The original entries row is never deleted or mutated; a negation records a
+# fractional retraction (0 < fraction <= 1) as negative deltas, so daily/period
+# totals can be computed net of negations while the original stays queryable.
+_CREATE_FOOD_NEGATIONS = """
+CREATE TABLE IF NOT EXISTS food_negations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL,
+    ref_entry_id  INTEGER NOT NULL,
+    fraction      REAL NOT NULL,
+    kcal_delta    REAL NOT NULL,
+    protein_delta REAL NOT NULL,
+    fat_delta     REAL NOT NULL,
+    carbs_delta   REAL NOT NULL,
+    note          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_food_negations_ref ON food_negations(ref_entry_id);
+"""
+
 
 class Database:
     def __init__(self, db_path: str):
@@ -138,6 +157,7 @@ class Database:
         conn.executescript(_CREATE_RETRAIN_RUNS)
         conn.executescript(_CREATE_WEIGHT_CACHE)
         conn.executescript(_CREATE_FOOD_SUMMARY)
+        conn.executescript(_CREATE_FOOD_NEGATIONS)
         # Migration: entries.extra — optional JSON riding on the same row as the
         # entry it describes (e.g. a voice note's affect_features). ALTER has no
         # IF NOT EXISTS, so guard with the live column list.
@@ -216,6 +236,46 @@ class Database:
         return self.query(
             "SELECT * FROM food_summary WHERE date >= ? AND date <= ? ORDER BY date",
             (start.isoformat(), end.isoformat()),
+        )
+
+    # --- Food negations (append-only retractions) ---
+
+    def insert_food_negation(
+        self,
+        ts: str,
+        ref_entry_id: int,
+        fraction: float,
+        kcal_delta: float,
+        protein_delta: float,
+        fat_delta: float,
+        carbs_delta: float,
+        note: str = "",
+    ) -> int:
+        cur = self._conn().execute(
+            """INSERT INTO food_negations
+                   (ts, ref_entry_id, fraction, kcal_delta, protein_delta, fat_delta, carbs_delta, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ts,
+                ref_entry_id,
+                fraction,
+                kcal_delta,
+                protein_delta,
+                fat_delta,
+                carbs_delta,
+                note,
+            ),
+        )
+        self._conn().commit()
+        return cur.lastrowid
+
+    def food_negations_for_entry_ids(self, entry_ids: list[int]) -> list[sqlite3.Row]:
+        if not entry_ids:
+            return []
+        placeholders = ",".join("?" * len(entry_ids))
+        return self.query(
+            f"SELECT * FROM food_negations WHERE ref_entry_id IN ({placeholders})",
+            tuple(entry_ids),
         )
 
     # --- Plugin-owned schema ---

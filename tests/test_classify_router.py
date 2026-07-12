@@ -25,6 +25,11 @@ from text_router import (
     _extract_agenda_item,
     _is_nutrition_breakdown,
     _parse_metric_body,
+    _food_negative_signal,
+    _PARTIAL_FRACTION_WORDS,
+    _RETRACT_BARE_RE,
+    _RETRACT_NAMED_RE,
+    _RETRACT_PARTIAL_RE,
 )
 
 classify = TextRouter._classify_entry
@@ -163,3 +168,62 @@ def test_exact_habit_match_is_conservative(tmp_path):
     assert exact_habit_match("Daily Walk", db) == "Daily walk"
     assert exact_habit_match("I should do my daily walk later", db) is None
     assert exact_habit_match("some unrelated note", db) is None
+
+
+# --- Food intent gate: narrative mention vs. a report of eating ---
+
+
+def test_negative_signal_blocks_order_and_arrival_narrative():
+    """'ordered a pizza and it got here cold' is a complaint, not a log event."""
+    assert _food_negative_signal("ordered a pizza and it got here cold") is True
+
+
+def test_negative_signal_blocks_descriptive_predicate_despite_leading_had():
+    """'had a rough day, pizza was cold' starts with 'had' (a positive-looking verb)
+    but is narrative — the gate must catch this via the descriptive-predicate pattern,
+    not a naive positive-verb match that would misfire on 'had a rough day'."""
+    assert _food_negative_signal("had a rough day, pizza was cold") is True
+
+
+def test_negative_signal_does_not_block_a_real_consumption_report():
+    """'just ate a protein shake' has no narrative/complaint cue — must log normally."""
+    assert _food_negative_signal("just ate a protein shake") is False
+
+
+def test_negative_signal_blocks_third_person_mentions():
+    assert _food_negative_signal("she ordered a burger for lunch") is True
+
+
+def test_negative_signal_blocks_hypothetical_framing():
+    assert _food_negative_signal("thinking about ordering pizza tonight") is True
+
+
+# --- Explicit-only food retraction: pattern matching ---
+
+
+def test_retract_bare_forms_match():
+    for text in ("#unlog", "unlog it", "scratch that", "Scratch that."):
+        assert _RETRACT_BARE_RE.match(text.strip()), text
+
+
+def test_retract_bare_forms_do_not_match_named_or_unrelated_text():
+    for text in ("unlog the shake", "didn't finish the report", "I scratched my arm"):
+        assert not _RETRACT_BARE_RE.match(text.strip()), text
+
+
+def test_retract_named_forms_extract_item():
+    assert _RETRACT_NAMED_RE.match("unlog the shake").group(1) == "shake"
+    assert _RETRACT_NAMED_RE.match("didn't finish the pizza").group(1) == "pizza"
+    assert _RETRACT_NAMED_RE.match("didn't finish my homework").group(1) == "homework"
+
+
+def test_retract_partial_form_extracts_fraction_word_and_item():
+    m = _RETRACT_PARTIAL_RE.match("only ate about a third of the pizza")
+    assert m is not None
+    assert m.group(1) == "third"
+    assert m.group(2) == "pizza"
+    assert _PARTIAL_FRACTION_WORDS[m.group(1)] == 1 / 3
+
+
+def test_retract_partial_form_requires_only_ate_or_had_prefix():
+    assert _RETRACT_PARTIAL_RE.match("I finished a third of my book") is None

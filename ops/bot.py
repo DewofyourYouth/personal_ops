@@ -27,6 +27,7 @@ from bot_constants import (  # noqa: F401
 from config import Config
 from context import Context
 from digest import DigestHandlers
+from food_registry import FoodRegistry
 from gcal import GCal
 from hypotheses import Hypotheses
 from hypothesis_handlers import HypothesisHandlers
@@ -92,6 +93,7 @@ queue_ = AgendaQueue(LOG_DIR)
 backlog_ = Backlog(LOG_DIR)
 reminders = Reminders()
 hypotheses_ = Hypotheses(logs.db)
+food_registry_ = FoodRegistry(logs.db)
 gcal_ = GCal()
 context_ = Context()
 planner_ = Planner(MODEL, logs, context_)
@@ -953,6 +955,7 @@ def main():
         baseline=baseline_,
         reminders=reminders,
         hypotheses=hypotheses_,
+        food_registry=food_registry_,
         allowed_user=ALLOWED_USER,
         quiet_window=quiet_window_,
     )

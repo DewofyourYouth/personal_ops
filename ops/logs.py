@@ -18,6 +18,19 @@ _FOOD_MACRO_RE = re.compile(
     r"([\d.]+)\s*g\s*fat,\s*([\d.]+)\s*g\s*carbs",
     re.IGNORECASE,
 )
+
+
+def _parse_macros(content: str) -> dict | None:
+    """Pull kcal/protein/fat/carbs out of a food entry's summary line, or None
+    if the entry has no macro estimate. The single home for this parse — other
+    modules (e.g. food_handlers) import it rather than keep their own copy."""
+    m = _FOOD_MACRO_RE.search(content)
+    if not m:
+        return None
+    kcal, protein, fat, carbs = (float(g) for g in m.groups())
+    return {"kcal": kcal, "protein_g": protein, "fat_g": fat, "carbs_g": carbs}
+
+
 logger = logging.getLogger(__name__)
 
 # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).
@@ -212,6 +225,8 @@ class Logs:
                     continue
                 if tag == "label_event":
                     continue  # correction metadata, not an entry — lives in label_events
+                if tag == "food_negation":
+                    continue  # append-only retraction metadata — lives in food_negations
                 date_str = ts[:10]
                 if tag == "metric" and e.get("key"):
                     k = (ts, e["key"])
@@ -634,39 +649,92 @@ class Logs:
             parts.append(f"7-day avg: {avg_7} kg{trend}")
         return " | ".join(parts)
 
+    # --- Food negations (append-only retractions) ---
+
+    def log_food_negation(
+        self, ref_entry_id: int, fraction: float, note: str = ""
+    ) -> int | None:
+        """Append a retraction against a food entry — never deletes or mutates
+        the original. `fraction` is the portion retracted (1.0 = fully). Deltas
+        are computed from the original entry's parsed macros and stored negative,
+        so totals can be netted without re-parsing content each time. Returns the
+        negation id, or None if the original entry has no parseable macros.
+
+        Same durability order as write()/log_label_event(): JSONL first (tagged
+        "food_negation", skipped by sync_jsonl_to_db so it's never replayed as
+        an entries row), then SQLite.
+        """
+        entry = self.db.entry_by_id(ref_entry_id)
+        if entry is None:
+            return None
+        macros = _parse_macros(entry["content"])
+        if macros is None:
+            return None
+        now = datetime.now(TZ)
+        record = {
+            "ts": now.isoformat(timespec="seconds"),
+            "tag": "food_negation",
+            "ref_entry_id": ref_entry_id,
+            "fraction": fraction,
+            "note": note,
+        }
+        try:
+            with open(self._jsonl_path(now.date()), "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.exception("Failed to append food negation to JSONL: %s", record)
+        return self.db.insert_food_negation(
+            record["ts"],
+            ref_entry_id,
+            fraction,
+            -(fraction * macros["kcal"]),
+            -(fraction * macros["protein_g"]),
+            -(fraction * macros["fat_g"]),
+            -(fraction * macros["carbs_g"]),
+            note,
+        )
+
+    def food_totals_for_entries(self, entries: list[dict]) -> dict | None:
+        """Sum parsed macros across food entries, net of any negations against
+        them. `entries` need "id" and "content". None if none are estimable."""
+        parsed = [(e["id"], m) for e in entries if (m := _parse_macros(e["content"]))]
+        if not parsed:
+            return None
+        totals = {
+            k: sum(m[k] for _, m in parsed)
+            for k in ("kcal", "protein_g", "fat_g", "carbs_g")
+        }
+        negations = self.db.food_negations_for_entry_ids([eid for eid, _ in parsed])
+        for n in negations:
+            totals["kcal"] += n["kcal_delta"]
+            totals["protein_g"] += n["protein_delta"]
+            totals["fat_g"] += n["fat_delta"]
+            totals["carbs_g"] += n["carbs_delta"]
+        return totals
+
     # --- Food macro persistence ---
 
     def save_food_summary(self, d: date) -> dict | None:
-        """Compute and persist the day's macro totals to the food_summary table.
+        """Compute and persist the day's net-of-negation macro totals to the
+        food_summary table.
 
         Returns the saved totals dict, or None if there were no estimable entries.
         Idempotent — safe to call multiple times for the same day (upserts).
         """
         rows = self.db.entries_for_date(d)
-        food_contents = [r["content"] for r in rows if r["tag"] == "food"]
-        if not food_contents:
+        food_entries = [dict(r) for r in rows if r["tag"] == "food"]
+        if not food_entries:
             return None
-        parsed = []
-        for content in food_contents:
-            m = _FOOD_MACRO_RE.search(content)
-            if m:
-                kcal, protein, fat, carbs = (float(g) for g in m.groups())
-                parsed.append(
-                    {"kcal": kcal, "protein_g": protein, "fat_g": fat, "carbs_g": carbs}
-                )
-        if not parsed:
+        totals = self.food_totals_for_entries(food_entries)
+        if totals is None:
             return None
-        totals = {
-            k: sum(p[k] for p in parsed)
-            for k in ("kcal", "protein_g", "fat_g", "carbs_g")
-        }
         self.db.upsert_food_summary(
             d.isoformat(),
             totals["kcal"],
             totals["protein_g"],
             totals["fat_g"],
             totals["carbs_g"],
-            len(food_contents),
+            len(food_entries),
         )
         return totals
 

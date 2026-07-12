@@ -33,6 +33,7 @@ def _make_router():
         gcal=MagicMock(),
         planner=MagicMock(),
         hypotheses=MagicMock(),
+        food_registry=MagicMock(),
     )
     return TextRouter(
         bot=AsyncMock(), services=services, shabbat=MagicMock(), allowed_user=123

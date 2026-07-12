@@ -37,6 +37,7 @@ from telegram.ext import (
 )
 
 from bot_constants import PREFIXES
+from food_registry import parse_composition
 from habit_handlers import exact_habit_match, match_habit
 from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from media import send_sticker
@@ -90,6 +91,111 @@ _MACRO_RE = re.compile(
 
 def _is_nutrition_breakdown(text: str) -> bool:
     return bool(_KCAL_RE.search(text) and _MACRO_RE.search(text))
+
+
+# #default <alias> = 130kcal 24p 0f 3c — explicit registry seed (no auto-promotion
+# round-trip needed). Values can appear in any order, spaced or not.
+_FOOD_DEFAULT_RE = re.compile(r"^#?default\s+(.+?)\s*=\s*(.+)$", re.IGNORECASE)
+_FOOD_VALUE_TOKEN_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kcal|cal|k|protein|p|carbs?|c|fat|f)\b", re.IGNORECASE
+)
+_FOOD_VALUE_UNIT_MAP = {
+    "kcal": "kcal",
+    "cal": "kcal",
+    "k": "kcal",
+    "protein": "protein_g",
+    "p": "protein_g",
+    "fat": "fat_g",
+    "f": "fat_g",
+    "carb": "carbs_g",
+    "carbs": "carbs_g",
+    "c": "carbs_g",
+}
+
+
+def _parse_food_default_values(value_str: str) -> dict | None:
+    """Parse '130kcal 24p 0f 3c' into {"kcal","protein_g","fat_g","carbs_g"}.
+    Requires all four values (first occurrence wins); None if any is missing."""
+    found: dict = {}
+    for num, unit in _FOOD_VALUE_TOKEN_RE.findall(value_str):
+        key = _FOOD_VALUE_UNIT_MAP.get(unit.lower())
+        if key and key not in found:
+            found[key] = float(num)
+    required = ("kcal", "protein_g", "fat_g", "carbs_g")
+    return found if all(k in found for k in required) else None
+
+
+# --- Explicit-only food retraction ---
+# Never inferred from a narrative mention — deterministic pattern match only, the
+# strictest gate in the system. Bare forms have no plausible non-retraction meaning
+# and always intercept. Named/partial forms ("didn't finish the X", "only ate a
+# third of the X") are natural language that collides with plausible non-food
+# sentences ("didn't finish the report") — those only intercept when a matching
+# food entry is actually found (see _find_food_entry_to_retract); on no match they
+# fall through to normal processing instead of silently swallowing the message.
+_RETRACT_BARE_RE = re.compile(
+    r"^(?:#unlog|unlog\s+it|scratch\s+that)\.?$", re.IGNORECASE
+)
+_RETRACT_NAMED_RE = re.compile(
+    r"^(?:unlog(?:\s+the)?|didn'?t\s+finish(?:\s+the|\s+my)?)\s+(.+?)\.?$",
+    re.IGNORECASE,
+)
+_RETRACT_PARTIAL_RE = re.compile(
+    r"^only\s+(?:ate|had)\s+(?:about\s+)?(?:a\s+)?(\w+)\s+(?:of\s+)?(?:the\s+|my\s+)?(.+?)\.?$",
+    re.IGNORECASE,
+)
+# Unqualified forms ("unlog X", "didn't finish the X") default to a full (1.0)
+# retraction — there's no deterministic way to guess a partial amount from
+# unqualified phrasing, and the feature's motivating case (gagged and threw up)
+# is inherently a full retraction.
+_PARTIAL_FRACTION_WORDS = {
+    "half": 0.5,
+    "third": 1 / 3,
+    "quarter": 0.25,
+    "few": 0.15,
+    "bites": 0.15,
+}
+
+
+# --- Food intent gate: narrative/complaint mention vs. a report of eating. ---
+# Deterministic pre-gate for the "food" classifier tag. Only a confident NEGATIVE
+# match blocks the food tag from being offered to the LLM classifier; anything
+# else is left alone and falls through to classify_entry unchanged (see
+# _classify_entry_with_llm) — a verb-based positive detector can't reliably tell
+# "had a shake" from "had a rough day" without an NLP dependency this repo
+# doesn't have, so this deliberately only ever narrows, never widens, what gets
+# logged. False positives here are expensive (a real food log silently blocked);
+# false negatives are cheap (today's behavior, unchanged). Structured nutrition
+# breakdowns (_is_nutrition_breakdown) are never gated — literal kcal/macro
+# numbers are inherently a real report, not a narrative mention.
+_FOOD_ORDER_CUE_RE = re.compile(
+    r"\b(?:ordered|ordering|arrived|got\s+here|delivered|delivery)\b", re.IGNORECASE
+)
+_FOOD_DESCRIPTIVE_RE = re.compile(
+    r"\b\w+(?:'s)?\s+(?:was|were|is|are|looked?|smelled?|tasted?|seemed)\s+\w+",
+    re.IGNORECASE,
+)
+_FOOD_THIRD_PERSON_RE = re.compile(
+    r"\b(?:he|she|they|him|her|them)\s+\w*\s*(?:ordered|ate|had|got|made)\b",
+    re.IGNORECASE,
+)
+_FOOD_HYPOTHETICAL_RE = re.compile(
+    r"\b(?:thinking\s+about|might|may|could|considering|craving|want(?:ing)?\s+to|"
+    r"planning\s+to)\b.{0,20}\b(?:order|get|make|try)\b",
+    re.IGNORECASE,
+)
+
+
+def _food_negative_signal(text: str) -> bool:
+    """True if the text reads as a narrative/complaint mention of food rather
+    than a report of eating it (an order, a description, a third-person
+    mention, a hypothetical)."""
+    return bool(
+        _FOOD_ORDER_CUE_RE.search(text)
+        or _FOOD_DESCRIPTIVE_RE.search(text)
+        or _FOOD_THIRD_PERSON_RE.search(text)
+        or _FOOD_HYPOTHETICAL_RE.search(text)
+    )
 
 
 # An explicitly stated agenda destination ("add X to my agenda", "put X on the agenda").
@@ -412,6 +518,64 @@ def _food_log_content(raw: str, estimate: dict) -> str:
     return "\n".join(lines)
 
 
+def _registry_items(
+    parts: list[tuple[str, float]], food_registry
+) -> tuple[list[dict], list[tuple[str, float]], bool]:
+    """Classify composition parts against the personal food registry.
+
+    Returns (known_items, unmatched_parts, all_exact):
+      known_items — item dicts (same shape planner.estimate_food returns) for every
+        part with a registry hit, scaled by its multiplier — no LLM call needed.
+      unmatched_parts — parts with no registry hit at all, to estimate via the LLM.
+      all_exact — True only if every part matched exactly (alias/synonym) — the only
+        case eligible to skip the confirm step entirely. A looser fuzzy/substring hit
+        still seeds known values here, but doesn't count toward an instant log — the
+        overall entry still goes through the normal confirm flow.
+    """
+    known_items: list[dict] = []
+    unmatched_parts: list[tuple[str, float]] = []
+    all_exact = True
+    for item_text, mult in parts:
+        hit = food_registry.lookup(item_text)
+        if hit is None:
+            unmatched_parts.append((item_text, mult))
+            all_exact = False
+            continue
+        if not hit["exact"]:
+            all_exact = False
+        portion = hit.get("serving_note") or ""
+        if mult != 1:
+            portion = f"{portion} ×{mult:g}".strip()
+        known_items.append(
+            {
+                "name": hit["alias"],
+                "portion": portion,
+                "kcal": hit["kcal"] * mult,
+                "protein_g": hit["protein_g"] * mult,
+                "fat_g": hit["fat_g"] * mult,
+                "carbs_g": hit["carbs_g"] * mult,
+            }
+        )
+    return known_items, unmatched_parts, all_exact
+
+
+def _estimate_total(items: list[dict]) -> dict:
+    """Sum an items list into the {"kcal","protein_g","fat_g","carbs_g"} total shape,
+    matching planner.estimate_food's own rounding (kcal to an int, macros to 1dp)."""
+    return {
+        "kcal": round(sum(i.get("kcal", 0) for i in items)),
+        "protein_g": round(sum(i.get("protein_g", 0) for i in items), 1),
+        "fat_g": round(sum(i.get("fat_g", 0) for i in items), 1),
+        "carbs_g": round(sum(i.get("carbs_g", 0) for i in items), 1),
+    }
+
+
+def _part_display_text(item_text: str, mult: float) -> str:
+    """Reconstruct a part's phrasing (with its multiplier) for an LLM estimate
+    call on the unmatched remainder, e.g. ("chicken curry", 2.0) -> 'chicken curry x2'."""
+    return f"{item_text} x{mult:g}" if mult != 1 else item_text
+
+
 class TextRouter:
     def __init__(self, bot, services, shabbat, allowed_user: int) -> None:
         self.bot = bot
@@ -423,6 +587,7 @@ class TextRouter:
         self.gcal = services.gcal
         self.planner = services.planner
         self.hypotheses = services.hypotheses
+        self.food_registry = services.food_registry
         self.shabbat = shabbat
         self.allowed_user = allowed_user
         # Set by bot.py once both features exist — process_text commits user-added
@@ -444,8 +609,14 @@ class TextRouter:
         # chat_id -> prosodic features of the pending voice note (survives the
         # transcript-edit loop — the audio doesn't change when the text does).
         self._pending_affect: dict = {}
-        # chat_id -> {"raw", "estimate", "adjusting": bool} for the food confirm flow
+        # chat_id -> {"raw", "estimate", "adjusting": bool, "was_adjusted": bool}
+        # for the food confirm flow
         self._awaiting_food: dict = {}
+        # chat_id -> entry_id of the most recently logged food entry this session —
+        # the target for a bare retraction ("scratch that") with no food named.
+        self._last_food_entry: dict = {}
+        # chat_id -> {"alias", "values"} for a pending "save as default?" prompt.
+        self._awaiting_food_default: dict = {}
 
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
@@ -461,6 +632,9 @@ class TextRouter:
         )
         app.add_handler(
             CallbackQueryHandler(self.handle_food_delete_callback, pattern="^food_del:")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_food_default_callback, pattern="^fdreg:")
         )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
@@ -753,14 +927,22 @@ class TextRouter:
         if query.data == "food_confirm":
             self._awaiting_food.pop(chat_id, None)
             content = _food_log_content(pending["raw"], pending["estimate"])
-            self.logs.write("food", content)
+            entry_id = self.logs.write("food", content)
+            self._last_food_entry[chat_id] = entry_id
             await query.edit_message_text(
                 _format_food_estimate(pending["raw"], pending["estimate"])
                 + "\n\n✅ <b>Logged.</b>",
                 parse_mode="HTML",
             )
+            # Only an Adjust round-trip is a deliberate correction — a plain confirm
+            # of the raw LLM guess isn't training signal for "this alias's true value".
+            if pending.get("was_adjusted"):
+                await self._maybe_prompt_food_default(
+                    chat_id, pending["raw"], pending["estimate"]["total"], context
+                )
         elif query.data == "food_adjust":
             pending["adjusting"] = True
+            pending["was_adjusted"] = True
             await query.edit_message_text(
                 _format_food_estimate(pending["raw"], pending["estimate"])
                 + "\n\n✏️ Tell me the correction (e.g. <i>the lasagna was ~400g, no salad</i>).",
@@ -769,6 +951,71 @@ class TextRouter:
         elif query.data == "food_cancel":
             self._awaiting_food.pop(chat_id, None)
             await query.edit_message_text("👍 OK, not logged.")
+
+    async def _maybe_prompt_food_default(
+        self, chat_id: int, alias: str, totals: dict, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """After a corrected food entry is confirmed, check whether this alias has
+        now been corrected twice with materially the same values — if so, offer to
+        save it as a default so future logs skip estimation entirely."""
+        proposal = self.food_registry.record_correction(
+            alias,
+            totals["kcal"],
+            totals["protein_g"],
+            totals["fat_g"],
+            totals["carbs_g"],
+        )
+        if proposal is None:
+            return
+        self._awaiting_food_default[chat_id] = proposal
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"💾 Save <b>{html.escape(proposal['alias'])}</b> as a default: "
+                f"~{proposal['kcal']:g} kcal, {proposal['protein_g']:g}g protein, "
+                f"{proposal['fat_g']:g}g fat, {proposal['carbs_g']:g}g carbs?"
+            ),
+            parse_mode="HTML",
+            reply_markup=inline_keyboard_markup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ Save default", callback_data="fdreg:yes"
+                        ),
+                        InlineKeyboardButton("❌ No thanks", callback_data="fdreg:no"),
+                    ]
+                ]
+            ),
+        )
+
+    async def handle_food_default_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Confirm or decline the "save as default?" auto-promotion prompt."""
+        query = update.callback_query
+        await safe_answer(query)
+        if query.from_user.id != self.allowed_user:
+            return
+        chat_id = update.effective_chat.id
+        proposal = self._awaiting_food_default.pop(chat_id, None)
+        if not proposal:
+            await query.edit_message_text("⚠️ No pending default to save.")
+            return
+        if query.data == "fdreg:yes":
+            self.food_registry.set_default(
+                proposal["alias"],
+                proposal["kcal"],
+                proposal["protein_g"],
+                proposal["fat_g"],
+                proposal["carbs_g"],
+            )
+            await query.edit_message_text(
+                f"✅ Saved <b>{html.escape(proposal['alias'])}</b> as a default.",
+                parse_mode="HTML",
+            )
+        else:
+            self.food_registry.suppress_prompt(proposal["alias"])
+            await query.edit_message_text("👍 Won't ask again for a while.")
 
     async def try_handle_food_adjust(self, update: Update) -> bool:
         """If a food estimate is awaiting a portion correction, re-estimate from the
@@ -835,10 +1082,70 @@ class TextRouter:
             return "food", text
         return "log", text
 
+    def _find_food_entry_to_retract(self, chat_id: int, item: str | None):
+        """Resolve the target for a retraction command. `item` given -> fuzzy-match
+        against today's food entries (DB-backed, works across restarts); `item` is
+        None (a bare "scratch that") -> the last food entry logged this session
+        (in-memory, matches the acceptance test's "same session" framing — a bare
+        retraction after a restart with nothing tracked correctly no-ops)."""
+        today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+        food_rows = [
+            r for r in self.logs.db.entries_for_date(today) if r["tag"] == "food"
+        ]
+        if not food_rows:
+            return None
+
+        if item is None:
+            last_id = self._last_food_entry.get(chat_id)
+            if last_id is None:
+                return None
+            return next((r for r in food_rows if r["id"] == last_id), None)
+
+        query_text = item.strip().lower()
+        contents = [r["content"].lower() for r in food_rows]
+        matches_idx = [
+            i
+            for i, c in enumerate(contents)
+            if query_text in c or c.split(" — ")[0] in query_text
+        ]
+        if not matches_idx:
+            close = difflib.get_close_matches(query_text, contents, n=1, cutoff=0.3)
+            if close:
+                matches_idx = [contents.index(close[0])]
+        if not matches_idx:
+            return None
+        # food_rows is chronological (ORDER BY ts) — the last match index is the
+        # most recently logged entry among the matches.
+        return food_rows[matches_idx[-1]]
+
+    async def _apply_food_retraction(self, reply, entry, fraction: float) -> None:
+        negation_id = self.logs.log_food_negation(entry["id"], fraction, note="retract")
+        if negation_id is None:
+            await reply("Found that entry, but it has no parseable macros to retract.")
+            return
+        pct = round(fraction * 100)
+        first_line = entry["content"].splitlines()[0]
+        await reply(
+            f'↩️ Noted — retracted ~{pct}% of "{first_line}". '
+            f"Original entry kept; today's total updated."
+        )
+
     def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
         rows = self.logs.db.entries_for_date(today)
         food_rows = [r for r in rows if r["tag"] == "food"]
+        if food_rows:
+            # Already-fully-retracted entries (net eaten fraction <= 0) drop off the
+            # picker so a repeated tap can't double-negate one into net-negative totals.
+            negations = self.logs.db.food_negations_for_entry_ids(
+                [r["id"] for r in food_rows]
+            )
+            retracted: dict[int, float] = {}
+            for n in negations:
+                retracted[n["ref_entry_id"]] = (
+                    retracted.get(n["ref_entry_id"], 0.0) + n["fraction"]
+                )
+            food_rows = [r for r in food_rows if retracted.get(r["id"], 0.0) < 1.0]
         if not food_rows:
             return "No food logged today.", inline_keyboard_markup([])
         kbd_rows = []
@@ -848,15 +1155,15 @@ class TextRouter:
             kbd_rows.append(
                 [
                     InlineKeyboardButton(f"{t} {label}", callback_data="noop"),
-                    InlineKeyboardButton("🗑", callback_data=f"food_del:{r['id']}"),
+                    InlineKeyboardButton("↩️", callback_data=f"food_del:{r['id']}"),
                 ]
             )
-        return "🍽 <b>Today's food — tap 🗑 to delete:</b>", inline_keyboard_markup(
+        return "🍽 <b>Today's food — tap ↩️ to retract:</b>", inline_keyboard_markup(
             kbd_rows
         )
 
     async def cmd_undo_food(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/undofood — pick a food entry from today to delete."""
+        """/undofood — pick a food entry from today to retract (never deletes)."""
         if update.effective_user.id != self.allowed_user:
             return
         text, keyboard = self._food_manage_message()
@@ -865,15 +1172,17 @@ class TextRouter:
     async def handle_food_delete_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        """Fully retract a food entry — appends a negation via the same path
+        _apply_food_retraction uses; never deletes or mutates the original row."""
         query = update.callback_query
         await query.answer()
         if query.from_user.id != self.allowed_user:
             return
         entry_id = int(query.data.split(":", 1)[1])
-        self.logs.db.delete_entry(entry_id)
+        self.logs.log_food_negation(entry_id, 1.0, note="undofood")
         text, keyboard = self._food_manage_message()
         if not inline_keyboard_rows(keyboard):
-            await query.edit_message_text("🗑 Removed. No more food entries today.")
+            await query.edit_message_text("↩️ Retracted. No more food entries today.")
         else:
             await query.edit_message_text(
                 text, parse_mode="HTML", reply_markup=keyboard
@@ -911,6 +1220,12 @@ class TextRouter:
                 for plugin in self.plugins
                 for t in getattr(plugin, "classification_tags", [])
             ]
+            if _food_negative_signal(text):
+                # The intent gate fired: the LLM classifier is structurally unable
+                # to tag this "food" for this call, rather than relying on prompt
+                # instructions alone. Everything else about the message (habit,
+                # checkin, task, ...) is still classified normally.
+                extra_tags = [t for t in extra_tags if t.get("tag") != "food"]
             if os.environ.get("OPS_CLASSIFIER") == "embedding":
                 from classifier import classify_entry_embedding_confidence
 
@@ -1049,6 +1364,40 @@ class TextRouter:
                     return
             await reply(f'Couldn\'t match "{query_text}" to any open agenda item.')
             return
+
+        # Explicit-only food retraction — deterministic, no LLM. Bare forms always
+        # intercept; named/partial forms only intercept on an actual match (see
+        # _find_food_entry_to_retract's docstring and the module-level comment above
+        # the regexes for why).
+        stripped = text.strip()
+        partial_m = _RETRACT_PARTIAL_RE.match(stripped)
+        if partial_m:
+            frac_word = partial_m.group(1).lower()
+            eaten_frac = _PARTIAL_FRACTION_WORDS.get(frac_word)
+            if eaten_frac is not None:
+                item = partial_m.group(2).strip(" .,!?;:")
+                entry = self._find_food_entry_to_retract(chat_id, item)
+                if entry is not None:
+                    await self._apply_food_retraction(reply, entry, 1 - eaten_frac)
+                    return
+                # No match — don't guess, fall through to normal processing.
+
+        if _RETRACT_BARE_RE.match(stripped):
+            entry = self._find_food_entry_to_retract(chat_id, None)
+            if entry is None:
+                await reply("Nothing to retract.")
+            else:
+                await self._apply_food_retraction(reply, entry, 1.0)
+            return
+
+        named_m = _RETRACT_NAMED_RE.match(stripped)
+        if named_m:
+            item = named_m.group(1).strip(" .,!?;:")
+            entry = self._find_food_entry_to_retract(chat_id, item)
+            if entry is not None:
+                await self._apply_food_retraction(reply, entry, 1.0)
+                return
+            # No match — don't guess, fall through to normal processing.
 
         # event: / new event / add to calendar / etc — create a Google Calendar event
         _event_pattern = re.match(
@@ -1242,6 +1591,28 @@ class TextRouter:
                 await reply(f"😴 Sleep logged: {hours}h")
                 return
 
+        # #default <alias> = <values> — explicit registry seed, in case the user
+        # wants to skip the auto-promotion round-trip and seed a default directly.
+        default_m = _FOOD_DEFAULT_RE.match(text.strip())
+        if default_m:
+            alias, value_str = default_m.group(1).strip(), default_m.group(2).strip()
+            values = _parse_food_default_values(value_str)
+            if values is None:
+                await reply(
+                    "Couldn't parse those values. Use e.g. "
+                    "<code>#default protein shake = 130kcal 24p 0f 3c</code>",
+                    parse_mode="HTML",
+                )
+                return
+            self.food_registry.set_default(alias, **values)
+            await reply(
+                f"✅ Saved default for <b>{html.escape(alias)}</b>: "
+                f"~{values['kcal']:g} kcal, {values['protein_g']:g}g protein, "
+                f"{values['fat_g']:g}g fat, {values['carbs_g']:g}g carbs",
+                parse_mode="HTML",
+            )
+            return
+
         # metric(s): <key> <value> — structured metric entry. Accepts the plural
         # "metrics:", key/value in either order, and a filler word before the key
         # ("metrics: yesterday's steps 7095"). This was silently dropping plural /
@@ -1307,15 +1678,52 @@ class TextRouter:
         # Food gets an itemised nutrition estimate the user confirms/adjusts before it's
         # logged. We hold the entry until they tap "Log it" rather than writing immediately.
         if tag == "food":
-            try:
-                estimate = await self.planner.estimate_food(content)
-            except Exception:
-                estimate = None
+            parts = parse_composition(content)
+            known_items, unmatched_parts, all_exact = _registry_items(
+                parts, self.food_registry
+            )
+
+            if known_items and all_exact:
+                # Every part matched a personal default exactly — skip estimation
+                # and confirmation entirely, just log and confirm in one line.
+                estimate = {"items": known_items, "total": _estimate_total(known_items)}
+                log_content = _food_log_content(content, estimate)
+                entry_id = self.logs.write(tag, log_content, extra=extra)
+                self._last_food_entry[chat_id] = entry_id
+                await reply(
+                    f"🍽 Logged (from your defaults): {log_content}",
+                    reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
+                )
+                return
+
+            estimate = None
+            if unmatched_parts:
+                remainder = " + ".join(
+                    _part_display_text(p, m) for p, m in unmatched_parts
+                )
+                try:
+                    llm_estimate = await self.planner.estimate_food(remainder)
+                except Exception:
+                    llm_estimate = None
+                if llm_estimate:
+                    merged = known_items + llm_estimate["items"]
+                    estimate = {"items": merged, "total": _estimate_total(merged)}
+            elif known_items:
+                # Everything matched, but only via a fuzzy/substring hit — skip the
+                # LLM call, but still confirm since we're not fully certain.
+                estimate = {"items": known_items, "total": _estimate_total(known_items)}
+            else:
+                try:
+                    estimate = await self.planner.estimate_food(content)
+                except Exception:
+                    estimate = None
+
             if estimate:
                 self._awaiting_food[chat_id] = {
                     "raw": content,
                     "estimate": estimate,
                     "adjusting": False,
+                    "was_adjusted": False,
                 }
                 await reply(
                     _format_food_estimate(content, estimate),
@@ -1325,6 +1733,7 @@ class TextRouter:
                 return
             # No usable estimate — fall back to logging the raw description.
             entry_id = self.logs.write(tag, content, extra=extra)
+            self._last_food_entry[chat_id] = entry_id
             await reply(
                 f"🍽 Logged: {content}",
                 reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),

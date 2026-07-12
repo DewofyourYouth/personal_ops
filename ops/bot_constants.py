@@ -101,8 +101,8 @@ HELP_SECTIONS = {
 /metrics — tracked metrics with trend (last 14 days)
 /mine — quantitative log-mining: weekday/mood patterns, correlations, habit→mood (<code>/mine advise</code> adds an AI read). Also runs Sundays.
 /weight — Wegovy progress (% lost, rate, chart)
-/foodlog — today's food with macro totals
-/undofood — delete the most recently logged food entry today
+/foodlog — today's food with macro totals (net of any retractions)
+/undofood — retract (not delete) a food entry from today
 /grocery — shared grocery checklist (<code>/addgrocery</code> to add, <code>/grocerycopy</code> to copy, <code>/cleargrocery</code> to reset)
 /backlog — someday items, grouped by domain
 /logs — today's log entries
@@ -111,6 +111,8 @@ HELP_SECTIONS = {
     "capture": (
         "✍️ Capture & Logging",
         """<code>food: &lt;what you ate&gt;</code> — nutrition estimate, then log
+🍽 foods you've logged before are recognized automatically (no re-estimating); <code>#default protein shake = 130kcal 24p 0f 3c</code> to seed one yourself
+↩️ <code>didn't finish the X</code> / <code>#unlog</code> / <code>scratch that</code> — retract a food entry (never deletes — appends a negation, original stays visible)
 📷 send a food / nutrition-label <b>photo</b> → macros to confirm
 <code>pick up eggs and milk at the grocery</code> — add grocery items
 📎 upload an <b>HTML/text file</b> → tasks to /backlog + insights
@@ -183,7 +185,7 @@ BOT_COMMANDS = [
     ("mine", "Quantitative log-mining report"),
     ("weight", "Weight progress (% lost, rate, chart)"),
     ("foodlog", "Today's food log with macro totals"),
-    ("undofood", "Delete a food entry from today"),
+    ("undofood", "Retract (not delete) a food entry from today"),
     ("backlog", "Someday items, grouped by domain"),
     ("logs", "Today's log entries"),
     ("hypotheses", "Open hypotheses and their follow-ups"),

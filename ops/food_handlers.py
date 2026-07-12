@@ -8,33 +8,14 @@ entry with parsed macros at write time); this plugin owns the read side.
 """
 
 import html
-import re
 from datetime import date, timedelta
 
 import anthropic
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from logs import Logs
+from logs import Logs, _parse_macros
 from tg_common import mono_table
-
-# The macro summary line written by text_router._food_log_content, e.g.
-# "lasagna and salad — ~480 kcal, 24g protein, 21g fat, 47g carbs".
-_MACRO_RE = re.compile(
-    r"~?\s*([\d.]+)\s*kcal,\s*([\d.]+)\s*g\s*protein,\s*"
-    r"([\d.]+)\s*g\s*fat,\s*([\d.]+)\s*g\s*carbs",
-    re.IGNORECASE,
-)
-
-
-def _parse_macros(content: str) -> dict | None:
-    """Pull kcal/protein/fat/carbs out of a food entry's summary line, or None if the
-    entry has no macro estimate (e.g. one logged raw when the estimator was unavailable)."""
-    m = _MACRO_RE.search(content)
-    if not m:
-        return None
-    kcal, protein, fat, carbs = (float(g) for g in m.groups())
-    return {"kcal": kcal, "protein_g": protein, "fat_g": fat, "carbs_g": carbs}
 
 
 def _macro_totals(contents: list[str]) -> dict | None:
@@ -56,7 +37,12 @@ class FoodHandlers:
     classification_tags = [
         {
             "tag": "food",
-            "description": "a meal or food consumed, to log with a nutrition estimate",
+            "description": (
+                "a meal or food ALREADY EATEN or being eaten now, reported as a log "
+                "event — not a narrative mention, order, complaint, or third-person "
+                "mention of food (e.g. 'ordered pizza and it arrived cold' is NOT "
+                "food; only classify as food if the text reports something consumed)"
+            ),
         }
     ]
 
@@ -99,7 +85,7 @@ class FoodHandlers:
             t = e["ts"][11:16]
             lines.append(f"<code>{t}</code> {html.escape(e['content'])}")
 
-        totals = _macro_totals([e["content"] for e in entries])
+        totals = self.logs.food_totals_for_entries(entries)
         if totals:
             lines.append("\n<b>Totals (approx)</b>")
             lines.append(
