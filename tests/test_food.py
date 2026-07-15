@@ -5,10 +5,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from food_handlers import _macro_totals, _parse_macros
+from food_handlers import MACRO_PERIOD_DAYS, FoodHandlers, _macro_totals, _macros_report
 from food_registry import FoodRegistry, parse_composition
-from logs import Logs
+from logs import Logs, _parse_macros
 from text_router import (
     TextRouter,
     _estimate_total,
@@ -79,6 +81,82 @@ def test_macro_totals_sums_and_skips_unestimated():
 def test_macro_totals_none_when_nothing_estimated():
     """Macro totals return None when no entries contain parseable estimates."""
     assert _macro_totals(["banana", "an apple"]) is None
+
+
+# --- /macros rolling report ---
+
+
+def _report_entry(entry_id: int, d: date, label: str, estimate=_ESTIMATE) -> dict:
+    return {
+        "id": entry_id,
+        "date": d.isoformat(),
+        "content": _food_log_content(label, estimate),
+    }
+
+
+def test_macro_periods_are_rolling_windows():
+    assert MACRO_PERIOD_DAYS == {"week": 7, "month": 30, "quarter": 90, "year": 365}
+
+
+def test_macros_report_has_totals_averages_coverage_and_consumed_summary():
+    entries = [
+        _report_entry(1, _TODAY, "protein shake"),
+        _report_entry(2, _TODAY, "protein shake"),
+        _report_entry(3, _TODAY, "chicken salad"),
+    ]
+    report = _macros_report(entries, [], "week", _TODAY)
+    assert "~1440" in report
+    assert "72g" in report
+    assert "Avg/day" in report
+    assert "1/7" in report
+    assert "protein shake × 2" in report
+    assert "chicken salad × 1" in report
+
+
+def test_macros_report_is_net_of_full_and_partial_retractions():
+    entries = [
+        _report_entry(1, _TODAY, "pizza"),
+        _report_entry(2, _TODAY, "protein shake"),
+    ]
+    negations = [
+        {
+            "ref_entry_id": 1,
+            "fraction": 1.0,
+            "kcal_delta": -480.0,
+            "protein_delta": -24.0,
+            "fat_delta": -21.0,
+            "carbs_delta": -47.0,
+        },
+        {
+            "ref_entry_id": 2,
+            "fraction": 0.5,
+            "kcal_delta": -240.0,
+            "protein_delta": -12.0,
+            "fat_delta": -10.5,
+            "carbs_delta": -23.5,
+        },
+    ]
+    report = _macros_report(entries, negations, "week", _TODAY)
+    assert "~240" in report
+    assert "pizza" not in report
+    assert "protein shake × 0.5" in report
+
+
+def test_macros_report_handles_no_food():
+    report = _macros_report([], [], "month", _TODAY)
+    assert "No food was logged" in report
+
+
+@pytest.mark.asyncio
+async def test_cmd_macros_rejects_invalid_period():
+    update = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=123),
+        message=types.SimpleNamespace(reply_text=AsyncMock()),
+    )
+    handler = FoodHandlers(AsyncMock(), _make_logs(), 123)
+    await handler.cmd_macros(update, types.SimpleNamespace(args=["fortnight"]))
+    message = update.message.reply_text.await_args.args[0]
+    assert "/macros week" in message
 
 
 # --- Persistence tests ---

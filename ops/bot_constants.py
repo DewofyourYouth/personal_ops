@@ -102,6 +102,7 @@ HELP_SECTIONS = {
 /mine — quantitative log-mining: weekday/mood patterns, correlations, habit→mood (<code>/mine advise</code> adds an AI read). Also runs Sundays.
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals (net of any retractions)
+/macros week|month|quarter|year — rolling macro totals, averages, and foods consumed
 /undofood — retract (not delete) a food entry from today
 /grocery — shared grocery checklist (<code>/addgrocery</code> to add, <code>/grocerycopy</code> to copy, <code>/cleargrocery</code> to reset)
 /backlog — someday items, grouped by domain
@@ -185,6 +186,7 @@ BOT_COMMANDS = [
     ("mine", "Quantitative log-mining report"),
     ("weight", "Weight progress (% lost, rate, chart)"),
     ("foodlog", "Today's food log with macro totals"),
+    ("macros", "Macro results for week, month, quarter, or year"),
     ("undofood", "Retract (not delete) a food entry from today"),
     ("backlog", "Someday items, grouped by domain"),
     ("logs", "Today's log entries"),
