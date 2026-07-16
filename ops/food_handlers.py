@@ -89,10 +89,45 @@ def _macros_report(
         totals["fat_g"] += n["fat_delta"]
         totals["carbs_g"] += n["carbs_delta"]
 
+    # Averages reflect the normal Sunday–Thursday week. Period totals remain
+    # inclusive of Friday/Saturday so the report still accounts for all food.
+    average_entry_ids = {
+        e["id"]
+        for e in entries
+        if date.fromisoformat(e["date"]).weekday() in {6, 0, 1, 2, 3}
+    }
+    average_totals = {
+        key: sum(
+            macros[key]
+            for entry_id, macros in parsed
+            if entry_id in average_entry_ids and macros is not None
+        )
+        for key in ("kcal", "protein_g", "fat_g", "carbs_g")
+    }
+    for n in negations:
+        if n["ref_entry_id"] in average_entry_ids:
+            average_totals["kcal"] += n["kcal_delta"]
+            average_totals["protein_g"] += n["protein_delta"]
+            average_totals["fat_g"] += n["fat_delta"]
+            average_totals["carbs_g"] += n["carbs_delta"]
+
+    average_days = sum(
+        1
+        for offset in range(days)
+        if (start + timedelta(days=offset)).weekday() in {6, 0, 1, 2, 3}
+    )
+    average_logged_days = len(
+        {
+            e["date"]
+            for e in entries
+            if date.fromisoformat(e["date"]).weekday() in {6, 0, 1, 2, 3}
+        }
+    )
+
     logged_days = len({e["date"] for e in entries})
     lines.append("")
     if estimated_count:
-        divisor = logged_days or 1
+        logged_divisor = average_logged_days or 1
         lines.append(
             mono_table(
                 ["", "kcal", "Protein", "Fat", "Carbs"],
@@ -105,18 +140,18 @@ def _macros_report(
                         f"{_fmt(totals['carbs_g'])}g",
                     ],
                     [
-                        "Avg/day",
-                        f"~{_fmt(totals['kcal'] / days)}",
-                        f"{_fmt(totals['protein_g'] / days)}g",
-                        f"{_fmt(totals['fat_g'] / days)}g",
-                        f"{_fmt(totals['carbs_g'] / days)}g",
+                        "Sun–Thu/day",
+                        f"~{_fmt(average_totals['kcal'] / average_days)}",
+                        f"{_fmt(average_totals['protein_g'] / average_days)}g",
+                        f"{_fmt(average_totals['fat_g'] / average_days)}g",
+                        f"{_fmt(average_totals['carbs_g'] / average_days)}g",
                     ],
                     [
-                        "Avg/logged",
-                        f"~{_fmt(totals['kcal'] / divisor)}",
-                        f"{_fmt(totals['protein_g'] / divisor)}g",
-                        f"{_fmt(totals['fat_g'] / divisor)}g",
-                        f"{_fmt(totals['carbs_g'] / divisor)}g",
+                        "Sun–Thu/logged",
+                        f"~{_fmt(average_totals['kcal'] / logged_divisor)}",
+                        f"{_fmt(average_totals['protein_g'] / logged_divisor)}g",
+                        f"{_fmt(average_totals['fat_g'] / logged_divisor)}g",
+                        f"{_fmt(average_totals['carbs_g'] / logged_divisor)}g",
                     ],
                 ],
             )

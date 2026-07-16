@@ -107,10 +107,25 @@ def test_macros_report_has_totals_averages_coverage_and_consumed_summary():
     report = _macros_report(entries, [], "week", _TODAY)
     assert "~1440" in report
     assert "72g" in report
-    assert "Avg/day" in report
+    assert "Sun–Thu/day" in report
     assert "1/7" in report
     assert "protein shake × 2" in report
     assert "chicken salad × 1" in report
+
+
+def test_macros_report_averages_only_sunday_through_thursday():
+    # 10 June 2024 is Monday; 14 June is Friday. Both count toward the total,
+    # but the Friday meal must not contribute to either average.
+    monday = date(2024, 6, 10)
+    friday = date(2024, 6, 14)
+    entries = [
+        _report_entry(1, monday, "weekday meal"),
+        _report_entry(2, friday, "friday meal"),
+    ]
+    report = _macros_report(entries, [], "week", date(2024, 6, 16))
+    assert "~960" in report  # all-days period total
+    assert "Sun–Thu/day     ~96" in report  # 480 kcal / five Sun–Thu days
+    assert "Sun–Thu/logged  ~480" in report  # only Monday is a qualifying logged day
 
 
 def test_macros_report_is_net_of_full_and_partial_retractions():
