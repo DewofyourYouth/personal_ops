@@ -234,6 +234,26 @@ class ReminderHandlers:
 
     # --- Scheduled firing (wrapped by bot.py for the scheduler) ---
 
+    # A check-in nudge is only useful when the user has gone quiet. If a #checkin
+    # landed within the reminder's own interval (or this fallback for non-interval
+    # reminders), the nudge is noise — skip that grid slot; the next one fires
+    # if they've gone quiet again.
+    _CHECKIN_FRESHNESS_FALLBACK_MIN = 45
+
+    def _checkin_logged_within(self, minutes: int) -> bool:
+        rows = self.logs.db.query(
+            "SELECT ts FROM entries WHERE tag = 'checkin' ORDER BY ts DESC LIMIT 1"
+        )
+        if not rows:
+            return False
+        try:
+            last = datetime.fromisoformat(rows[0]["ts"])
+        except ValueError:
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_TZ)
+        return datetime.now(_TZ) - last < timedelta(minutes=minutes)
+
     async def run_due_check(self) -> None:
         if self.shabbat.quiet_now():
             return
@@ -246,6 +266,10 @@ class ReminderHandlers:
             is_checkin = any(
                 w in r["text"].lower() for w in ("check in", "checkin", "check-in")
             )
+            if is_checkin and self._checkin_logged_within(
+                r.get("interval_minutes") or self._CHECKIN_FRESHNESS_FALLBACK_MIN
+            ):
+                continue
             cb = "remind_dismiss_c" if is_checkin else "remind_dismiss"
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("✓ Dismiss", callback_data=cb)]]
