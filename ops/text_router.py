@@ -36,7 +36,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot_constants import PREFIXES
+from tags import PREFIXES
 from food_registry import parse_composition
 from habit_handlers import exact_habit_match, match_habit
 from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
@@ -636,6 +636,9 @@ class TextRouter:
         app.add_handler(
             CallbackQueryHandler(self.handle_food_default_callback, pattern="^fdreg:")
         )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_route_callback, pattern="^route:")
+        )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
 
@@ -751,7 +754,6 @@ class TextRouter:
         finally:
             os.unlink(tmp_path)
 
-        await send_sticker(self.bot, chat_id, "voice")
         self._awaiting_voice_edit[chat_id] = text
         keyboard = inline_keyboard_markup(
             [
@@ -1211,8 +1213,9 @@ class TextRouter:
         except Exception:
             pass
         # Only the genuinely ambiguous middle reaches a classifier. Which classifier is
-        # swappable via OPS_CLASSIFIER ("llm" default, or "embedding" for the local KNN
-        # prototype in classifier.py) so the two can run side-by-side without a rewrite.
+        # swappable via OPS_CLASSIFIER: "hybrid" (default) runs the local KNN first and
+        # only pays for an LLM call when its vote is weak; "embedding" and "llm" run one
+        # path alone, so the two can still be compared side-by-side.
         confidence = None
         try:
             extra_tags = [
@@ -1226,17 +1229,48 @@ class TextRouter:
                 # instructions alone. Everything else about the message (habit,
                 # checkin, task, ...) is still classified normally.
                 extra_tags = [t for t in extra_tags if t.get("tag") != "food"]
-            if os.environ.get("OPS_CLASSIFIER") == "embedding":
+            mode = os.environ.get("OPS_CLASSIFIER", "hybrid")
+            if mode == "embedding":
                 from classifier import classify_entry_embedding_confidence
 
                 tag, confidence = await classify_entry_embedding_confidence(
                     text, self.logs.db, extra_tags=extra_tags or None
                 )
+            elif mode == "hybrid":
+                tag, confidence = await self._classify_hybrid(text, extra_tags)
             else:
                 tag = await classify_entry(text, extra_tags=extra_tags or None)
         except Exception:
             pass  # keep "log" on any classifier failure
         return tag, content, confidence
+
+    async def _classify_hybrid(
+        self, text: str, extra_tags: list[dict]
+    ) -> tuple[str, float | None]:
+        """Embedding-KNN first; the LLM is only consulted as a tie-break when the
+        vote is weak. Agreement upgrades a weak vote to confident (no picker);
+        disagreement defers to the LLM's tag but keeps the low confidence so the
+        reclassify picker fires. If the embedding path fails entirely (no OpenAI
+        key, empty reference set), the LLM alone answers with no confidence —
+        the same behavior as the old default."""
+        threshold = self.reclassify.confidence_threshold if self.reclassify else 0.55
+        try:
+            from classifier import classify_entry_embedding_confidence
+
+            tag, confidence = await classify_entry_embedding_confidence(
+                text, self.logs.db, extra_tags=extra_tags or None
+            )
+        except Exception:
+            return await classify_entry(text, extra_tags=extra_tags or None), None
+        if confidence >= threshold:
+            return tag, confidence
+        try:
+            llm_tag = await classify_entry(text, extra_tags=extra_tags or None)
+        except Exception:
+            return tag, confidence  # tie-break unavailable — keep the KNN vote
+        if llm_tag == tag:
+            return tag, threshold  # both agree — treat as confident
+        return llm_tag, confidence
 
     async def cmd_backdate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
@@ -1847,6 +1881,59 @@ class TextRouter:
             if extra and extra.get("affect_features") and tag != "checkin"
             else []
         )
+        if routing_row := self._routing_row(entry_id, tag):
+            extra_rows = [routing_row] + extra_rows
         if self._is_low_confidence(confidence):
             return picker_keyboard(entry_id, tag, extra_rows=extra_rows)
         return entry_actions_keyboard(entry_id, extra_rows=extra_rows)
+
+    @staticmethod
+    def _routing_row(entry_id: int, tag: str) -> list | None:
+        """One-tap destination buttons for actionable tags. A classified #task or
+        #backlog used to be a label and nothing more — the entry never reached the
+        agenda or the Backlog service unless retyped with an explicit prefix. The
+        action stays deterministic: it only happens on the user's tap."""
+        if tag == "task":
+            return [
+                InlineKeyboardButton(
+                    "➕ Agenda today", callback_data=f"route:agenda:{entry_id}"
+                ),
+                InlineKeyboardButton(
+                    "🗂 Backlog", callback_data=f"route:backlog:{entry_id}"
+                ),
+            ]
+        if tag == "backlog":
+            return [
+                InlineKeyboardButton(
+                    "🗂 Add to backlog", callback_data=f"route:backlog:{entry_id}"
+                )
+            ]
+        return None
+
+    async def handle_route_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """route:<agenda|backlog>:<entry_id> — send a logged entry to its destination,
+        then lock the routing row in place (the Edit/Reclassify row stays live)."""
+        query = update.callback_query
+        await safe_answer(query)
+        if query.from_user.id != self.allowed_user:
+            return
+        _, dest, entry_id = query.data.split(":")
+        entry = self.logs.db.entry_by_id(int(entry_id))
+        if entry is None:
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+        if dest == "agenda" and self.agenda_feature:
+            self.agenda_feature.commit_agenda([entry["content"]], source="user")
+            label = "Added to today's agenda"
+        else:
+            self.backlog.add(entry["content"])
+            label = "Added to backlog"
+        rows = []
+        for row in inline_keyboard_rows(query.message.reply_markup):
+            if any((btn.callback_data or "").startswith("route:") for btn in row):
+                rows.append([InlineKeyboardButton(f"✅ {label}", callback_data="noop")])
+            else:
+                rows.append(list(row))
+        await query.edit_message_reply_markup(reply_markup=inline_keyboard_markup(rows))

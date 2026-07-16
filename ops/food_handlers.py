@@ -171,7 +171,8 @@ def _macros_report(
     if consumed:
         lines.extend(["", "<b>Consumed (net)</b>"])
         ranked = sorted(
-            consumed.values(), key=lambda item: (-item["count"], item["label"].casefold())
+            consumed.values(),
+            key=lambda item: (-item["count"], item["label"].casefold()),
         )
         limit = 25
         for item in ranked[:limit]:

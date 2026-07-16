@@ -11,7 +11,9 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 - Creates and reads Google Calendar events via natural language
 - Sets one-time, daily, and interval reminders (with configurable quiet hours)
 - Transcribes voice notes via Whisper and processes them through the same pipeline
-- Logs structured entries (notes, insights, wins, metrics, food, injections) to dated JSONL files
+- Logs structured entries (notes, insights, wins, friction, metrics, food, injections) to dated JSONL files
+- Classifies un-prefixed messages with a hybrid classifier (local embedding-KNN first, LLM tie-break on weak votes); every classified entry gets Edit/Reclassify buttons, and corrections feed a weekly retrain loop
+- Offers one-tap routing when a message classifies as a `#task` (→ today's agenda or backlog) or `#backlog` (→ backlog)
 - Daily + weekly AI digests, an insight ledger, and a quantitative log-mining report
 - Editable personal context files (goals, priorities, constraints, projects, principles) that inform all AI suggestions
 
@@ -59,7 +61,8 @@ single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`,
 | `/metrics` | Tracked metrics with trend (last 14 days) |
 | `/mine` | Quantitative log-mining report (`/mine advise` adds an AI read; also Sundays) |
 | `/weight` | Weight progress (% lost, rate, chart) |
-| `/foodlog`, `/undofood` | Today's food log with macro totals / delete an entry |
+| `/foodlog`, `/undofood` | Today's food log with macro totals / retract (not delete) an entry |
+| `/macros week\|month\|quarter\|year` | Rolling macro totals, averages, and foods consumed |
 | `/backlog` | Someday items, grouped by domain |
 | `/logs` | Today's log entries |
 | `/hypotheses` | Open hypotheses and their follow-ups |
@@ -97,6 +100,7 @@ single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`,
 | `metric: <key> <value>` | Log a structured metric (e.g. `metric: steps 8000`) |
 | `slept 7 hours` / `/sleep 7` | Log last night's sleep as a metric |
 | `did: <text>` | Log a spontaneous win (tagged `#win`) |
+| `friction: <what went badly>` | Log drag, blockers, mistakes (tagged `#friction`; `wrong:` still works as an alias) |
 | `habit: <name>` | Log a completed habit |
 | `injection: <dose>` | Log a Wegovy injection (`shot:` / `jab:` also work) |
 | `skip: <reason>` | Excuse today's habits (`excuse:` / `excused:` also work) |
@@ -106,7 +110,10 @@ single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`,
 | `feedback: <idea/question>` | Log it and get Claude's take |
 | `note: / insight: / task: / hypothesis: / checkin` | Log a structured entry |
 | 📎 upload an HTML/text file | Extract tasks → `/backlog` and insights → log |
-| *(anything else)* | Logged as `#log` |
+| *(anything else)* | Classified into a tag (hybrid embedding+LLM classifier), falling back to `#log`. Every classified entry gets ✏️ Edit / 🏷 Reclassify buttons; entries classified `#task`/`#backlog` also get one-tap routing buttons to the agenda or backlog |
+
+The tag taxonomy (prefixes, classifier definitions, reclassify picker, mining set) has a
+single source of truth: `ops/tags.py`.
 
 Log entry format (JSONL):
 ```json
@@ -131,6 +138,8 @@ OPENAI_API_KEY=your_openai_api_key
 OPS_MODEL=claude-sonnet-4-6            # optional, default shown
 OPS_PLAN_HOUR=8                        # optional, default shown
 OPS_PLAN_MINUTE=0                      # optional
+OPS_CLASSIFIER=hybrid                  # optional: hybrid (default) | embedding | llm
+OPS_RECLASSIFY_CONF=0.55               # optional: low-confidence picker threshold
 ```
 
 See [MODEL_USAGE.md](MODEL_USAGE.md) for the current model usage audit.
@@ -155,7 +164,12 @@ Run from the project root — log paths are derived from `os.getcwd()`.
 
 ```
 ops/
-  bot.py          — main bot process
+  bot.py          — main bot process (composition root)
+  tags.py         — canonical tag taxonomy: prefixes, classifier enum, picker, mining set
+  text_router.py  — message dispatch: prefix rules, classification, food/voice flows
+  classifier.py   — local embedding-KNN classifier (hybrid mode's first pass)
+  reclassify_handlers.py — Edit/Reclassify buttons, /fix, label_events corrections
+  media.py        — sticker delight layer with per-kind cooldowns
   planner.py      — Claude API: agenda proposals, digest, event/reminder parsing
   agenda.py       — daily agenda state (JSON sidecar per day)
   logs.py         — JSONL log read/write, metrics, markdown fallback parser

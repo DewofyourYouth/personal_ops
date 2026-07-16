@@ -4,32 +4,6 @@ STATUS_ICONS = {
     "missed": "❌",
 }
 
-PREFIXES = {
-    "insight:": "#insight",
-    "hypothesis:": "#hypothesis",
-    "checkin": "#checkin",
-    "task:": "#task",
-    "note:": "#note",
-    "did:": "#win",
-    "habit:": "#habit",
-    "wrong:": "#wrong",
-    "backlog:": "#backlog",
-    "someday:": "#backlog",
-    "food:": "#food",
-    "ate:": "#food",
-    "ate ": "#food",
-    "injection:": "#injection",
-    "shot:": "#injection",
-    "jab:": "#injection",
-    "skip:": "#skip",
-    "excuse:": "#skip",
-    "excused:": "#skip",
-    "directive:": "#directive",
-    "policy:": "#directive",
-    "discrete:": "#discrete",
-    "private:": "#discrete",
-}
-
 ENCOURAGEMENTS = [
     "Look at you, a functioning adult!",
     "Your future self just breathed a sigh of relief.",
@@ -124,11 +98,13 @@ HELP_SECTIONS = {
 <code>did: &lt;text&gt;</code> — log a win
 <code>directive: &lt;rule&gt;</code> — a standing instruction to the app (declared, never inferred); /directives lists them
 <code>feedback: &lt;idea/question&gt;</code> — get Claude's take
+<code>friction: &lt;what went badly&gt;</code> — log drag, blockers, mistakes (<code>wrong:</code> still works)
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 /hypotheses — open tests + their follow-ups
 /fix — reclassify the most recent logged entry
 🏷 every logged entry has Edit / Reclassify buttons to correct its tag
-Anything else is logged as <code>#log</code>""",
+➡️ entries classified <code>#task</code> or <code>#backlog</code> get one-tap buttons to route them to the agenda or backlog
+Anything else is classified automatically, falling back to <code>#log</code>""",
     ),
     "context": (
         "⚙️ Context",

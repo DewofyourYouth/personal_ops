@@ -274,6 +274,19 @@ class Logs:
         lines = self._read_day(d)
         return "\n".join(lines) if lines else "No log entries."
 
+    def tag_grouped_day_summary(self, d: date) -> str:
+        """The day's wins / friction / insights, grouped by tag — lets digest
+        prompts reason over the taxonomy explicitly instead of one text blob.
+        Empty string when none of these tags appeared today."""
+        groups = [("win", "Wins"), ("friction", "Friction"), ("insight", "Insights")]
+        rows = self.db.entries_for_date(d)
+        sections = []
+        for tag, title in groups:
+            contents = [r["content"] for r in rows if r["tag"] == tag]
+            if contents:
+                sections.append(f"{title}:\n" + "\n".join(f"- {c}" for c in contents))
+        return "\n".join(sections)
+
     def read_agenda_as_text(self, d: date) -> str:
         """Return the day's agenda items with their completion status, or empty string if none."""
         path = Path(self.log_dir) / f"{d}-agenda.json"

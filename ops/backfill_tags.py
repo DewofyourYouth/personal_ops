@@ -158,11 +158,21 @@ async def main() -> None:
         action="store_true",
         help="only apply directive/discrete moves — the load-bearing values fix",
     )
+    ap.add_argument(
+        "--rename",
+        metavar="OLD:NEW",
+        help="mechanical tag rename (no classification): retag every OLD row as NEW, "
+        "in the DB, the JSONL, and label_events (so retrain history stays consistent)",
+    )
     args = ap.parse_args()
 
     db = Database(str(DB_PATH))
 
-    if args.purge_noise:
+    if args.rename:
+        old, new = args.rename.split(":", 1)
+        rows = [dict(r) for r in db.entries_by_tag(old)]
+        changes = [(r["id"], r["ts"], old, r["content"], new) for r in rows]
+    elif args.purge_noise:
         changes = collect_noise(db)
         rows = changes  # for the unchanged-count print below
     else:
@@ -209,6 +219,15 @@ async def main() -> None:
             db.update_entry_tag(_id, act)
             _update_jsonl(ts, old, content, act)
         applied += 1
+    if args.rename:
+        old, new = args.rename.split(":", 1)
+        db.execute(
+            "UPDATE label_events SET from_label = ? WHERE from_label = ?", (new, old)
+        )
+        db.execute(
+            "UPDATE label_events SET to_label = ? WHERE to_label = ?", (new, old)
+        )
+        print(f"Renamed {old} → {new} in label_events.")
     print(f"Applied {applied} changes to DB + JSONL.")
 
 

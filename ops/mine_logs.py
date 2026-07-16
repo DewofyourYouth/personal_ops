@@ -21,6 +21,8 @@ from datetime import datetime
 
 import numpy as np
 
+from tags import TEXT_MINING_TAGS
+
 DB_PATH = "ops/log/ops.db"
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -82,7 +84,7 @@ def load_days(c) -> dict[str, dict]:
             rec["habits"].add(content.strip())
         elif tag == "habit_missed":
             rec["missed"].add(content.strip())
-        if tag in ("checkin", "log", "wrong", "win", "insight", "note"):
+        if tag in TEXT_MINING_TAGS:
             rec["text"].append(content.lower())
     # collapse mood/energy lists to daily means
     for rec in days.values():

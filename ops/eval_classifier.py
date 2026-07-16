@@ -35,7 +35,7 @@ EVAL_TAGS = [
     "hypothesis",
     "note",
     "task",
-    "wrong",
+    "friction",
     "win",
     "backlog",
     "checkin",

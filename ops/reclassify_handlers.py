@@ -29,12 +29,8 @@ import html
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from llm import _BASE_CLASSIFICATION_TAGS
+from tags import PICKER_TAGS
 from tg_common import inline_keyboard_markup, inline_keyboard_rows, safe_answer
-
-# Categories offered in the picker: the classifier enum plus the rules-routed
-# tags a message realistically gets misfiled into or out of.
-PICKER_TAGS = [tag for tag, _ in _BASE_CLASSIFICATION_TAGS] + ["food", "habit"]
 
 # entries rows that never came from message classification — /fix skips them.
 _NON_CLASSIFIED_TAGS = ("metric", "reminder", "edit", "agenda")

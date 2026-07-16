@@ -165,11 +165,12 @@ class AgendaHandlers:
         self.agenda.mark_status(item_id, status)
 
         await safe_answer(query, encourage() if status == "done" else "Marked missed.")
-        # Same celebratory/commiseration sticker as the habit check-in uses.
-        await send_sticker(self.bot, update.effective_chat.id, status)
 
         open_items = self.agenda.get_open()
         if not open_items:
+            # The sticker marks the real milestone — clearing the whole agenda —
+            # not every individual tap (that got spammy).
+            await send_sticker(self.bot, update.effective_chat.id, "done")
             await query.edit_message_text("✅ All items resolved.")
             return
         text, keyboard = self._agenda_message(open_items)

@@ -22,6 +22,8 @@ import anthropic
 import openai
 import requests
 
+from tags import BASE_CLASSIFICATION_TAGS
+
 logger = logging.getLogger(__name__)
 
 # Languages that need a second transcription pass with an explicit language code
@@ -252,17 +254,9 @@ def transcribe_with_language_detection(file_path: str) -> dict:
 # this enum removes the semantic-magnet effect the old `values` tag had, where any
 # first-person value statement ("I care about X") got pulled in. Such personal/emotional
 # content now falls through to `checkin`/`insight` as intended.
-_BASE_CLASSIFICATION_TAGS = [
-    ("insight", "a new realization, lesson, or pattern noticed"),
-    ("hypothesis", "an empirical claim to test (I think X causes Y)"),
-    ("note", "a general observation or reference note"),
-    ("task", "something to do or action item"),
-    ("wrong", "a mistake, problem, or thing that went badly"),
-    ("win", "an accomplishment or positive outcome"),
-    ("backlog", "a someday/maybe idea, not urgent"),
-    ("checkin", "emotional, physical, or energy status update"),
-    ("log", "anything else (default fallback)"),
-]
+# The taxonomy lives in tags.py; the old name is kept as a re-export for the
+# classifier, picker, and eval modules that import it from here.
+_BASE_CLASSIFICATION_TAGS = BASE_CLASSIFICATION_TAGS
 
 
 async def classify_entry(text: str, extra_tags: list[dict] | None = None) -> str:

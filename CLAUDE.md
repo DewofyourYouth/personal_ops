@@ -1,16 +1,18 @@
 # Personal Ops Bot
 
 A local-first Telegram bot that acts as a personal ops layer — capturing logs, insights,
-hypotheses, and check-ins from Telegram and writing them to dated markdown files.
-Designed to integrate with an Obsidian vault.
+hypotheses, and check-ins from Telegram and writing them to SQLite with a JSONL
+recovery log. Designed to integrate with an Obsidian vault.
 
 ## What this is
 
 A single long-running Python process (`bot.py`) that:
 
 - Listens for Telegram messages from a single authorized user
-- Parses message prefixes to categorize entries
-- Appends structured markdown entries to a daily log file
+- Categorizes entries: prefix rules first (see `ops/tags.py`), then a hybrid
+  classifier (local embedding-KNN, LLM tie-break) for un-prefixed messages
+- Writes entries to SQLite (`ops/log/ops.db`, the primary store) and appends them
+  to daily JSONL files (`ops/log/YYYY-MM-DD.jsonl`, the durable recovery log)
 
 This is personal infrastructure, not a product. Simplicity and reliability over features.
 
@@ -39,12 +41,12 @@ python ops/bot.py
 
 `ops/bot.py` is the entry point for the Telegram bot using `python-telegram-bot`. It accepts messages only from the user identified by `OPS_CHAT_ID`.
 
-Each incoming message is parsed for a prefix (e.g. `insight:`, `hypothesis:`, `task:`, `note:`, `checkin`) and mapped to a hashtag. The message is then appended as a timestamped markdown entry to `ops/log/YYYY-MM-DD.md`. The log directory is gitignored.
+Each incoming message is parsed for a prefix (e.g. `insight:`, `friction:`, `task:`, `note:`, `checkin` — canonical list in `ops/tags.py`) and mapped to a tag; un-prefixed messages go through the hybrid classifier (`OPS_CLASSIFIER`, default `hybrid`). Entries land in SQLite plus the day's JSONL file. IMPORTANT: SQLite and JSONL must be changed together — `sync_jsonl_to_db()` replays any JSONL line missing from the DB on startup, so a DB-only retag/delete silently resurrects. The log directory is gitignored.
 
 The code is organized into layers, kept deliberately small:
 
 - **Entry point** — `ops/bot.py` is the composition root: it builds the `python-telegram-bot` `Application`, constructs the feature classes with the bot + services, lets them register their own handlers, starts the scheduler, and runs. It should stay thin — no model SDKs, no scheduler internals, no prompt text.
-- **Cross-cutting layers** — `llm.py` (all `anthropic`/`openai` calls — input interpretation and output generation), `scheduling.py` (the APScheduler instance + the recurring-job schedule), `tg_common.py` (shared Telegram UI helpers), `bot_constants.py` (prefixes, icons, copy).
+- **Cross-cutting layers** — `llm.py` (all `anthropic`/`openai` calls — input interpretation and output generation), `scheduling.py` (the APScheduler instance + the recurring-job schedule), `tg_common.py` (shared Telegram UI helpers), `tags.py` (the canonical tag taxonomy — prefixes, classifier enum/definitions, reclassify picker, and mining set all derive from it), `bot_constants.py` (icons, copy, help text, command menu), `media.py` (stickers, gated by per-kind cooldowns — fire only on notable moments).
 - **Feature handler classes** — e.g. `AgendaHandlers`: constructed with the bot instance and the domain services it needs; its Telegram handlers are methods; conversation state lives on the instance, not in module globals; it self-registers via `register(app)`. New tracking domains become new feature classes rather than more functions in `bot.py`.
 - **Domain services** — `agenda.py`, `logs.py`, `reminders.py`, `context.py`, `planner.py`, `gcal.py`, `backlog.py`, `baseline_tracker.py`, `db.py`: the deterministic core that owns data and storage logic, with no Telegram concerns. This keeps "AI at the edges, deterministic core" honest.
 
@@ -55,10 +57,9 @@ We try to follow the design principles in object oriented programming and softwa
 We should use judgement when applying principles — for example, we value simplicity and reliability, but not at the cost of readability or maintainability. If a principle conflicts with the goal of a clear and understandable codebase, we should prioritize clarity. The principles are guidelines, not strict rules, and should be applied with common sense and flexibility. The ultimate goal is a personal tool that serves my needs effectively, not a textbook example of software architecture.
 
 
-Log entry format:
-```
-## HH:MM #tag
-message content
+Log entry format (JSONL recovery log; the same fields land as a row in the SQLite `entries` table):
+```json
+{"ts": "2026-05-27T09:00:00+03:00", "tag": "note", "content": "..."}
 ```
 
 ## Testing philosophy

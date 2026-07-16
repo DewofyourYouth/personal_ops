@@ -373,7 +373,7 @@ class Planner:
                         "- If a log entry explicitly states what happened (e.g. 'We learned Yoma every day this week'), treat that as authoritative — it overrides inferences from agenda completion data.\n"
                         "- Early log entries may contain bot-test noise (short fragments, repeated command words). Do not read these as real activity signals.\n"
                         "- A missed agenda item caused by an external constraint (e.g. chavrusa canceled, appointment ran over) is not a behavioral pattern. Classify it correctly.\n"
-                        "- Log entries tagged #wrong are explicit user-flagged prompt failures — the bot proposed or did something it shouldn't have. Surface these in the digest and suggest which context file (agenda-rules.md, review-rules.md, etc.) should be updated to prevent recurrence.\n"
+                        "- Log entries tagged #friction are things that went badly, blocked the user, or created drag — including explicit user-flagged prompt failures where the bot proposed or did something it shouldn't have. Surface these in the digest; for bot failures, suggest which context file (agenda-rules.md, review-rules.md, etc.) should be updated to prevent recurrence.\n"
                         "- Habits (listed in the Habits section of the user context) are NOT tracked via the agenda. Do not infer whether habits were completed or missed from agenda data. If a habit appears in the agenda history, ignore its completion status — it proves nothing about whether the habit was actually done.\n"
                         "- Habit completion IS tracked via explicit `habit:` log entries. The stats include a Habit log table showing which habits were logged and on how many days. Use this as the authoritative source for habit adherence. Absence from the habit log on a given day means the habit was not logged — not necessarily that it wasn't done.\n"
                         "- Shabbat (Saturday) is intentionally offline — habits are never tracked on Shabbat. The maximum possible habit logging frequency is 6 days per week, not 7. Never flag Shabbat as a missed day or treat a 6/6 week as anything other than perfect.\n"
@@ -440,6 +440,11 @@ class Planner:
                 f"\nAgenda for {d} (what was planned and its status):\n{agenda_text}\n"
             )
         user_content += f"\nLog for {d}:\n{self.logs.read_day_as_text(d)}\n\n"
+        tag_groups = self.logs.tag_grouped_day_summary(d)
+        if tag_groups:
+            user_content += (
+                f"Today's wins, friction, and insights (grouped):\n{tag_groups}\n\n"
+            )
         if stats_text:
             user_content += f"{stats_text}\n\n"
         if history:

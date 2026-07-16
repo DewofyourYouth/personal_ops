@@ -964,11 +964,6 @@ class HabitHandlers:
             name,
             when=msg_local if eod_date else None,
         )
-        await send_sticker(
-            self.bot,
-            update.effective_chat.id,
-            "done" if action == "hbq_done" else "missed",
-        )
         text, keyboard = self._eod_message(for_date=eod_date)
         if text is None:
             await query.edit_message_text(
