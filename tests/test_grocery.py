@@ -14,6 +14,7 @@ from grocery import (
     parse_grocery_items,
     split_grocery_items,
 )
+from logs import Logs
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def handlers(tmp_path):
-    logs = SimpleNamespace(db=Database(str(tmp_path / "ops.db")))
+    logs = Logs(str(tmp_path))
     return GroceryHandlers(bot=None, logs=logs, allowed_user=1)
 
 
@@ -140,6 +141,20 @@ async def test_voice_without_grocery_prefix_is_ignored(handlers):
     """Voice notes that don't start with grocery/groceries are left for the log."""
     handled = await handlers.handle_voice_text("remind me to call the dentist", None)
     assert handled is False
+
+
+@pytest.mark.asyncio
+async def test_captures_write_a_grocery_entry_for_classifier_training(handlers):
+    """Every natural-language capture path also writes a #grocery row to the
+    entries table — without this, the embedding classifier's reference set has
+    zero grocery examples and can never learn to recognize the tag."""
+    reply = _Reply()
+    await handlers.try_handle_text(
+        SimpleNamespace(message=SimpleNamespace(reply_text=reply)),
+        "pick up eggs at the store",
+    )
+    rows = handlers.logs.db.entries_by_tag("grocery")
+    assert [r["content"] for r in rows] == ["pick up eggs at the store"]
 
 
 @pytest.mark.asyncio

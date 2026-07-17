@@ -167,6 +167,19 @@ def reset_singleton() -> None:
     _singleton = None
 
 
+def known_tags() -> set[str]:
+    """Tags with at least one example in the current reference set.
+
+    A tag with zero examples (e.g. a freshly-added plugin tag like "grocery" before
+    any of its entries land in the ``entries`` table) can never win the KNN vote —
+    but its absence doesn't lower the winning vote's confidence, so callers can't
+    tell "confidently right" from "confidently wrong because the correct answer
+    wasn't on the ballot" without this. Empty (not "unknown") before the singleton
+    is built; call after a ``classify_*`` call so it reflects the classifier in use.
+    """
+    return set(_singleton.labels) if _singleton is not None else set()
+
+
 async def classify_entry_embedding(
     text: str, db, extra_tags: list[dict] | None = None
 ) -> str:

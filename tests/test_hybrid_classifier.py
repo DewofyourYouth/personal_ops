@@ -96,3 +96,39 @@ def test_llm_tiebreak_failure_keeps_the_knn_vote(monkeypatch):
     monkeypatch.setattr(text_router_mod, "classify_entry", _raise)
     tag, conf = asyncio.run(_bare_router()._classify_hybrid("some entry", []))
     assert (tag, conf) == ("note", 0.3)
+
+
+def test_confident_vote_with_untrained_plugin_tag_still_tiebreaks(monkeypatch):
+    """A plugin tag with zero reference examples (e.g. "grocery" before any of its
+    entries reach the DB) can never win the KNN vote — so a confident-looking vote
+    for some other tag may just mean the right answer wasn't on the ballot.
+    Regression test for "pick up lemons at the store" being misclassified #checkin
+    at 0.62 confidence (above the 0.55 threshold) because no #grocery examples
+    existed to compete with."""
+    monkeypatch.setattr(
+        classifier_mod, "classify_entry_embedding_confidence", _fake_embed("checkin", 0.9)
+    )
+    monkeypatch.setattr(classifier_mod, "known_tags", lambda: {"checkin", "task"})
+    monkeypatch.setattr(text_router_mod, "classify_entry", _fake_llm("grocery"))
+    extra_tags = [{"tag": "grocery", "description": "items to buy"}]
+    tag, conf = asyncio.run(
+        _bare_router()._classify_hybrid("pick up lemons at the store", extra_tags)
+    )
+    assert (tag, conf) == ("grocery", 0.9)
+
+
+def test_confident_vote_with_trained_plugin_tag_skips_the_llm(monkeypatch):
+    """Once a plugin tag has reference examples, a confident vote is trusted as
+    normal — the cold-start tie-break doesn't fire forever."""
+    calls = []
+    monkeypatch.setattr(
+        classifier_mod, "classify_entry_embedding_confidence", _fake_embed("grocery", 0.9)
+    )
+    monkeypatch.setattr(classifier_mod, "known_tags", lambda: {"checkin", "grocery"})
+    monkeypatch.setattr(text_router_mod, "classify_entry", _fake_llm("grocery", calls))
+    extra_tags = [{"tag": "grocery", "description": "items to buy"}]
+    tag, conf = asyncio.run(
+        _bare_router()._classify_hybrid("pick up more eggs", extra_tags)
+    )
+    assert (tag, conf) == ("grocery", 0.9)
+    assert calls == []

@@ -1255,14 +1255,19 @@ class TextRouter:
         the same behavior as the old default."""
         threshold = self.reclassify.confidence_threshold if self.reclassify else 0.55
         try:
-            from classifier import classify_entry_embedding_confidence
+            from classifier import classify_entry_embedding_confidence, known_tags
 
             tag, confidence = await classify_entry_embedding_confidence(
                 text, self.logs.db, extra_tags=extra_tags or None
             )
         except Exception:
             return await classify_entry(text, extra_tags=extra_tags or None), None
-        if confidence >= threshold:
+        # A plugin tag with zero reference examples (e.g. "grocery" before any of its
+        # entries land in the DB) can never win the KNN vote — its absence doesn't
+        # lower the winner's confidence, it just means the right answer was never on
+        # the ballot. Treat that as low confidence so the LLM tie-break still runs.
+        cold_start_tags = {t["tag"] for t in extra_tags} - known_tags()
+        if confidence >= threshold and not cold_start_tags:
             return tag, confidence
         try:
             llm_tag = await classify_entry(text, extra_tags=extra_tags or None)

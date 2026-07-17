@@ -5,6 +5,7 @@ natural-language capture for phrases like "pick up eggs and milk at the grocery"
 """
 
 import html
+import logging
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,6 +21,8 @@ from telegram.ext import (
 
 from logs import Logs
 from tg_common import safe_answer
+
+logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -250,11 +253,28 @@ class GroceryHandlers:
         app.add_handler(CommandHandler("cleargrocery", self.cmd_clear_grocery))
         app.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^gr_"))
 
+    def _log_capture(self, text: str) -> None:
+        """Record the raw phrase that triggered a natural-language grocery capture as
+        a #grocery entry, alongside the checklist row itself.
+
+        The grocery list lives entirely in ``grocery_items`` — without this, no
+        #grocery example ever reaches the ``entries`` table, so the embedding
+        classifier's reference set has zero examples for the tag and can never learn
+        to recognize it (see the "pick up lemons at the store" bug: it was
+        misclassified as #checkin because no grocery examples existed to compete
+        with). Best-effort — a failure here shouldn't block the checklist update.
+        """
+        try:
+            self.logs.write("grocery", text)
+        except Exception:
+            logger.exception("Failed to log grocery capture for classifier training")
+
     async def try_handle_text(self, update: Update, text: str) -> bool:
         items = parse_grocery_items(text)
         if not items:
             return False
         self.store.add_items(items)
+        self._log_capture(text)
         msg, keyboard = self._message(f"Added: {', '.join(items)}")
         await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard)
         return True
@@ -276,6 +296,7 @@ class GroceryHandlers:
         if not items:
             items = split_grocery_items(text) or [text.strip()]
         self.store.add_items(items)
+        self._log_capture(text)
         msg, keyboard = self._message(f"Added: {', '.join(items)}")
         await reply(msg, parse_mode="HTML", reply_markup=keyboard)
         return True
@@ -295,6 +316,7 @@ class GroceryHandlers:
             if not items:
                 return False
             self.store.add_items(items)
+            self._log_capture(text)
             msg, keyboard = self._message(f"Added: {', '.join(items)}")
             await reply(msg, parse_mode="HTML", reply_markup=keyboard)
             return True
@@ -311,6 +333,7 @@ class GroceryHandlers:
         if not items:
             return False  # not actually a grocery list → fall back to a regular log
         self.store.add_items(items)
+        self._log_capture(text)
         msg, keyboard = self._message(f"Added: {', '.join(items)}")
         await reply(msg, parse_mode="HTML", reply_markup=keyboard)
         return True
