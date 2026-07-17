@@ -19,7 +19,7 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -27,6 +27,13 @@ from tags import TEXT_MINING_TAGS
 
 DB_PATH = "ops/log/ops.db"
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# Below this, a row in a ranked list (habits, themes) is noise dressed as a
+# finding rather than a lead. Fixed named-hypothesis sections (② correlations,
+# ④ lagged mood→habit, the affect report) keep the row either way — the reader
+# needs to see "not enough data" rather than have the row silently vanish —
+# but only flag it "notable" once n clears this floor too.
+MIN_N = 10
 
 # Voice-note prosodic features that ride in entries.extra (see affect.py).
 AFFECT_FEATURES = [
@@ -170,12 +177,16 @@ def report(days: dict) -> str:
         ("weight", "mood", "weight ↔ mood"),
     ]:
         r, n = _corr(dated, xk, yk)
-        flag = "  ←notable" if r == r and abs(r) >= 0.3 and n >= 8 else ""
+        flag = "  ←notable" if r == r and abs(r) >= 0.3 and n >= MIN_N else ""
         p(f"   {label:22} r={r:+.2f}  (n={n}){flag}")
     p("")
 
-    # 3. Habit → next-mood association: mood on days a habit was done vs not
-    p("③ Habit → same-day mood (done vs not-done days, min 4 done-days):")
+    # 3. Habit ↔ same-day mood: same-day correlation only, direction unknown —
+    # this alone can't distinguish "habit lifts mood" from "low mood suppresses
+    # habit-doing". See ④ for the lagged check that tests direction.
+    p(
+        f"③ Habit ↔ same-day mood (association only, not direction; min {MIN_N} done-days):"
+    )
     all_habits = set()
     for r in dated.values():
         all_habits |= r["habits"]
@@ -191,18 +202,43 @@ def report(days: dict) -> str:
             for r in dated.values()
             if h not in r["habits"] and r["mood"] is not None
         ]
-        if len(done) >= 4 and notd:
+        if len(done) >= MIN_N and notd:
             rows.append((np.mean(done) - np.mean(notd), h, np.mean(done), len(done)))
     for delta, h, dm, n in sorted(rows, reverse=True):
         p(f"   {h[:34]:34} mood {dm:4.1f} on done-days  Δ{delta:+.1f}  (n={n})")
     p("")
 
-    # 4. Theme frequency + mood on theme-days
-    p("④ Recurring themes (days mentioned; mood on those days vs overall):")
+    # 4. Lagged mood → next-day habit count: does yesterday's mood predict how
+    # many habits get done today? If ③'s association were "habit lifts mood",
+    # this lagged direction should be weak/absent; if it's "low mood suppresses
+    # habits", a same-day effect is still possible without this lag showing up
+    # (mood can depress habits the same day it's felt, not just the day after).
+    p("④ Prior-day mood → today's habit count (lagged, tests ③'s direction):")
+    lag_x, lag_y = [], []
+    for d in sorted(dated):
+        prev = (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
+        if prev in dated and dated[prev]["mood"] is not None:
+            lag_x.append(dated[prev]["mood"])
+            lag_y.append(len(dated[d]["habits"]))
+    lx, ly = np.array(lag_x), np.array(lag_y)
+    if len(lx) >= 5 and lx.std() and ly.std():
+        r = float(np.corrcoef(lx, ly)[0, 1])
+        flag = "  ←notable" if abs(r) >= 0.3 and len(lx) >= MIN_N else ""
+        p(f"   prior mood → next-day #habits done   r={r:+.2f}  (n={len(lx)}){flag}")
+    else:
+        p(f"   not enough lagged day-pairs yet (n={len(lx)})")
+    p("")
+
+    # 5. Theme frequency + mood on theme-days
+    p(f"⑤ Recurring themes (mentioned on ≥{MIN_N} days; mood those days vs overall):")
     overall_mood = _mean_sd([r["mood"] for r in dated.values()])[0]
     for label, pat in THEMES.items():
         rx = re.compile(pat, re.IGNORECASE)
         hit = [r for r in dated.values() if rx.search(r["text"])]
+        if len(hit) < MIN_N:
+            continue
         moods = [r["mood"] for r in hit if r["mood"] is not None]
         mm, mn = _mean_sd(moods)
         delta = (mm - overall_mood) if mm == mm else float("nan")
@@ -211,7 +247,7 @@ def report(days: dict) -> str:
         )
     p("")
 
-    # 5. Weight trajectory
+    # 6. Weight trajectory
     wser = sorted((d, r["weight"]) for d, r in dated.items() if r["weight"] is not None)
     if len(wser) >= 2:
         d0, w0 = wser[0]
@@ -220,14 +256,14 @@ def report(days: dict) -> str:
             datetime.strptime(d1, "%Y-%m-%d") - datetime.strptime(d0, "%Y-%m-%d")
         ).days or 1
         rate = (w1 - w0) / span * 7
-        p("⑤ Weight trajectory:")
+        p("⑥ Weight trajectory:")
         p(
             f"   {w0:.1f} → {w1:.1f} kg over {span} days  ({rate:+.2f} kg/week, n={len(wser)})"
         )
         p("")
 
-    # 6. Habit adherence (done vs missed logs)
-    p("⑥ Habit adherence (logged done vs missed):")
+    # 7. Habit adherence (done vs missed logs)
+    p(f"⑦ Habit adherence (logged done vs missed; min {MIN_N} tracked days):")
     done_c = defaultdict(int)
     miss_c = defaultdict(int)
     for r in dated.values():
@@ -235,9 +271,8 @@ def report(days: dict) -> str:
             done_c[h] += 1
         for h in r["missed"]:
             miss_c[h] += 1
-    for h in sorted(set(done_c) | set(miss_c), key=lambda h: -(done_c[h] + miss_c[h]))[
-        :12
-    ]:
+    tracked = [h for h in set(done_c) | set(miss_c) if done_c[h] + miss_c[h] >= MIN_N]
+    for h in sorted(tracked, key=lambda h: -(done_c[h] + miss_c[h]))[:12]:
         tot = done_c[h] + miss_c[h]
         rate = done_c[h] / tot if tot else 0
         p(f"   {h[:34]:34} {done_c[h]:2}✓ {miss_c[h]:2}✗  ({rate:.0%} done)")
@@ -308,7 +343,7 @@ def affect_report(pairs: list[dict]) -> str:
             p(f"   {feat:14} r=  n/a  (n={len(xs)})")
             continue
         r = float(np.corrcoef(xs, ys)[0, 1])
-        flag = "  ←notable" if abs(r) >= 0.3 else ""
+        flag = "  ←notable" if abs(r) >= 0.3 and len(xs) >= MIN_N else ""
         p(f"   {feat:14} r={r:+.2f}  (n={len(xs)}){flag}")
     return "\n".join(out)
 
