@@ -281,14 +281,23 @@ class GroceryHandlers:
         return True
 
     async def handle_voice_text(self, text: str, reply) -> bool:
-        """Voice-note entry point. If the transcript opens with "grocery"/"groceries",
-        itemize the rest into the list (via the LLM, with a deterministic fallback).
-        Returns True if it handled the note; False to let the caller fall back to a
-        regular log — including when the note only looked like groceries.
+        """Voice-note entry point. A transcript that opens with "grocery"/"groceries"
+        is itemized via the LLM (natural speech defeats a deterministic splitter).
+        Otherwise, the same deterministic phrasing typed text uses (e.g. "pick up
+        lemons at the store") still catches the note. Returns True if it handled the
+        note; False to let the caller fall back to a regular log — including when
+        the note only looked like groceries.
         """
-        m = _VOICE_PREFIX.match(text or "")
+        text = text or ""
+        m = _VOICE_PREFIX.match(text)
         if not m:
-            return False
+            items = parse_grocery_items(text)
+            if not items:
+                return False
+            self.store.add_items(items)
+            msg, keyboard = self._message(f"Added: {', '.join(items)}")
+            await reply(msg, parse_mode="HTML", reply_markup=keyboard)
+            return True
         body = m.group(1).strip()
         if not body:
             # Just "groceries" with nothing after it — show the current list.

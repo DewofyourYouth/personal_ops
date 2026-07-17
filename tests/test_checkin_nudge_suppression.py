@@ -39,9 +39,7 @@ def _handlers(due, last_checkin_ts):
     h.shabbat = types.SimpleNamespace(quiet_now=lambda: False)
     h.reminders = types.SimpleNamespace(due_now=lambda: due)
     rows = [{"ts": last_checkin_ts}] if last_checkin_ts else []
-    h.logs = types.SimpleNamespace(
-        db=types.SimpleNamespace(query=lambda sql: rows)
-    )
+    h.logs = types.SimpleNamespace(db=types.SimpleNamespace(query=lambda sql: rows))
     return h, sent
 
 

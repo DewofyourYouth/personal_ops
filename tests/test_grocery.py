@@ -143,6 +143,21 @@ async def test_voice_without_grocery_prefix_is_ignored(handlers):
 
 
 @pytest.mark.asyncio
+async def test_voice_pick_up_at_the_store_phrase_is_captured(handlers):
+    """A spoken 'pick up X at the store' is caught deterministically, same as typed
+    text — regression test for a voice note that fell through to the general
+    classifier (and got mis-tagged as #checkin) because only the literal
+    'grocery'/'groceries' prefix was checked for voice notes."""
+    reply = _Reply()
+
+    handled = await handlers.handle_voice_text("pick up lemons at the store", reply)
+
+    assert handled is True
+    assert [i["text"] for i in handlers.store.list()] == ["lemons"]
+    assert reply.calls and "Added: lemons" in reply.calls[0][0]
+
+
+@pytest.mark.asyncio
 async def test_voice_grocery_falls_back_to_splitter_on_llm_error(handlers, monkeypatch):
     """If the LLM call fails, the deterministic splitter still captures the items."""
     monkeypatch.setattr(
