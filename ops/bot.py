@@ -429,12 +429,26 @@ async def cmd_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/mine — quantitative log-mining report; /mine advise adds an LLM synthesis."""
+    """/mine — quantitative log-mining report; /mine advise adds an LLM synthesis;
+    /mine affect reports voice-note affect_features vs self_mood_rating instead."""
     if update.effective_user.id != ALLOWED_USER:
         return
     import mine_logs
 
-    want_advice = "advise" in (update.message.text or "").lower()
+    text_lower = (update.message.text or "").lower()
+    if "affect" in text_lower:
+        await update.message.reply_text("⛏ Checking affect proxy vs mood taps…")
+        try:
+            report_text = await asyncio.to_thread(
+                mine_logs.affect_report_for, _mine_db_path()
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Couldn't build the affect report: {e}")
+            return
+        await _send_pre(update.message.reply_text, report_text)
+        return
+
+    want_advice = "advise" in text_lower
     await update.message.reply_text("⛏ Mining your logs…")
     try:
         report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())

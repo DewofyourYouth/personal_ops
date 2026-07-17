@@ -73,7 +73,7 @@ HELP_SECTIONS = {
 /digest — weekly AI review (also Sundays at 20:00)
 /insights — distil recurring insights from your logs
 /metrics — tracked metrics with trend (last 14 days)
-/mine — quantitative log-mining: weekday/mood patterns, correlations, habit→mood (<code>/mine advise</code> adds an AI read). Also runs Sundays.
+/mine — quantitative log-mining: weekday/mood patterns, correlations, habit→mood (<code>/mine advise</code> adds an AI read; <code>/mine affect</code> checks voice-note affect_features against self_mood_rating). Also runs Sundays.
 /weight — Wegovy progress (% lost, rate, chart)
 /foodlog — today's food with macro totals (net of any retractions)
 /macros week|month|quarter|year — rolling macro totals, averages, and foods consumed

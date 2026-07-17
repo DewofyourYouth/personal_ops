@@ -9,11 +9,13 @@ with n so nothing reads as more certain than it is. Correlation ≠ cause — th
 
     venv/bin/python ops/mine_logs.py            # the numbers
     venv/bin/python ops/mine_logs.py --advise   # + LLM synthesis from the numbers
+    venv/bin/python ops/mine_logs.py --affect   # voice-note affect_features vs self_mood_rating
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 from collections import defaultdict
@@ -25,6 +27,19 @@ from tags import TEXT_MINING_TAGS
 
 DB_PATH = "ops/log/ops.db"
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# Voice-note prosodic features that ride in entries.extra (see affect.py).
+AFFECT_FEATURES = [
+    "pitch_var",
+    "speech_rate",
+    "pause_ms",
+    "pause_count",
+    "energy",
+    "duration_s",
+]
+# A mood tap more than this many minutes from the voice note isn't "the same
+# moment" anymore — pairing it in would just add noise, not signal.
+AFFECT_MAX_GAP_MIN = 30
 
 MOOD_EMOJI = {"😄": 5, "😊": 4, "😐": 3, "😕": 2, "😞": 1}
 ENERGY_EMOJI = {"⚡": 3, "🔋": 2, "🪫": 1}
@@ -235,6 +250,74 @@ def report_for(db_path: str = DB_PATH) -> str:
     return report(load_days(sqlite3.connect(db_path)))
 
 
+def load_affect_pairs(c, max_gap_minutes: float = AFFECT_MAX_GAP_MIN) -> list[dict]:
+    """Each voice note's affect_features joined to its nearest self_mood_rating tap.
+
+    This is the check affect.py's docstring calls for: the local prosodic proxy is
+    collection-only until it's been compared against the mood the user actually
+    reported. Pairs wider than max_gap_minutes apart are dropped — a tap 3 hours
+    later isn't ground truth for that specific note."""
+    moods = [
+        (datetime.fromisoformat(ts), float(val))
+        for ts, val in c.execute(
+            "SELECT ts, value FROM metrics WHERE key = 'self_mood_rating'"
+        )
+    ]
+    pairs = []
+    for ts, extra in c.execute(
+        "SELECT ts, extra FROM entries WHERE extra LIKE '%affect_features%'"
+    ):
+        try:
+            features = json.loads(extra)["affect_features"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        entry_ts = datetime.fromisoformat(ts)
+        nearest = min(
+            moods, key=lambda m: abs((m[0] - entry_ts).total_seconds()), default=None
+        )
+        if nearest is None:
+            continue
+        gap_min = abs((nearest[0] - entry_ts).total_seconds()) / 60
+        if gap_min > max_gap_minutes:
+            continue
+        pairs.append({**features, "mood": nearest[1], "gap_min": gap_min})
+    return pairs
+
+
+def affect_report(pairs: list[dict]) -> str:
+    out: list[str] = []
+    p = out.append
+    p("═══ AFFECT PROXY REPORT ═══")
+    p(
+        f"Voice notes matched to a mood tap within {AFFECT_MAX_GAP_MIN:.0f} min: "
+        f"{len(pairs)}\n"
+    )
+    if not pairs:
+        p("   No matched pairs yet — need a voice note and a self_mood_rating tap")
+        p("   close together in time.")
+        return "\n".join(out)
+    p("Feature ↔ self_mood_rating (r, n) — small-sample, treat as leads only:")
+    for feat in AFFECT_FEATURES:
+        xs, ys = [], []
+        for pr in pairs:
+            if pr.get(feat) is not None:
+                xs.append(pr[feat])
+                ys.append(pr["mood"])
+        xs, ys = np.array(xs), np.array(ys)
+        if len(xs) < 5 or xs.std() == 0 or ys.std() == 0:
+            p(f"   {feat:14} r=  n/a  (n={len(xs)})")
+            continue
+        r = float(np.corrcoef(xs, ys)[0, 1])
+        flag = "  ←notable" if abs(r) >= 0.3 else ""
+        p(f"   {feat:14} r={r:+.2f}  (n={len(xs)}){flag}")
+    return "\n".join(out)
+
+
+def affect_report_for(db_path: str = DB_PATH) -> str:
+    """Build the affect-proxy report for a given DB — mirrors report_for."""
+    return affect_report(load_affect_pairs(sqlite3.connect(db_path)))
+
+
 async def advise(report_text: str) -> str:
     import anthropic
 
@@ -262,8 +345,16 @@ async def main() -> None:
     ap.add_argument(
         "--advise", action="store_true", help="add an LLM synthesis of the numbers"
     )
+    ap.add_argument(
+        "--affect",
+        action="store_true",
+        help="report voice-note affect features vs self_mood_rating instead",
+    )
     args = ap.parse_args()
     c = sqlite3.connect(DB_PATH)
+    if args.affect:
+        print(affect_report(load_affect_pairs(c)))
+        return
     days = load_days(c)
     text = report(days)
     print(text)
