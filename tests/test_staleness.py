@@ -20,8 +20,12 @@ def _dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(_TZ_STR))
 
 
-def _make_db(last_entry_ts: str | None = None, last_prompted_ts: str | None = None):
-    """Stub DB: query returns entry/prompt rows based on args."""
+def _make_db(
+    last_entry_ts: str | None = None,
+    last_prompted_ts: str | None = None,
+    last_metric_ts: str | None = None,
+):
+    """Stub DB: query returns entry/metric/prompt rows based on args."""
     db = MagicMock()
 
     def query_side_effect(sql, params=()):
@@ -29,6 +33,12 @@ def _make_db(last_entry_ts: str | None = None, last_prompted_ts: str | None = No
             if last_entry_ts:
                 row = MagicMock()
                 row.__getitem__ = lambda _, k: last_entry_ts if k == "ts" else None
+                return [row]
+            return []
+        if "FROM metrics" in sql:
+            if last_metric_ts:
+                row = MagicMock()
+                row.__getitem__ = lambda _, k: last_metric_ts if k == "ts" else None
                 return [row]
             return []
         if "FROM staleness_prompts" in sql:
@@ -58,12 +68,13 @@ class TestStaleTracks:
         self,
         last_entry_ts=None,
         last_prompted_ts=None,
+        last_metric_ts=None,
         should_prompt=True,
         config=None,
     ):
         from staleness import StalenessChecker
 
-        db = _make_db(last_entry_ts, last_prompted_ts)
+        db = _make_db(last_entry_ts, last_prompted_ts, last_metric_ts)
         qw = _make_quiet_window(should_prompt)
         checker = StalenessChecker(db, qw)
         if config is not None:
@@ -127,6 +138,35 @@ class TestStaleTracks:
         entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)).isoformat()
         checker = self._checker(last_entry_ts=entry, config={"checkin": 2})
         assert checker.stale_tracks() == []
+
+    def test_metric_prefixed_track_reads_the_metrics_table(self):
+        """A metric-backed track (sleep, weight, ...) is logged under
+        tag="metric" with the real name in metrics.key — a plain entries.tag
+        lookup would never find it, so "metric:sleep" must query metrics."""
+        from zoneinfo import ZoneInfo
+
+        recent_metric = (
+            datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)
+        ).isoformat()
+        # last_entry_ts (entries table) is old/absent on purpose — only the
+        # metrics-table row should count for a "metric:" track.
+        checker = self._checker(
+            last_entry_ts=None,
+            last_metric_ts=recent_metric,
+            config={"metric:sleep": 22},
+        )
+        assert checker.stale_tracks() == []
+
+    def test_metric_prefixed_track_is_stale_when_metric_is_old(self):
+        from zoneinfo import ZoneInfo
+
+        old_metric = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=23)).isoformat()
+        checker = self._checker(last_metric_ts=old_metric, config={"metric:sleep": 22})
+        assert "metric:sleep" in checker.stale_tracks()
+
+    def test_metric_prefixed_track_with_no_metrics_logged_is_stale(self):
+        checker = self._checker(last_metric_ts=None, config={"metric:sleep": 22})
+        assert "metric:sleep" in checker.stale_tracks()
 
 
 class TestCheckAndPrompt:

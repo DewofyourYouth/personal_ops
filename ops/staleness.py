@@ -4,8 +4,12 @@ Deterministic domain service; no Telegram concerns beyond `bot.send_message`.
 `check_and_prompt` is the scheduled entry point; everything else is pure data.
 
 Per-track thresholds (hours) are loaded from a JSON config file:
-    {"checkin": 4, "food": 6}
-Defaults are applied for any track not present in the file.
+    {"checkin": 4, "food": 6, "metric:sleep": 22}
+Defaults are applied for any track not present in the file. A track prefixed
+"metric:" (e.g. "metric:sleep") looks up its last entry in the metrics table
+by key, not the entries table by tag — metrics (sleep, weight, steps, ...)
+are logged via write_metric() and land under tag="metric" with the real name
+in metrics.key, so a plain-tag lookup would never find them.
 
 A track is "stale" when:
 1. We are currently in a should-prompt window (waking hours, not a quiet day).
@@ -32,6 +36,7 @@ _DEFAULT_CONFIG: dict[str, int] = {"checkin": 4}
 _NUDGES: dict[str, str] = {
     "checkin": "👋 How are you doing? (checkin:)",
     "food": "🍽 Have you eaten? (food:)",
+    "metric:sleep": "😴 No sleep logged — rough guess is fine: /sleep 7",
 }
 
 
@@ -52,10 +57,16 @@ class StalenessChecker:
         db.ensure_schema(_DDL)
 
     def _last_entry_ts(self, track: str) -> "datetime | None":
-        rows = self._db.query(
-            "SELECT ts FROM entries WHERE tag = ? ORDER BY ts DESC LIMIT 1",
-            (track,),
-        )
+        if track.startswith("metric:"):
+            rows = self._db.query(
+                "SELECT ts FROM metrics WHERE key = ? ORDER BY ts DESC LIMIT 1",
+                (track.removeprefix("metric:"),),
+            )
+        else:
+            rows = self._db.query(
+                "SELECT ts FROM entries WHERE tag = ? ORDER BY ts DESC LIMIT 1",
+                (track,),
+            )
         if not rows:
             return None
         try:
