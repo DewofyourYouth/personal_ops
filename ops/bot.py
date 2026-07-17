@@ -458,7 +458,7 @@ async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_pre(update.message.reply_text, report_text)
     if want_advice:
         try:
-            advice = await mine_logs.advise(report_text)
+            advice = await mine_logs.advise_for(_mine_db_path())
             await update.message.reply_text(advice)
         except Exception as e:
             await update.message.reply_text(f"(Synthesis failed: {e})")
@@ -476,7 +476,7 @@ async def weekly_mine():
             lambda t, **kw: _bot.send_message(chat_id=ALLOWED_USER, text=t, **kw),
             report_text,
         )
-        advice = await mine_logs.advise(report_text)
+        advice = await mine_logs.advise_for(_mine_db_path())
         await _bot.send_message(
             chat_id=ALLOWED_USER, text=f"⛏ <b>Weekly log-mining</b>\n\n{advice}"
         )

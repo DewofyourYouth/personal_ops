@@ -1,8 +1,17 @@
 """Mine the logs for quantitative, actionable patterns — the complement to the qualitative
 insight ledger (insights.py). Deterministic core: it computes per-day series (mood, energy,
 steps, weight, food kcal, habits, free-text themes) and reports correlations, weekday
-effects, and habit→mood associations. An optional --advise pass hands the computed numbers
-(never the raw journal) to the LLM for synthesis.
+effects, and habit→mood associations.
+
+The printed report (report()/report_for()) is for human eyes — every row shows its n so
+you can weigh it yourself. The --advise pass is a SEPARATE, stricter pipeline: build_findings()
+gates each candidate finding (sample-size floor + a 95% CI that excludes zero) into a typed
+Finding with a verdict ("report"/"suppress"/"alert") BEFORE anything reaches the LLM, and
+tags each with what it can support in prose (same-day correlation vs. lagged vs. trend vs.
+purely descriptive). The LLM only ever sees verdict=="report" findings, must cite a finding
+id on every claim, and any citation that doesn't resolve gets dropped post-hoc. This exists
+because caveating the LLM's output after generation doesn't work — the model had already
+picked its narrative by then; the fix is to not let it see rows it shouldn't act on.
 
 Everything here is descriptive over a small sample (~6 weeks); effect sizes are reported
 with n so nothing reads as more certain than it is. Correlation ≠ cause — these are leads.
@@ -19,6 +28,7 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -137,10 +147,98 @@ def _mean_sd(vals):
     return (float(np.mean(vals)), len(vals)) if vals else (float("nan"), 0)
 
 
+def _dated_only(days: dict) -> dict:
+    return {d: r for d, r in days.items() if re.match(r"\d{4}-\d{2}-\d{2}", d)}
+
+
+def _corr_ci95(r: float, n: int) -> tuple[float, float] | None:
+    """95% CI on a Pearson r via the Fisher z-transform. None when n is too
+    small for the transform (n<=3) or r is exactly +-1 (z undefined)."""
+    if r != r or n <= 3 or abs(r) >= 1:
+        return None
+    z = np.arctanh(r)
+    se = 1 / np.sqrt(n - 3)
+    return float(np.tanh(z - 1.96 * se)), float(np.tanh(z + 1.96 * se))
+
+
+def _mean_diff_ci95(a, b) -> tuple[float, float] | None:
+    """95% CI on mean(a) - mean(b), normal-approximation (unequal n/variance
+    — habit done-days vs not-done-days are never balanced). Good enough at
+    this sample size; not a full Welch-t, same idea."""
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if len(a) < 2 or len(b) < 2:
+        return None
+    diff = float(a.mean() - b.mean())
+    se = float(np.sqrt(a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b)))
+    if se == 0:
+        # Zero variance in both groups — the CI is degenerate (a point), not
+        # unknowable. (diff, diff) still correctly "excludes zero" iff the
+        # groups actually differ.
+        return diff, diff
+    return diff - 1.96 * se, diff + 1.96 * se
+
+
+def _ci_excludes_zero(ci: tuple[float, float] | None) -> bool:
+    return ci is not None and (ci[0] > 0 or ci[1] < 0)
+
+
+# What a finding's causal footing licenses in prose, passed to the LLM prompt
+# verbatim per tag actually present. Keeps the generator from writing "do X to
+# get Y" over a stat that only ever showed X and Y moving together.
+TAG_GUIDANCE = {
+    "correlational_same_session": (
+        "same-day correlation only. Never phrase as predictive or causal — "
+        "no 'X predicts Y', no 'watch X to anticipate Y', no 'do X to get Y'."
+    ),
+    "same_day_confounded": (
+        "a same-day association where either direction (or a shared third "
+        "cause) is equally plausible. Never phrase as 'do X to get Y' or "
+        "'X causes/improves/produces Y' — describe it as co-occurrence only."
+    ),
+    "lagged_leading_indicator": (
+        "yesterday's value vs today's outcome — temporal order rules out "
+        "reverse causation but not a shared confound. May be phrased as an "
+        "early-warning signal, never as a lever ('doing X will cause Y')."
+    ),
+    "longitudinal_trend": (
+        "a measured trend over the full tracked period — may be described "
+        "as a trajectory or rate, not attributed to a single cause unless "
+        "that cause is stated in the data itself."
+    ),
+    "descriptive": (
+        "a plain count or rate, not a comparison — report the number, draw "
+        "no correlational or causal conclusion from it."
+    ),
+}
+
+# Stricter than the printed report's MIN_N: this gates what reaches the LLM,
+# where a marginal row reads as sanctioned advice rather than a number the
+# reader can weigh themselves.
+MIN_N_ADVICE = 15
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One candidate finding, gated BEFORE it can reach a prompt — the stats
+    layer's output. `verdict` decides what a prose generator is even allowed
+    to see: "report" (cleared the n floor and a 95% CI that excludes zero),
+    "suppress" (not enough evidence — just insufficient, not broken), or
+    "alert" (zero data for a tracked metric — a logging gap, not a null
+    result, and never something a generator should narrate as a finding)."""
+
+    id: str
+    label: str
+    stat: str
+    n: int
+    tag: str = ""
+    verdict: str = "report"
+    note: str = ""
+
+
 def report(days: dict) -> str:
     out: list[str] = []
     p = out.append
-    dated = {d: r for d, r in days.items() if re.match(r"\d{4}-\d{2}-\d{2}", d)}
+    dated = _dated_only(days)
 
     p("═══ LOG MINING REPORT ═══")
     p(f"Days with any data: {len(dated)}  ({min(dated)} → {max(dated)})\n")
@@ -164,8 +262,11 @@ def report(days: dict) -> str:
         )
     p("")
 
-    # 2. Numeric correlations
+    # 2. Numeric correlations. A zero/nan row isn't "no correlation" — it's no
+    # data, which is a different claim — so those are pulled into a separate
+    # data-gap note instead of sitting inline looking like a null result.
     p("② Correlations (per-day, r with n):")
+    gaps = []
     for xk, yk, label in [
         ("sleep", "mood", "sleep hrs ↔ mood"),
         ("sleep", "energy", "sleep hrs ↔ energy"),
@@ -177,8 +278,13 @@ def report(days: dict) -> str:
         ("weight", "mood", "weight ↔ mood"),
     ]:
         r, n = _corr(dated, xk, yk)
-        flag = "  ←notable" if r == r and abs(r) >= 0.3 and n >= MIN_N else ""
+        if n == 0 or r != r:
+            gaps.append(label)
+            continue
+        flag = "  ←notable" if abs(r) >= 0.3 and n >= MIN_N else ""
         p(f"   {label:22} r={r:+.2f}  (n={n}){flag}")
+    if gaps:
+        p(f"   ⚠ no data yet: {', '.join(gaps)}")
     p("")
 
     # 3. Habit ↔ same-day mood: same-day correlation only, direction unknown —
@@ -285,6 +391,312 @@ def report_for(db_path: str = DB_PATH) -> str:
     return report(load_days(sqlite3.connect(db_path)))
 
 
+def build_findings(days: dict) -> list[Finding]:
+    """The stats layer for LLM synthesis: every candidate finding, gated BEFORE
+    it can reach a prompt. A row only gets verdict="report" if it clears both
+    MIN_N_ADVICE and a 95% CI that excludes zero — nothing is filtered by
+    eyeballing the prose after the fact. Zero-data metrics get verdict="alert"
+    (a logging gap, not a null result) instead of being narrated over as if
+    "no correlation found" were itself a finding."""
+    dated = _dated_only(days)
+    findings: list[Finding] = []
+
+    # ② correlations
+    for xk, yk, label, tag in [
+        ("sleep", "mood", "sleep hrs ↔ mood", "correlational_same_session"),
+        ("sleep", "energy", "sleep hrs ↔ energy", "correlational_same_session"),
+        ("steps", "mood", "steps ↔ mood", "correlational_same_session"),
+        ("steps", "energy", "steps ↔ energy", "correlational_same_session"),
+        ("kcal", "energy", "food kcal ↔ energy", "correlational_same_session"),
+        ("kcal", "mood", "food kcal ↔ mood", "correlational_same_session"),
+        ("mood", "energy", "mood ↔ energy", "correlational_same_session"),
+        ("weight", "mood", "weight ↔ mood", "correlational_same_session"),
+    ]:
+        fid = f"corr:{xk}_{yk}"
+        r, n = _corr(dated, xk, yk)
+        if n == 0 or r != r:
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    "no data",
+                    n,
+                    "data_pipeline",
+                    "alert",
+                    "zero paired observations",
+                )
+            )
+            continue
+        if n < MIN_N_ADVICE:
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    f"r={r:+.2f}",
+                    n,
+                    tag,
+                    "suppress",
+                    f"n={n} < {MIN_N_ADVICE}",
+                )
+            )
+            continue
+        ci = _corr_ci95(r, n)
+        if not _ci_excludes_zero(ci):
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    f"r={r:+.2f}",
+                    n,
+                    tag,
+                    "suppress",
+                    f"95% CI {ci} crosses zero",
+                )
+            )
+            continue
+        findings.append(
+            Finding(
+                fid,
+                label,
+                f"r={r:+.2f} (95% CI {ci[0]:+.2f}..{ci[1]:+.2f})",
+                n,
+                tag,
+                "report",
+            )
+        )
+
+    # ③ habit ↔ same-day mood, as a mean-difference CI rather than a Pearson r
+    all_habits: set[str] = set()
+    for r in dated.values():
+        all_habits |= r["habits"]
+    for h in sorted(all_habits):
+        done = [
+            r["mood"]
+            for r in dated.values()
+            if h in r["habits"] and r["mood"] is not None
+        ]
+        notd = [
+            r["mood"]
+            for r in dated.values()
+            if h not in r["habits"] and r["mood"] is not None
+        ]
+        fid = f"habit:{h}"
+        if len(done) < MIN_N_ADVICE or not notd:
+            # insufficient data, not a pipeline problem — still surfaced as
+            # "suppress" (not dropped) so it can show up in the "still thin
+            # on" gap list if nothing else clears the bar.
+            findings.append(
+                Finding(
+                    fid,
+                    h,
+                    "insufficient",
+                    len(done),
+                    "same_day_confounded",
+                    "suppress",
+                    f"n={len(done)} < {MIN_N_ADVICE}",
+                )
+            )
+            continue
+        delta = float(np.mean(done) - np.mean(notd))
+        ci = _mean_diff_ci95(done, notd)
+        if not _ci_excludes_zero(ci):
+            findings.append(
+                Finding(
+                    fid,
+                    h,
+                    f"Δ{delta:+.1f}",
+                    len(done),
+                    "same_day_confounded",
+                    "suppress",
+                    "95% CI on Δ crosses zero",
+                )
+            )
+            continue
+        findings.append(
+            Finding(
+                fid,
+                h,
+                f"mood Δ{delta:+.1f} on done-days",
+                len(done),
+                "same_day_confounded",
+                "report",
+            )
+        )
+
+    # ④ lagged mood → next-day habit count
+    lag_x, lag_y = [], []
+    for d in sorted(dated):
+        prev = (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
+        if prev in dated and dated[prev]["mood"] is not None:
+            lag_x.append(dated[prev]["mood"])
+            lag_y.append(len(dated[d]["habits"]))
+    lx, ly = np.array(lag_x), np.array(lag_y)
+    fid = "lag:mood_habits"
+    label = "prior-day mood → next-day habit count"
+    if len(lx) == 0:
+        findings.append(
+            Finding(
+                fid,
+                label,
+                "no data",
+                0,
+                "data_pipeline",
+                "alert",
+                "no lagged day-pairs yet",
+            )
+        )
+    elif len(lx) < MIN_N_ADVICE or lx.std() == 0 or ly.std() == 0:
+        findings.append(
+            Finding(
+                fid,
+                label,
+                "insufficient",
+                len(lx),
+                "lagged_leading_indicator",
+                "suppress",
+                f"n={len(lx)} < {MIN_N_ADVICE}",
+            )
+        )
+    else:
+        r = float(np.corrcoef(lx, ly)[0, 1])
+        ci = _corr_ci95(r, len(lx))
+        if not _ci_excludes_zero(ci):
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    f"r={r:+.2f}",
+                    len(lx),
+                    "lagged_leading_indicator",
+                    "suppress",
+                    f"95% CI {ci} crosses zero",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    f"r={r:+.2f} (95% CI {ci[0]:+.2f}..{ci[1]:+.2f})",
+                    len(lx),
+                    "lagged_leading_indicator",
+                    "report",
+                )
+            )
+
+    # ⑤ themes: hit-days vs non-hit-days mood delta
+    for label, pat in THEMES.items():
+        rx = re.compile(pat, re.IGNORECASE)
+        hit = [r for r in dated.values() if rx.search(r["text"])]
+        if not hit:
+            continue  # never mentioned — nothing to gate, not worth a row
+        hit_moods = [r["mood"] for r in hit if r["mood"] is not None]
+        miss_moods = [
+            r["mood"]
+            for r in dated.values()
+            if not rx.search(r["text"]) and r["mood"] is not None
+        ]
+        fid = f"theme:{label}"
+        if len(hit_moods) < MIN_N_ADVICE or not miss_moods:
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    "insufficient",
+                    len(hit_moods),
+                    "same_day_confounded",
+                    "suppress",
+                    f"n={len(hit_moods)} < {MIN_N_ADVICE}",
+                )
+            )
+            continue
+        delta = float(np.mean(hit_moods) - np.mean(miss_moods))
+        ci = _mean_diff_ci95(hit_moods, miss_moods)
+        if not _ci_excludes_zero(ci):
+            findings.append(
+                Finding(
+                    fid,
+                    label,
+                    f"Δ{delta:+.1f}",
+                    len(hit_moods),
+                    "same_day_confounded",
+                    "suppress",
+                    "95% CI on Δ crosses zero",
+                )
+            )
+            continue
+        findings.append(
+            Finding(
+                fid,
+                label,
+                f"mood Δ{delta:+.1f} vs other days",
+                len(hit_moods),
+                "same_day_confounded",
+                "report",
+            )
+        )
+
+    # ⑥ weight trajectory — a genuine trend over the full tracked period
+    wser = sorted((d, r["weight"]) for d, r in dated.items() if r["weight"] is not None)
+    if len(wser) >= max(5, MIN_N_ADVICE // 2):
+        d0, w0 = wser[0]
+        d1, w1 = wser[-1]
+        span = (
+            datetime.strptime(d1, "%Y-%m-%d") - datetime.strptime(d0, "%Y-%m-%d")
+        ).days or 1
+        rate = (w1 - w0) / span * 7
+        findings.append(
+            Finding(
+                "trend:weight",
+                "weight trajectory",
+                f"{rate:+.2f} kg/week over {span}d",
+                len(wser),
+                "longitudinal_trend",
+                "report",
+            )
+        )
+    elif wser:
+        findings.append(
+            Finding(
+                "trend:weight",
+                "weight trajectory",
+                "too few weigh-ins",
+                len(wser),
+                "longitudinal_trend",
+                "suppress",
+                f"n={len(wser)} weigh-ins",
+            )
+        )
+
+    # ⑦ habit adherence — descriptive only, no correlation/causal claim possible
+    done_c: dict[str, int] = defaultdict(int)
+    miss_c: dict[str, int] = defaultdict(int)
+    for r in dated.values():
+        for h in r["habits"]:
+            done_c[h] += 1
+        for h in r["missed"]:
+            miss_c[h] += 1
+    for h in sorted(set(done_c) | set(miss_c)):
+        tot = done_c[h] + miss_c[h]
+        if tot < MIN_N_ADVICE:
+            continue
+        rate = done_c[h] / tot
+        findings.append(
+            Finding(
+                f"adherence:{h}",
+                h,
+                f"{rate:.0%} done ({done_c[h]}/{tot})",
+                tot,
+                "descriptive",
+                "report",
+            )
+        )
+
+    return findings
+
+
 def load_affect_pairs(c, max_gap_minutes: float = AFFECT_MAX_GAP_MIN) -> list[dict]:
     """Each voice note's affect_features joined to its nearest self_mood_rating tap.
 
@@ -353,26 +765,89 @@ def affect_report_for(db_path: str = DB_PATH) -> str:
     return affect_report(load_affect_pairs(sqlite3.connect(db_path)))
 
 
-async def advise(report_text: str) -> str:
+def _findings_prompt_block(findings: list[Finding]) -> str:
+    return "\n".join(
+        f"[{f.id}] ({f.tag}) {f.label}: {f.stat} (n={f.n})" for f in findings
+    )
+
+
+def _validate_citations(text: str, valid_ids: set[str]) -> str:
+    """Drop any bullet whose trailing [id] citation doesn't resolve to a real
+    finding id — including bullets with no citation at all. This is the
+    backstop against the failure mode that caused the fabricated weight
+    correlation and the "notable" n=6 read: an LLM can still free-write a
+    claim even when told not to, so anything it can't tie back to a specific
+    row in the input gets cut rather than trusted."""
+    kept: list[str] = []
+    dropped = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        is_bullet = stripped.startswith(("-", "•", "*")) or bool(
+            re.match(r"^\d+[.)]", stripped)
+        )
+        if not is_bullet:
+            kept.append(line)
+            continue
+        m = re.search(r"\[([\w:.\- ]+)\]\s*$", stripped)
+        if m and m.group(1) in valid_ids:
+            kept.append(line)
+        else:
+            dropped += 1
+    result = "\n".join(kept)
+    if dropped:
+        result += f"\n\n({dropped} uncited or unresolved claim(s) dropped.)"
+    return result
+
+
+async def advise(findings: list[Finding]) -> str:
+    """LLM synthesis over ONLY the findings the stats layer already cleared
+    (verdict == "report") — the gate happens before generation, not as a
+    caveat bolted on after. The model must cite a finding id on every claim;
+    citations that don't resolve are dropped post-hoc rather than trusted."""
+    reportable = [f for f in findings if f.verdict == "report"]
+    if not reportable:
+        gaps = [f.label for f in findings if f.verdict in ("suppress", "alert")]
+        gap_note = f" Still thin on: {', '.join(gaps[:6])}." if gaps else ""
+        return (
+            "Not enough data yet for a synthesis — nothing clears "
+            f"n≥{MIN_N_ADVICE} with a 95% CI that excludes zero.{gap_note}"
+        )
+
+    valid_ids = {f.id for f in reportable}
+    guidance = "\n".join(
+        f"- {tag}: {TAG_GUIDANCE[tag]}"
+        for tag in dict.fromkeys(f.tag for f in reportable)
+    )
+    prompt = (
+        "These are pre-filtered findings from my personal-ops logs — every row already "
+        "cleared a sample-size floor and a 95% CI that excludes zero, so treat all of them "
+        "as real (not certain, but real). Do not use any number, correlation, or comparison "
+        "that isn't in this list — if you don't have a finding for something, don't invent one.\n\n"
+        f"Findings:\n{_findings_prompt_block(reportable)}\n\n"
+        "What each finding's causal footing licenses in prose:\n"
+        f"{guidance}\n\n"
+        "Give me 4-6 specific, direct pieces of advice. End every bullet with its finding id "
+        "in brackets, e.g. '... [corr:mood_energy]'. No moralizing, no therapy voice."
+    )
+
     import anthropic
 
     client = anthropic.AsyncAnthropic()
     resp = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1200,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "These are computed statistics from my personal-ops logs (~6 weeks). "
-                    "Give me 4–6 specific, actionable pieces of advice grounded ONLY in these "
-                    "numbers. Name the stat behind each. Flag where n is too small to trust. "
-                    "Be direct, not therapeutic; no moralizing.\n\n" + report_text
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": prompt}],
     )
-    return "".join(b.text for b in resp.content if b.type == "text")
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    return _validate_citations(text, valid_ids)
+
+
+async def advise_for(db_path: str = DB_PATH) -> str:
+    """Build findings and run the synthesis for a given DB — used by /mine
+    advise and the weekly job. Independent of report_for(): the advice path
+    reads structured findings, never the printed report's free text."""
+    findings = build_findings(load_days(sqlite3.connect(db_path)))
+    return await advise(findings)
 
 
 async def main() -> None:
@@ -391,11 +866,10 @@ async def main() -> None:
         print(affect_report(load_affect_pairs(c)))
         return
     days = load_days(c)
-    text = report(days)
-    print(text)
+    print(report(days))
     if args.advise:
         print("\n═══ SYNTHESIS ═══")
-        print(await advise(text))
+        print(await advise(build_findings(days)))
 
 
 if __name__ == "__main__":
