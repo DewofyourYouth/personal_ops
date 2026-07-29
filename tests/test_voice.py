@@ -1,0 +1,119 @@
+"""Tests for voice.py — the read-aloud button/toggle plumbing.
+
+Covers the two things that would silently break the feature if changed
+carelessly: the auto-voice preference must actually persist across process
+restarts (it's a JSON file, not in-memory), and `offer()` must never clobber
+an existing inline keyboard (several call sites attach a 🔊 button to a
+message that already has resolve/accept buttons on it).
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
+import voice
+
+
+@pytest.fixture(autouse=True)
+def _isolated_prefs(tmp_path, monkeypatch):
+    monkeypatch.setattr(voice, "_PREFS_PATH", tmp_path / "voice_prefs.json")
+
+
+def _message(text: str = "", reply_markup=None):
+    msg = MagicMock()
+    msg.text = text
+    msg.caption = None
+    msg.chat_id = 555
+    msg.message_id = 42
+    msg.reply_markup = reply_markup
+    msg.edit_reply_markup = AsyncMock()
+    return msg
+
+
+def test_auto_enabled_defaults_false_when_no_file():
+    assert voice.is_auto_enabled() is False
+
+
+def test_set_auto_enabled_persists_across_reads():
+    voice.set_auto_enabled(True)
+    assert voice.is_auto_enabled() is True
+    voice.set_auto_enabled(False)
+    assert voice.is_auto_enabled() is False
+
+
+def test_auto_enabled_survives_a_corrupt_file(tmp_path):
+    voice._PREFS_PATH.write_text("not json")
+    assert voice.is_auto_enabled() is False  # falls back, doesn't raise
+
+
+@pytest.mark.asyncio
+async def test_offer_skips_short_replies():
+    msg = _message("short reply")
+    await voice.offer(bot=MagicMock(), message=msg)
+    msg.edit_reply_markup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_offer_attaches_button_for_long_reply():
+    msg = _message("x" * 200)
+    await voice.offer(bot=MagicMock(), message=msg)
+    msg.edit_reply_markup.assert_awaited_once()
+    markup = msg.edit_reply_markup.call_args.args[0]
+    assert markup.inline_keyboard[-1][0].callback_data == voice.CALLBACK_DATA
+
+
+@pytest.mark.asyncio
+async def test_offer_preserves_an_existing_keyboard():
+    """Regression: hypothesis follow-ups and habit-tip messages already carry a
+    resolve/accept keyboard — offer() must append, not replace it."""
+    existing = MagicMock()
+    existing.inline_keyboard = (("existing_button",),)
+    msg = _message("x" * 200, reply_markup=existing)
+    await voice.offer(bot=MagicMock(), message=msg)
+    markup = msg.edit_reply_markup.call_args.args[0]
+    assert markup.inline_keyboard[0] == ("existing_button",)
+    assert markup.inline_keyboard[-1][0].callback_data == voice.CALLBACK_DATA
+
+
+@pytest.mark.asyncio
+async def test_offer_does_not_speak_when_auto_disabled():
+    msg = _message("x" * 200)
+    bot = MagicMock()
+    bot.send_audio = AsyncMock()
+    await voice.offer(bot=bot, message=msg)
+    bot.send_audio.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_offer_speaks_when_auto_enabled(monkeypatch):
+    voice.set_auto_enabled(True)
+    fake_provider = MagicMock()
+    fake_provider.synthesize = AsyncMock(return_value=b"audio-bytes")
+    monkeypatch.setattr(voice.tts, "get_provider", lambda: fake_provider)
+    msg = _message("x" * 200)
+    bot = MagicMock()
+    bot.send_audio = AsyncMock()
+    await voice.offer(bot=bot, message=msg)
+    bot.send_audio.assert_awaited_once()
+    assert bot.send_audio.call_args.kwargs["audio"] == b"audio-bytes"
+    assert bot.send_audio.call_args.kwargs["chat_id"] == 555
+
+
+@pytest.mark.asyncio
+async def test_offer_with_none_message_is_a_noop():
+    """send_long returns None if every chunk send raised; offer() must tolerate it."""
+    await voice.offer(bot=MagicMock(), message=None)
+
+
+@pytest.mark.asyncio
+async def test_speak_swallows_provider_failures(monkeypatch):
+    broken_provider = MagicMock()
+    broken_provider.synthesize = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(voice.tts, "get_provider", lambda: broken_provider)
+    bot = MagicMock()
+    bot.send_audio = AsyncMock()
+    await voice.speak(bot, chat_id=1, text="hello")  # must not raise
+    bot.send_audio.assert_not_called()

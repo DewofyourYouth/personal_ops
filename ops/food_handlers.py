@@ -15,6 +15,7 @@ import anthropic
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import voice
 from logs import Logs, _parse_macros
 from tg_common import mono_table, send_long
 
@@ -281,7 +282,8 @@ class FoodHandlers:
             [entry["id"] for entry in entries]
         )
         report = _macros_report(entries, [dict(n) for n in negations], period, end)
-        await send_long(update.message.reply_text, report, parse_mode="HTML")
+        msg = await send_long(update.message.reply_text, report, parse_mode="HTML")
+        await voice.offer(self.bot, msg)
 
     async def cmd_food_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/foodaudit — instrument food logging patterns: compare log rates for
@@ -356,4 +358,5 @@ class FoodHandlers:
             "<i>If indulgent meals are under-represented vs your actual eating, "
             "that's avoidance. If the ratio looks right, logging friction is the issue.</i>"
         )
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        msg = await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        await voice.offer(self.bot, msg)

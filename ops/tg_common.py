@@ -37,25 +37,30 @@ def mono_table(headers: list[str], rows: list[list[str]]) -> str:
     return "<pre>" + "\n".join(lines) + "</pre>"
 
 
-async def send_long(reply, text: str, parse_mode: str = "HTML") -> None:
+async def send_long(reply, text: str, parse_mode: str = "HTML"):
     """Send `text` as one or more messages, splitting at line boundaries so no
     single message exceeds the Telegram character limit. Preserves HTML integrity
-    by only cutting at newlines (tags in this codebase never span lines)."""
+    by only cutting at newlines (tags in this codebase never span lines).
+
+    Returns the last Message sent, so callers can attach follow-ups (e.g. a
+    voice-readback button) to it.
+    """
     if len(text) <= TG_MAX_CHARS:
-        await reply(text, parse_mode=parse_mode)
-        return
+        return await reply(text, parse_mode=parse_mode)
     chunk_lines: list[str] = []
     chunk_len = 0
+    last_msg = None
     for line in text.split("\n"):
         line_len = len(line) + 1  # +1 for the newline
         if chunk_lines and chunk_len + line_len > TG_MAX_CHARS:
-            await reply("\n".join(chunk_lines), parse_mode=parse_mode)
+            last_msg = await reply("\n".join(chunk_lines), parse_mode=parse_mode)
             chunk_lines = []
             chunk_len = 0
         chunk_lines.append(line)
         chunk_len += line_len
     if chunk_lines:
-        await reply("\n".join(chunk_lines), parse_mode=parse_mode)
+        last_msg = await reply("\n".join(chunk_lines), parse_mode=parse_mode)
+    return last_msg
 
 
 async def safe_answer(query, text: str = "") -> None:

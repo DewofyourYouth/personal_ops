@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import voice
 from baseline_tracker import Baseline
 from context import Context
 from logs import Logs
@@ -112,7 +113,8 @@ class DigestHandlers:
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()
             self._save(text, label="digest")
-            await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            msg = await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Digest failed: {e}")
 
@@ -132,7 +134,8 @@ class DigestHandlers:
         try:
             text = await self.planner.daily_digest(target_date=target)
             self._save(text, label="daily")
-            await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            msg = await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Daily digest failed: {e}")
 
@@ -143,11 +146,12 @@ class DigestHandlers:
         arg = " ".join(context.args).strip().lower() if context.args else ""
         if arg == "show":
             # Just display the current ledger without re-running extraction.
-            await send_long(
+            msg = await send_long(
                 update.message.reply_text,
                 self.planner.insights.format_for_telegram(),
                 parse_mode="HTML",
             )
+            await voice.offer(self.bot, msg)
             return
         await update.message.reply_text("🔍 Distilling insights from your logs…")
         try:
@@ -158,7 +162,10 @@ class DigestHandlers:
                 f"{summary['total']} total)\n"
             )
             body = self.planner.insights.format_for_telegram()
-            await send_long(update.message.reply_text, header + body, parse_mode="HTML")
+            msg = await send_long(
+                update.message.reply_text, header + body, parse_mode="HTML"
+            )
+            await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Insight extraction failed: {e}")
 
@@ -172,11 +179,12 @@ class DigestHandlers:
             self.logs.save_food_summary(target)
             text = await self.planner.daily_digest(target_date=target)
             self._save(text, label="daily")
-            await self.bot.send_message(
+            msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
                 text=f"🌙 <b>Daily digest:</b>\n\n{self._to_html(text)}",
                 parse_mode="HTML",
             )
+            await voice.offer(self.bot, msg)
         except Exception:
             pass
 
@@ -192,10 +200,11 @@ class DigestHandlers:
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()
             self._save(text, label="weekly-digest")
-            await self.bot.send_message(
+            msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
                 text=f"📋 <b>Weekly digest:</b>\n\n{self._to_html(text)}",
                 parse_mode="HTML",
             )
+            await voice.offer(self.bot, msg)
         except Exception:
             pass

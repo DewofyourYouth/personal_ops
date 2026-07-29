@@ -17,6 +17,7 @@ import anthropic
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
+import voice
 from context import Context
 from habit_tracker import (
     compute_streak,
@@ -1368,9 +1369,10 @@ class HabitHandlers:
         await update.message.reply_text("🧭 Strategizing…")
         try:
             text = await self.planner.habit_strategy(strugglers)
-            await update.message.reply_text(
+            msg = await update.message.reply_text(
                 f"<blockquote expandable>{text}</blockquote>", parse_mode="HTML"
             )
+            await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Strategy failed: {e}")
 
@@ -1552,12 +1554,13 @@ class HabitHandlers:
                     ]
                 ]
             )
-            await self.bot.send_message(
+            msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
                 text=f"💡 <b>Weekly habit tip</b>\n\n<blockquote>{html.escape(display)}</blockquote>",
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
+            await voice.offer(self.bot, msg)
 
     async def cmd_weekly_habit_suggestions(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

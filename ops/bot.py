@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import scheduling
+import voice
 from agenda import Agenda
 from agenda_handlers import AgendaHandlers
 from agenda_queue import AgendaQueue
@@ -459,7 +460,8 @@ async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if want_advice:
         try:
             advice = await mine_logs.advise_for(_mine_db_path())
-            await update.message.reply_text(advice)
+            msg = await update.message.reply_text(advice)
+            await voice.offer(context.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"(Synthesis failed: {e})")
 
@@ -477,9 +479,10 @@ async def weekly_mine():
             report_text,
         )
         advice = await mine_logs.advise_for(_mine_db_path())
-        await _bot.send_message(
+        msg = await _bot.send_message(
             chat_id=ALLOWED_USER, text=f"⛏ <b>Weekly log-mining</b>\n\n{advice}"
         )
+        await voice.offer(_bot, msg)
     except Exception:
         pass
 
@@ -570,7 +573,8 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Privacy scrub: the /weight output is shareable, so strip the drug name (the synopsis
     # may name it). Digests and stored data keep it — only this command's output is scrubbed.
     text = _scrub_private(text)
-    await update.message.reply_text(text, parse_mode="HTML")
+    msg = await update.message.reply_text(text, parse_mode="HTML")
+    await voice.offer(context.bot, msg)
 
     # Chart as a follow-up photo (rendering is offloaded so the bot loop isn't blocked).
     try:
@@ -579,6 +583,37 @@ async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_photo(photo=png)
     except Exception:
         logging.getLogger(__name__).exception("Weight chart render failed")
+
+
+async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/voice on|off — toggle auto-reading substantial replies aloud. With no
+    argument, reports the current setting. The 🔊 button on any substantial
+    reply works regardless of this setting."""
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    arg = " ".join(context.args).strip().lower() if context.args else ""
+    if arg not in ("on", "off"):
+        state = "on" if voice.is_auto_enabled() else "off"
+        await update.message.reply_text(
+            f"🔊 Voice replies are currently <b>{state}</b>. "
+            "Use /voice on or /voice off.",
+            parse_mode="HTML",
+        )
+        return
+    voice.set_auto_enabled(arg == "on")
+    await update.message.reply_text(f"🔊 Voice replies turned {arg}.")
+
+
+async def handle_voice_speak(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback for the 🔊 Listen button attached to substantial replies."""
+    query = update.callback_query
+    if update.effective_user.id != ALLOWED_USER:
+        await safe_answer(query)
+        return
+    await safe_answer(query, "🔊 Synthesizing…")
+    msg = query.message
+    text = msg.text or msg.caption or ""
+    await voice.speak(context.bot, msg.chat_id, text, reply_to_message_id=msg.message_id)
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1042,6 +1077,10 @@ def main():
     app.add_handler(CommandHandler("sleep", cmd_sleep))
     app.add_handler(CommandHandler("mine", cmd_mine))
     app.add_handler(CommandHandler({"weight", "w"}, cmd_weight))
+    app.add_handler(CommandHandler("voice", cmd_voice))
+    app.add_handler(
+        CallbackQueryHandler(handle_voice_speak, pattern=f"^{voice.CALLBACK_DATA}$")
+    )
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
     app.add_handler(
