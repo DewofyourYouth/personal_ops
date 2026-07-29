@@ -32,7 +32,7 @@ class _FakeQuery:
         self.edited_markup = reply_markup
 
 
-def _router(entry):
+def _router(entry, planner=None):
     r = TextRouter.__new__(TextRouter)
     r.allowed_user = 1
     r.logs = types.SimpleNamespace(
@@ -47,6 +47,7 @@ def _router(entry):
             (texts, source)
         ),
     )
+    r.planner = planner
     return r
 
 
@@ -86,6 +87,42 @@ def test_route_to_agenda_commits_as_user_item():
 
     assert r.agenda_feature.committed == [(["call the dentist"], "user")]
     assert r.backlog.added == []
+
+
+def test_route_to_agenda_splits_multi_item_content():
+    """Regression: a #task entry naming two things ('apply to 2 jobs and clean
+    the room') used to land as a single lumped agenda item instead of two."""
+    entry = {"content": "apply to 2 jobs and clean the room for 30 minutes"}
+    calls = []
+
+    class _FakePlanner:
+        async def split_task_items(self, text):
+            calls.append(text)
+            return ["apply to 2 jobs", "clean the room for 30 minutes"]
+
+    r = _router(entry, planner=_FakePlanner())
+    q = _FakeQuery("route:agenda:5", _markup_with_routing_row(5, "task"))
+    asyncio.run(r.handle_route_callback(types.SimpleNamespace(callback_query=q), None))
+
+    assert r.agenda_feature.committed == [
+        (["apply to 2 jobs", "clean the room for 30 minutes"], "user")
+    ]
+    assert calls == [entry["content"]]
+
+
+def test_route_to_agenda_single_item_skips_split_call():
+    """No 'and'/comma in the content — the LLM split is never invoked."""
+    entry = {"content": "call the dentist"}
+
+    class _FakePlanner:
+        async def split_task_items(self, text):
+            raise AssertionError("should not be called for a single-item note")
+
+    r = _router(entry, planner=_FakePlanner())
+    q = _FakeQuery("route:agenda:5", _markup_with_routing_row(5, "task"))
+    asyncio.run(r.handle_route_callback(types.SimpleNamespace(callback_query=q), None))
+
+    assert r.agenda_feature.committed == [(["call the dentist"], "user")]
 
 
 def test_route_ignores_other_users():

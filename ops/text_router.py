@@ -205,6 +205,12 @@ _AGENDA_DEST_RE = re.compile(
     r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
 )
 
+# A cheap pre-filter for whether a task/agenda note might name more than one distinct
+# item ("add applying to jobs and cleaning the room to today's agenda"). Only gates
+# whether the (LLM-backed) split is worth attempting — never does the split itself,
+# since "and"/commas show up inside plenty of genuinely single tasks too.
+_MULTI_ITEM_HINT_RE = re.compile(r"\band\b|[;,]", re.IGNORECASE)
+
 
 def _extract_agenda_item(text: str) -> str:
     """Pull the item out of a 'add X to my agenda' utterance.
@@ -222,6 +228,14 @@ def _extract_agenda_item(text: str) -> str:
         r"^(?:please\s+)?(?:add|put|note|log)\s+", "", item, flags=re.IGNORECASE
     ).strip()
     return item.strip(" .,:;-")
+
+
+def _format_agenda_items(items: list[str]) -> str:
+    """Render an add-to-agenda confirmation: inline for one item, a bulleted
+    list once the note was split into more than one."""
+    if len(items) == 1:
+        return items[0]
+    return "\n" + "\n".join(f"• {t}" for t in items)
 
 
 def _parse_metric_body(rest: str) -> tuple[str, float, str, str] | None:
@@ -1593,8 +1607,9 @@ class TextRouter:
         if _AGENDA_DEST_RE.search(lower) and self.agenda_feature:
             item = _extract_agenda_item(text)
             if item:
-                self.agenda_feature.commit_agenda([item], source="user")
-                await reply(f"🗓 Added to agenda: {item}")
+                items = await self._agenda_items_from_text(item)
+                self.agenda_feature.commit_agenda(items, source="user")
+                await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
                 return
 
         # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
@@ -1615,8 +1630,9 @@ class TextRouter:
         # add: — user adds their own agenda item
         if lower.startswith("add:"):
             item_text = text[4:].strip()
-            self.agenda_feature.commit_agenda([item_text], source="user")
-            await reply(f"Added to agenda: {item_text}")
+            items = await self._agenda_items_from_text(item_text)
+            self.agenda_feature.commit_agenda(items, source="user")
+            await reply(f"Added to agenda: {_format_agenda_items(items)}")
             return
 
         # sleep: 7 / slept 7 hours — log last night's sleep as the `sleep` metric. Only
@@ -1915,6 +1931,18 @@ class TextRouter:
             ]
         return None
 
+    async def _agenda_items_from_text(self, text: str) -> list[str]:
+        """Split `text` into distinct agenda items when it plausibly names more
+        than one ("apply to 2 jobs and clean the room" -> two items instead of
+        both landing in a single item). Skips the LLM round-trip entirely for
+        the common case where there's no and/comma/semicolon at all."""
+        if not _MULTI_ITEM_HINT_RE.search(text):
+            return [text]
+        try:
+            return await self.planner.split_task_items(text)
+        except Exception:
+            return [text]
+
     async def handle_route_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1930,7 +1958,8 @@ class TextRouter:
             await query.edit_message_reply_markup(reply_markup=None)
             return
         if dest == "agenda" and self.agenda_feature:
-            self.agenda_feature.commit_agenda([entry["content"]], source="user")
+            items = await self._agenda_items_from_text(entry["content"])
+            self.agenda_feature.commit_agenda(items, source="user")
             label = "Added to today's agenda"
         else:
             self.backlog.add(entry["content"])
