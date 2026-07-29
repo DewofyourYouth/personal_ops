@@ -272,6 +272,57 @@ class Planner:
             pass
         return {"tasks": [], "insights": []}
 
+    async def split_task_items(self, text: str) -> list[str]:
+        """Split a task/agenda note into its distinct, separately-completable
+        items (e.g. "apply to 2 jobs and clean the room" -> two items). A single
+        task that just happens to contain "and" (e.g. "clean and organize the
+        closet") comes back as one item unchanged — only the LLM can tell the
+        difference reliably, so this is never done with a regex split.
+        """
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        try:
+            response = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                tools=[
+                    {
+                        "name": "split_items",
+                        "description": "Split a task note into its distinct, separately-completable action items.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Each distinct task as its own phrase, preserving the "
+                                        "original wording/details. If the note is really just "
+                                        "one task (even if it contains 'and'), return a "
+                                        "single-element array with the note unchanged."
+                                    ),
+                                }
+                            },
+                            "required": ["items"],
+                        },
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "split_items"},
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Split this into its distinct action items:\n\n{text}",
+                    }
+                ],
+            )
+        except Exception:
+            return [text]
+        for block in response.content:
+            if block.type == "tool_use":
+                items = [i for i in block.input.get("items", []) if i.strip()]
+                if items:
+                    return items
+        return [text]
+
     async def digest(self, days: int = 7) -> str:
         client = anthropic.AsyncAnthropic(max_retries=4)
         history = self._completion_history(days=days)
