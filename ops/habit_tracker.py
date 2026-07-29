@@ -209,6 +209,55 @@ def struggling_habits(
     return out
 
 
+ANCHOR_SECTION = "Anchors"
+
+
+def anchor_flow_state(
+    logs: Logs,
+    window: int = 7,
+    threshold: float = 0.5,
+    logged_by_day: dict[str, list[str]] | None = None,
+    today: date | None = None,
+) -> dict:
+    """The deterministic flow-vs-lost read the reflection response gates on.
+
+    Reads the tracked habits in the 'Anchors' section only — the streaks the user
+    actually leans on (Anki, Shacharit, Yerushalmi, strength, etc.), not the whole
+    habit list. Returns {"mode": "flow"|"lost", "anchor": str|None}.
+
+    "lost" fires when the average completion rate across those anchors over the last
+    `window` due days drops below `threshold` (the same bar struggling_habits() uses).
+    "anchor" names the worst-performing one — the candidate for a single handrail.
+
+    No tracked Anchors habits, or none with due-day history yet, reads as "flow" —
+    there's nothing to steer.
+    """
+    if logged_by_day is None:
+        logged_by_day = load_habit_logs(logs)
+    rows = logs.db.query(
+        "SELECT name, days FROM habits WHERE tracked = 1 AND section = ?",
+        (ANCHOR_SECTION,),
+    )
+    stats = []
+    for r in rows:
+        due = [int(d) for d in r["days"].split(",") if d != ""] or None
+        chain = recent_chain(
+            logs, r["name"], due, n=window, logged_by_day=logged_by_day, today=today
+        )
+        if chain:
+            stats.append((r["name"], sum(chain) / len(chain)))
+
+    if not stats:
+        return {"mode": "flow", "anchor": None}
+
+    avg_rate = sum(rate for _, rate in stats) / len(stats)
+    if avg_rate >= threshold:
+        return {"mode": "flow", "anchor": None}
+
+    worst_name, _ = min(stats, key=lambda s: s[1])
+    return {"mode": "lost", "anchor": worst_name}
+
+
 def missed_last_due_day(
     logs: Logs,
     habit_name: str,
