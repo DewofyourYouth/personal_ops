@@ -686,7 +686,20 @@ class Planner:
                 "cache_control": {"type": "ephemeral"},
             },
         ]
-        if state["mode"] == "lost":
+        if state["mode"] == "lost" and state["chronic"]:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Override: '{state['anchor']}' has been missed on every one of its last few "
+                        "due days, and a handrail hasn't moved it — this is a depletion loop, not a "
+                        "one-off. Do NOT prescribe another fix for it. Instead name the pattern "
+                        "plainly (e.g. 'this is the Nth morning running on X and it's not landing') "
+                        "and stop there — reflect the pattern, don't hand out another move."
+                    ),
+                }
+            )
+        elif state["mode"] == "lost":
             system_blocks.append(
                 {
                     "type": "text",

@@ -215,6 +215,7 @@ ANCHOR_SECTION = "Anchors"
 def anchor_flow_state(
     logs: Logs,
     window: int = 7,
+    chronic_window: int = 3,
     threshold: float = 0.5,
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
@@ -223,11 +224,15 @@ def anchor_flow_state(
 
     Reads the tracked habits in the 'Anchors' section only — the streaks the user
     actually leans on (Anki, Shacharit, Yerushalmi, strength, etc.), not the whole
-    habit list. Returns {"mode": "flow"|"lost", "anchor": str|None}.
+    habit list. Returns {"mode": "flow"|"lost", "anchor": str|None, "chronic": bool}.
 
     "lost" fires when the average completion rate across those anchors over the last
     `window` due days drops below `threshold` (the same bar struggling_habits() uses).
     "anchor" names the worst-performing one — the candidate for a single handrail.
+    "chronic" is True when that same anchor was missed on every one of its last
+    `chronic_window` due days: the depletion-loop signal. A handrail that hasn't moved
+    the anchor in that many mornings isn't going to move it on this one either — the
+    caller should stop prescribing and reflect the pattern instead.
 
     No tracked Anchors habits, or none with due-day history yet, reads as "flow" —
     there's nothing to steer.
@@ -245,17 +250,26 @@ def anchor_flow_state(
             logs, r["name"], due, n=window, logged_by_day=logged_by_day, today=today
         )
         if chain:
-            stats.append((r["name"], sum(chain) / len(chain)))
+            stats.append((r["name"], due, sum(chain) / len(chain)))
 
     if not stats:
-        return {"mode": "flow", "anchor": None}
+        return {"mode": "flow", "anchor": None, "chronic": False}
 
-    avg_rate = sum(rate for _, rate in stats) / len(stats)
+    avg_rate = sum(rate for _, _, rate in stats) / len(stats)
     if avg_rate >= threshold:
-        return {"mode": "flow", "anchor": None}
+        return {"mode": "flow", "anchor": None, "chronic": False}
 
-    worst_name, _ = min(stats, key=lambda s: s[1])
-    return {"mode": "lost", "anchor": worst_name}
+    worst_name, worst_due, _ = min(stats, key=lambda s: s[2])
+    chronic_chain = recent_chain(
+        logs,
+        worst_name,
+        worst_due,
+        n=chronic_window,
+        logged_by_day=logged_by_day,
+        today=today,
+    )
+    chronic = len(chronic_chain) == chronic_window and not any(chronic_chain)
+    return {"mode": "lost", "anchor": worst_name, "chronic": chronic}
 
 
 def missed_last_due_day(

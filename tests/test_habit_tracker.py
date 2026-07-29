@@ -313,7 +313,7 @@ def test_anchor_flow_state_no_anchors_is_flow(tmp_path):
     logs = Logs(str(tmp_path))
     logs.db.execute(_HABITS_TABLE)
     state = anchor_flow_state(logs, today=_MONDAY)
-    assert state == {"mode": "flow", "anchor": None}
+    assert state == {"mode": "flow", "anchor": None, "chronic": False}
 
 
 def test_anchor_flow_state_flow_when_landing(tmp_path):
@@ -333,15 +333,16 @@ def test_anchor_flow_state_flow_when_landing(tmp_path):
     assert state["mode"] == "flow"
 
 
-def test_anchor_flow_state_lost_when_below_threshold(tmp_path):
-    """Below-threshold completion across the Anchors habits reads as 'lost'."""
+def test_anchor_flow_state_lost_but_not_chronic(tmp_path):
+    """Below-threshold completion is 'lost', but a recent hit means it isn't chronic yet."""
     logs = Logs(str(tmp_path))
     logs.db.execute(_HABITS_TABLE)
     logs.db.execute(
         "INSERT INTO habits (section,name,tracked) VALUES ('Anchors','Anki',1)"
     )
     offsets = _due_days_back(7, _MONDAY)
-    # Done only 2 of the last 7 due days — below the 0.5 threshold.
+    # Done only today (offset 0) and the oldest day — 2/7, below the 0.5 threshold —
+    # but today's hit means the last 3 due days aren't ALL misses.
     done = {offsets[0], offsets[-1]}
     logged_by_day = {
         (_MONDAY - timedelta(days=d)).isoformat(): ["anki"]
@@ -349,10 +350,34 @@ def test_anchor_flow_state_lost_when_below_threshold(tmp_path):
         if d in done
     }
     state = anchor_flow_state(
-        logs, window=7, logged_by_day=logged_by_day, today=_MONDAY
+        logs, window=7, chronic_window=3, logged_by_day=logged_by_day, today=_MONDAY
     )
     assert state["mode"] == "lost"
     assert state["anchor"] == "Anki"
+    assert state["chronic"] is False
+
+
+def test_anchor_flow_state_chronic_when_dead_streak(tmp_path):
+    """An anchor missed on every one of its last chronic_window due days is 'chronic'."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('Anchors','Anki',1)"
+    )
+    offsets = _due_days_back(7, _MONDAY)
+    # Done only on the 3 oldest of the 7 due days — the most recent 3 are all misses.
+    done = set(offsets[-3:])
+    logged_by_day = {
+        (_MONDAY - timedelta(days=d)).isoformat(): ["anki"]
+        for d in offsets
+        if d in done
+    }
+    state = anchor_flow_state(
+        logs, window=7, chronic_window=3, logged_by_day=logged_by_day, today=_MONDAY
+    )
+    assert state["mode"] == "lost"
+    assert state["anchor"] == "Anki"
+    assert state["chronic"] is True
 
 
 def test_anchor_flow_state_only_reads_anchors_section(tmp_path):
