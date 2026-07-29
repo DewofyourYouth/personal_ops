@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from food_handlers import MACRO_PERIOD_DAYS, FoodHandlers, _macro_totals, _macros_report
 from food_registry import FoodRegistry, parse_composition
-from logs import Logs, _parse_macros
+from logs import TZ, Logs, _parse_macros
 from text_router import (
     TextRouter,
     _estimate_total,
@@ -514,7 +514,7 @@ def test_find_food_entry_to_retract_bare_with_no_session_context_is_none():
     logs = _make_logs()
     router = _make_router(logs)
     content = _food_log_content("pizza", _ESTIMATE)
-    logs.db.insert_entry(_TS, date.today().isoformat(), "food", content)
+    logs.db.insert_entry(_TS, datetime.now(TZ).date().isoformat(), "food", content)
     assert router._find_food_entry_to_retract(chat_id=1, item=None) is None
 
 
@@ -522,7 +522,9 @@ def test_find_food_entry_to_retract_bare_uses_session_pointer():
     logs = _make_logs()
     router = _make_router(logs)
     content = _food_log_content("pizza", _ESTIMATE)
-    entry_id = logs.db.insert_entry(_TS, date.today().isoformat(), "food", content)
+    entry_id = logs.db.insert_entry(
+        _TS, datetime.now(TZ).date().isoformat(), "food", content
+    )
     router._last_food_entry[1] = entry_id
     found = router._find_food_entry_to_retract(chat_id=1, item=None)
     assert found is not None and found["id"] == entry_id
@@ -534,7 +536,9 @@ def test_find_food_entry_to_retract_named_match():
     logs = _make_logs()
     router = _make_router(logs)
     content = _food_log_content("pizza", _ESTIMATE)
-    entry_id = logs.db.insert_entry(_TS, date.today().isoformat(), "food", content)
+    entry_id = logs.db.insert_entry(
+        _TS, datetime.now(TZ).date().isoformat(), "food", content
+    )
     found = router._find_food_entry_to_retract(chat_id=1, item="pizza")
     assert found is not None and found["id"] == entry_id
 
@@ -544,7 +548,7 @@ def test_find_food_entry_to_retract_no_match_returns_none():
     logs = _make_logs()
     router = _make_router(logs)
     content = _food_log_content("pizza", _ESTIMATE)
-    logs.db.insert_entry(_TS, date.today().isoformat(), "food", content)
+    logs.db.insert_entry(_TS, datetime.now(TZ).date().isoformat(), "food", content)
     assert (
         router._find_food_entry_to_retract(chat_id=1, item="quarterly meeting notes")
         is None

@@ -1,13 +1,13 @@
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from baseline_tracker import Baseline
-from logs import Logs
+from logs import TZ, Logs
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def test_mood_energy_for_range_collects_numeric(logs):
     logs.write_metric("mood", 4)
     logs.write_metric("energy", 2)
     logs.write_metric("mood", 2)
-    today = date.today()
+    today = datetime.now(TZ).date()
     moods, energies = logs.mood_energy_for_range(today, today)
     assert sorted(moods) == [2, 4]
     assert energies == [2]
@@ -31,7 +31,7 @@ def test_mood_energy_normalizes_legacy_labels(logs):
     # Old data stored labels/emoji rather than 1-5 / 1-3 integers.
     logs.write_metric("mood", "great")  # -> 5
     logs.write_metric("energy", "drained")  # -> 1
-    today = date.today()
+    today = datetime.now(TZ).date()
     moods, energies = logs.mood_energy_for_range(today, today)
     assert moods == [5]
     assert energies == [1]

@@ -7,7 +7,14 @@ from zoneinfo import ZoneInfo
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from logs import Logs
+from logs import TZ, Logs
+
+
+def _today() -> date:
+    """Jerusalem-local today, matching how Logs buckets entries by day (see
+    logs.py) — the bare system date drifts from that for ~3h/day whenever the
+    host clock is UTC/behind Jerusalem and the two straddle midnight."""
+    return datetime.now(TZ).date()
 
 
 @pytest.fixture
@@ -38,7 +45,7 @@ def test_write_metric(log_dir):
 def test_read_recent_skips_metrics(tmp_path):
     """read_recent excludes metric rows from human-facing recent log text."""
     logs = Logs(str(tmp_path))
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = _today() - timedelta(days=1)
     jsonl = tmp_path / f"{yesterday}.jsonl"
     jsonl.write_text(
         json.dumps(
@@ -78,7 +85,7 @@ def test_load_metrics(log_dir):
 def test_parse_md_fallback(tmp_path):
     """read_recent can parse legacy markdown log files when JSONL data is absent."""
     logs = Logs(str(tmp_path))
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = _today() - timedelta(days=1)
     md = tmp_path / f"{yesterday}.md"
     md.write_text("## 09:00 #insight\nSomething interesting happened\n")
     recent = logs.read_recent(days=1)
@@ -139,7 +146,7 @@ def test_format_today_for_telegram_chunks_long_escaped_entries(tmp_path):
 def test_compute_stats_completion(tmp_path):
     """compute_stats counts done and missed agenda items while excluding open items."""
     logs = Logs(str(tmp_path))
-    today = date.today()
+    today = _today()
     agenda = {
         "items": [
             {"id": 0, "text": "Do something", "status": "done", "source": "llm"},
@@ -156,7 +163,7 @@ def test_compute_stats_completion(tmp_path):
 def test_compute_stats_anchors(tmp_path):
     """compute_stats counts completed and missed anchor tasks separately."""
     logs = Logs(str(tmp_path))
-    today = date.today()
+    today = _today()
     agenda = {
         "items": [
             {
@@ -182,13 +189,13 @@ def test_compute_stats_wins(tmp_path):
     logs.write("win", "took a walk")
     logs.write("note", "just a note")
     stats = logs.compute_stats(days=1)
-    assert stats[str(date.today())]["wins"] == 2
+    assert stats[str(_today())]["wins"] == 2
 
 
 def test_compute_stats_checkin_response(tmp_path):
     """compute_stats counts reminder prompts and nearby checkin responses."""
     logs = Logs(str(tmp_path))
-    today = date.today()
+    today = _today()
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -215,7 +222,7 @@ def test_compute_stats_checkin_response(tmp_path):
 def test_format_stats_for_prompt(tmp_path):
     """format_stats_for_prompt renders completion, wins, and rolling stats sections."""
     logs = Logs(str(tmp_path))
-    today = date.today()
+    today = _today()
     agenda = {
         "items": [
             {"id": 0, "text": "Job search", "status": "done", "source": "llm"},
@@ -242,7 +249,7 @@ def test_mood_energy_by_time_of_day(tmp_path):
     """mood_energy_by_time_of_day buckets mood and energy averages by local hour."""
     # Write readings at known hours via JSONL (fresh DB → JSONL fallback fires).
     logs = Logs(str(tmp_path))
-    today = date.today()
+    today = _today()
     rows = [
         ("08:00:00", "mood", 4),
         ("08:01:00", "energy", 3),  # morning

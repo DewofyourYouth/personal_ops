@@ -74,11 +74,8 @@ def test_due_now_daily_does_not_remove(rem):
 
 def test_due_now_once_removes_after_firing(rem):
     """One-time reminders are removed after firing on their scheduled date."""
-    import datetime as dt_mod
-
-    today = dt_mod.date.today().isoformat()
-    rem.add("One-time", "once", date=today, time="10:00")
     now = _at(10, 0)
+    rem.add("One-time", "once", date=now.date().isoformat(), time="10:00")
     with patch("reminders.datetime") as mock_dt:
         mock_dt.now.return_value = now
         due = rem.due_now()

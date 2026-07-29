@@ -74,13 +74,15 @@ def test_write_with_when_buckets_entry_under_that_day(tmp_path):
     assert [dict(r)["content"] for r in logs.db.entries_for_date(target)] == [
         "daf yomi"
     ]
-    assert logs.db.entries_for_date(date.today()) == []
+    assert logs.db.entries_for_date(datetime.now(TZ).date()) == []
 
 
 def test_write_without_when_still_uses_today(tmp_path):
     """Logs.write without an explicit timestamp stores entries under today."""
     logs = Logs(str(tmp_path))
     logs.write("habit", "walk")
-    assert [dict(r)["content"] for r in logs.db.entries_for_date(date.today())] == [
-        "walk"
-    ]
+    # logs.write() buckets by Jerusalem-local day (see logs.py), not the host's
+    # system clock — query the same way, or this flakes for ~3h/day whenever
+    # the two clocks straddle midnight.
+    today = datetime.now(TZ).date()
+    assert [dict(r)["content"] for r in logs.db.entries_for_date(today)] == ["walk"]
