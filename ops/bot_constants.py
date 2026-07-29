@@ -102,6 +102,7 @@ HELP_SECTIONS = {
 <code>note: / insight: / task: / hypothesis: / checkin</code>
 /hypotheses — open tests + their follow-ups
 /fix — reclassify the most recent logged entry
+🔊 substantial replies (digests, synopses, feedback…) get a Listen button to hear them read aloud; <code>/voice on</code> auto-sends the audio every time, <code>/voice off</code> reverts to button-only
 🏷 every logged entry has Edit / Reclassify buttons to correct its tag
 ➡️ entries classified <code>#task</code> or <code>#backlog</code> get one-tap buttons to route them to the agenda or backlog
 Anything else is classified automatically, falling back to <code>#log</code>""",
@@ -179,5 +180,6 @@ BOT_COMMANDS = [
     ("backdate", "Log an entry for a past day"),
     ("fix", "Reclassify the most recent logged entry"),
     ("context", "View and edit your goals, priorities, constraints, projects"),
+    ("voice", "Toggle auto-reading substantial replies aloud"),
     ("help", "Category menu of everything the bot can do"),
 ]

@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import voice
 from agenda_handlers import AgendaHandlers
 from bot_constants import STATUS_ICONS
 from gcal import GCal
@@ -194,9 +195,10 @@ class StatusHandlers:
         try:
             synopsis = await self.planner.day_synopsis(target_date=date.today())
             if synopsis:
-                await update.message.reply_text(
+                msg = await update.message.reply_text(
                     f"📝 <b>How it's going</b>\n{html.escape(synopsis)}",
                     parse_mode="HTML",
                 )
+                await voice.offer(self.bot, msg)
         except Exception:
             pass

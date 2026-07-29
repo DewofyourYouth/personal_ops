@@ -16,6 +16,7 @@ import html
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
+import voice
 from hypotheses import Hypotheses
 from tg_common import safe_answer
 
@@ -94,10 +95,11 @@ class HypothesisHandlers:
         with the metric readings logged since it was raised. Mark it prompted so it
         fires once, not every day."""
         for r in self.hypotheses.due():
-            await self.bot.send_message(
+            msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
                 text=self.hypotheses.followup_report(r),
                 parse_mode="HTML",
                 reply_markup=_resolve_keyboard(r["id"]),
             )
+            await voice.offer(self.bot, msg)
             self.hypotheses.set_status(r["id"], "prompted")

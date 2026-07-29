@@ -36,6 +36,7 @@ from telegram.ext import (
     filters,
 )
 
+import voice
 from tags import PREFIXES
 from food_registry import parse_composition
 from habit_handlers import exact_habit_match, match_habit
@@ -843,7 +844,8 @@ class TextRouter:
         if insights:
             lines.append("\n<b>Logged as insights</b>")
             lines += [f"• {html.escape(i)}" for i in insights]
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        msg = await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        await voice.offer(self.bot, msg)
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """A photo is treated as food: read the label / identify the dish via vision,
@@ -1705,7 +1707,8 @@ class TextRouter:
             await reply("💭 Thinking…")
             try:
                 response_text = await self.planner.feedback(content)
-                await reply(response_text)
+                msg = await reply(response_text)
+                await voice.offer(self.bot, msg)
             except Exception as e:
                 await reply(f"Feedback failed: {e}")
             return
@@ -1851,7 +1854,8 @@ class TextRouter:
                     metric_keys=metric_keys,
                     follow_up_date=result.get("follow_up_date", ""),
                 )
-                await reply(_hypothesis_summary(result), parse_mode="HTML")
+                msg = await reply(_hypothesis_summary(result), parse_mode="HTML")
+                await voice.offer(self.bot, msg)
             except Exception as e:
                 await reply(f"Hypothesis logged but evaluation failed: {e}")
         else:
