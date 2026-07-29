@@ -37,8 +37,18 @@ look at.
 
 import json
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Asia/Jerusalem")
+
+
+def _today() -> date:
+    """Jerusalem-local today, matching how logs.py buckets entries by day —
+    using the bare system date would desync week boundaries from the data for
+    ~3 hours a day whenever the host clock is UTC/behind Jerusalem."""
+    return datetime.now(_TZ).date()
 
 
 class Baseline:
@@ -180,7 +190,7 @@ class Baseline:
         Habit counts use trackable_days = non-Shabbat days in the window, because
         Shabbat is intentionally offline and should never count as a missed day.
         """
-        today = date.today()
+        today = _today()
         week_start = today - timedelta(days=today.weekday())  # Monday
         days_in_week = [
             week_start + timedelta(days=i)
@@ -234,8 +244,8 @@ class Baseline:
         history is lost, just compressed. This is what keeps the prompt size bounded
         indefinitely regardless of how long the bot has been running.
         """
-        cutoff_weekly = (date.today() - timedelta(weeks=self.WEEKLY_KEEP)).isoformat()
-        cutoff_monthly = date.today().replace(day=1) - timedelta(
+        cutoff_weekly = (_today() - timedelta(weeks=self.WEEKLY_KEEP)).isoformat()
+        cutoff_monthly = _today().replace(day=1) - timedelta(
             days=self.MONTHLY_KEEP * 30
         )
 

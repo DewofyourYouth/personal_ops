@@ -11,6 +11,15 @@ from db import Database
 
 TZ = ZoneInfo("Asia/Jerusalem")
 
+
+def _today() -> date:
+    """The app's current business day (Jerusalem local), not the host's system
+    clock. Using the bare system date here would desync reads from writes
+    (which are always stamped in TZ) for ~3 hours a day whenever the host's
+    clock is UTC/behind Jerusalem and the two straddle midnight."""
+    return datetime.now(TZ).date()
+
+
 # Mirrors the format written by text_router._food_log_content, e.g.
 # "lasagna — ~480 kcal, 24g protein, 21g fat, 47g carbs"
 _FOOD_MACRO_RE = re.compile(
@@ -330,10 +339,10 @@ class Logs:
         from collections import defaultdict
 
         result: dict = defaultdict(list)
-        start = date.today() - timedelta(days=days)
+        start = _today() - timedelta(days=days)
 
         # For most metrics: all readings
-        rows = self.db.metrics_for_range(start, date.today())
+        rows = self.db.metrics_for_range(start, _today())
         seen_max = set()
         for r in rows:
             if r["key"] in self._MAX_PER_DAY_METRICS:
@@ -344,7 +353,7 @@ class Logs:
 
         # For max-per-day metrics: one entry per day, highest value wins
         for key in seen_max:
-            max_rows = self.db.metrics_max_per_day(start, date.today(), key)
+            max_rows = self.db.metrics_max_per_day(start, _today(), key)
             for r in max_rows:
                 display = f"{r['value']}{r['unit']}" if r["unit"] else str(r["value"])
                 result[key].append((r["date"], display))
@@ -371,7 +380,7 @@ class Logs:
     def compute_stats(self, days: int = 7) -> dict[str, dict]:
         stats = {}
         for i in range(days - 1, -1, -1):
-            d = date.today() - timedelta(days=i)
+            d = _today() - timedelta(days=i)
             s: dict = {
                 "completion": None,  # (done, total)
                 "anchors": None,  # (done, total)
@@ -507,14 +516,14 @@ class Logs:
         if habit_counts:
             earliest_habit = self.earliest_habit_date()
             habit_days = (
-                (date.today() - earliest_habit).days + 1 if earliest_habit else days
+                (_today() - earliest_habit).days + 1 if earliest_habit else days
             )
             habit_window = min(days, habit_days)
             # Shabbat (Saturday) is explicitly excluded from habit tracking
             shabbat_in_window = sum(
                 1
                 for i in range(habit_window)
-                if (date.today() - timedelta(days=i)).weekday() == 5
+                if (_today() - timedelta(days=i)).weekday() == 5
             )
             trackable_days = habit_window - shabbat_in_window
             lines.append("\n## Habit log\n")
@@ -562,7 +571,7 @@ class Logs:
         return ("Tracked metrics:\n" + "\n".join(lines)) if lines else ""
 
     def _steps_summary(self) -> str:
-        today = date.today()
+        today = _today()
         start_7 = today - timedelta(days=6)
         start_30 = today - timedelta(days=29)
 
@@ -612,7 +621,7 @@ class Logs:
         return " | ".join(parts)
 
     def _weight_summary(self) -> str:
-        today = date.today()
+        today = _today()
         start_7 = today - timedelta(days=6)
         start_30 = today - timedelta(days=29)
 
@@ -755,7 +764,7 @@ class Logs:
         self, days: int = 14, end_date: date | None = None
     ) -> str:
         """Recent daily macro totals as a formatted block for LLM prompts."""
-        end = end_date or date.today()
+        end = end_date or _today()
         start = end - timedelta(days=days - 1)
         rows = self.db.food_summary_for_range(start, end)
         if not rows:
@@ -860,11 +869,11 @@ class Logs:
         the morning or the afternoon" without any new logging. Returns a dict keyed by
         bucket label; only buckets with data are included.
         """
-        start = date.today() - timedelta(days=days)
+        start = _today() - timedelta(days=days)
         acc: dict[str, dict[str, list]] = {
             label: {"mood": [], "energy": []} for label, _, _ in self._TOD_BUCKETS
         }
-        for ts, key, score in self._mood_energy_readings(start, date.today()):
+        for ts, key, score in self._mood_energy_readings(start, _today()):
             for label, lo, hi in self._TOD_BUCKETS:
                 if lo <= ts.hour < hi:
                     acc[label][key].append(score)
