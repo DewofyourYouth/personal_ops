@@ -637,7 +637,10 @@ class Planner:
         return response.content[0].text.strip()
 
     async def feedback(self, text: str) -> str:
+        from habit_tracker import anchor_flow_state
+
         client = anthropic.AsyncAnthropic(max_retries=4)
+        state = anchor_flow_state(self.logs)
 
         # Include the user's actual logged data (metrics with trends, recent stats) so
         # feedback on "is my weight plan on track?" can use real numbers, not just the
@@ -660,28 +663,60 @@ class Planner:
         if data_block:
             user_content = f"{text}\n\n---\nYour actual logged data (use it — don't claim you can't see it):\n\n{data_block}"
 
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=400,
-            system=[
+        system_blocks = [
+            {
+                "type": "text",
+                "text": (
+                    "You are a personal ops assistant reflecting the user's own logged data back at them "
+                    "in response to an idea, question, or plan. "
+                    "Follow the tone in bot-personality.md: warm, direct, practical. "
+                    "Be concise — this is a Telegram message. "
+                    "Structure your response as: what's strong, what's weak or worth watching. Reflect what the "
+                    "data actually shows — do not prescribe. End there: no target, no instruction, no "
+                    "'next step', no advice framed as something to do. The last line is a reflection or a "
+                    "plain stop, never a directive. "
+                    "If the user's logged data is provided below their question, use it directly — do not say you lack visibility into data that is present. "
+                    "No hype. No generic advice. No long preamble."
+                ),
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": self._context_block(),
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        if state["mode"] == "lost" and state["chronic"]:
+            system_blocks.append(
                 {
                     "type": "text",
                     "text": (
-                        "You are a personal ops assistant giving feedback on an idea, question, or plan. "
-                        "Follow the tone in bot-personality.md: warm, direct, practical. "
-                        "Be concise — this is a Telegram message. "
-                        "Structure your response as: what's strong, what's weak or worth watching, one concrete next step or question. "
-                        "If the user's logged data is provided below their question, use it directly — do not say you lack visibility into data that is present. "
-                        "No hype. No generic advice. No long preamble."
+                        f"Override: '{state['anchor']}' has been missed on every one of its last few "
+                        "due days, and a handrail hasn't moved it — this is a depletion loop, not a "
+                        "one-off. Do NOT prescribe another fix for it. Instead name the pattern "
+                        "plainly (e.g. 'this is the Nth morning running on X and it's not landing') "
+                        "and stop there — reflect the pattern, don't hand out another move."
                     ),
-                    "cache_control": {"type": "ephemeral"},
-                },
+                }
+            )
+        elif state["mode"] == "lost":
+            system_blocks.append(
                 {
                     "type": "text",
-                    "text": self._context_block(),
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ],
+                    "text": (
+                        f"Override: the anchors are slipping right now ('{state['anchor']}' is the "
+                        "clearest one) — deciding is the thing currently offline for the user. You "
+                        "may break the no-prescription rule ONCE: end with exactly one small, "
+                        "concrete next move as a handrail. Nowhere else in the reply should be "
+                        "prescriptive."
+                    ),
+                }
+            )
+
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=400,
+            system=system_blocks,
             messages=[{"role": "user", "content": user_content}],
         )
         return response.content[0].text.strip()

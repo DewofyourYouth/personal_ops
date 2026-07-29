@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from habit_tracker import (
     SHABBAT,
     _is_due,
+    anchor_flow_state,
     compute_streak,
     load_habit_logs,
     missed_last_due_day,
@@ -294,6 +295,102 @@ def test_saturday_night_log_extends_existing_streak(tmp_path):
     assert current >= 5, (
         "Saturday night log must count toward streak when checked Sunday before logging"
     )
+
+
+def _due_days_back(n: int, today: date) -> list[int]:
+    """The offsets (days before `today`) of the next `n` due (non-Shabbat) days."""
+    offsets: list[int] = []
+    i = 0
+    while len(offsets) < n:
+        if _is_due(today - timedelta(days=i), None):
+            offsets.append(i)
+        i += 1
+    return offsets
+
+
+def test_anchor_flow_state_no_anchors_is_flow(tmp_path):
+    """No tracked Anchors habits at all reads as 'flow' — nothing to steer."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    state = anchor_flow_state(logs, today=_MONDAY)
+    assert state == {"mode": "flow", "anchor": None, "chronic": False}
+
+
+def test_anchor_flow_state_flow_when_landing(tmp_path):
+    """Anchors landing at/above threshold reads as 'flow'."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('Anchors','Anki',1)"
+    )
+    offsets = _due_days_back(7, _MONDAY)
+    logged_by_day = {
+        (_MONDAY - timedelta(days=d)).isoformat(): ["anki"] for d in offsets
+    }
+    state = anchor_flow_state(
+        logs, window=7, logged_by_day=logged_by_day, today=_MONDAY
+    )
+    assert state["mode"] == "flow"
+
+
+def test_anchor_flow_state_lost_but_not_chronic(tmp_path):
+    """Below-threshold completion is 'lost', but a recent hit means it isn't chronic yet."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('Anchors','Anki',1)"
+    )
+    offsets = _due_days_back(7, _MONDAY)
+    # Done only today (offset 0) and the oldest day — 2/7, below the 0.5 threshold —
+    # but today's hit means the last 3 due days aren't ALL misses.
+    done = {offsets[0], offsets[-1]}
+    logged_by_day = {
+        (_MONDAY - timedelta(days=d)).isoformat(): ["anki"]
+        for d in offsets
+        if d in done
+    }
+    state = anchor_flow_state(
+        logs, window=7, chronic_window=3, logged_by_day=logged_by_day, today=_MONDAY
+    )
+    assert state["mode"] == "lost"
+    assert state["anchor"] == "Anki"
+    assert state["chronic"] is False
+
+
+def test_anchor_flow_state_chronic_when_dead_streak(tmp_path):
+    """An anchor missed on every one of its last chronic_window due days is 'chronic'."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('Anchors','Anki',1)"
+    )
+    offsets = _due_days_back(7, _MONDAY)
+    # Done only on the 3 oldest of the 7 due days — the most recent 3 are all misses.
+    done = set(offsets[-3:])
+    logged_by_day = {
+        (_MONDAY - timedelta(days=d)).isoformat(): ["anki"]
+        for d in offsets
+        if d in done
+    }
+    state = anchor_flow_state(
+        logs, window=7, chronic_window=3, logged_by_day=logged_by_day, today=_MONDAY
+    )
+    assert state["mode"] == "lost"
+    assert state["anchor"] == "Anki"
+    assert state["chronic"] is True
+
+
+def test_anchor_flow_state_only_reads_anchors_section(tmp_path):
+    """A struggling habit outside the Anchors section doesn't trigger the gate."""
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute(
+        "INSERT INTO habits (section,name,tracked) VALUES ('Habits','Stretch',1)"
+    )
+    offsets = _due_days_back(7, _MONDAY)
+    # Stretch is never done — would be "lost" if it were an anchor, but it isn't one.
+    state = anchor_flow_state(logs, window=7, logged_by_day={}, today=_MONDAY)
+    assert state["mode"] == "flow"
 
 
 def test_two_due_day_misses_after_saturday_still_break_streak(tmp_path):
