@@ -1,16 +1,11 @@
 """tts.py — pluggable text-to-speech providers for reading bot output aloud.
 
 A provider is anything satisfying `TTSProvider`: one async method that turns
-text into audio bytes. Swapping providers (e.g. OpenAI → ElevenLabs, if
-quality warrants it later) means adding one class here and changing
-OPS_TTS_PROVIDER — voice.py and every call site stay provider-agnostic.
-
-mp3 (not Telegram's voice-note OGG/Opus) is the deliberate output format: Bot
-API's send_voice requires audio already muxed into an .ogg/OPUS container,
-which providers don't hand back as-is, and transcoding would mean pulling in
-ffmpeg for a personal tool. send_audio takes mp3 directly, so voice.py sends
-audio through that instead — a regular playable attachment, not a voice-note
-bubble.
+text into audio bytes, in the OGG/Opus container Telegram's send_voice
+requires for a real voice-note bubble (Bot API rejects anything else there).
+Swapping providers (e.g. OpenAI → ElevenLabs, if quality warrants it later)
+means adding one class here and changing OPS_TTS_PROVIDER — voice.py and
+every call site stay provider-agnostic.
 """
 
 import os
@@ -25,12 +20,13 @@ MAX_INPUT_CHARS = 4096
 @runtime_checkable
 class TTSProvider(Protocol):
     async def synthesize(self, text: str) -> bytes:
-        """Return mp3 audio bytes for `text`."""
+        """Return OGG/Opus audio bytes for `text`."""
         ...
 
 
 class OpenAITTSProvider:
-    """OpenAI's TTS API (tts-1)."""
+    """OpenAI's TTS API (tts-1), requesting Opus so the result plays as a
+    proper Telegram voice-note bubble via send_voice."""
 
     def __init__(self, voice: str = "alloy") -> None:
         self.voice = voice
@@ -41,7 +37,7 @@ class OpenAITTSProvider:
             model="tts-1",
             voice=self.voice,
             input=text[:MAX_INPUT_CHARS],
-            response_format="mp3",
+            response_format="opus",
         )
         return response.content
 

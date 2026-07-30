@@ -34,6 +34,17 @@ def _message(text: str = "", reply_markup=None):
     return msg
 
 
+def test_callback_data_does_not_collide_with_the_voice_note_edit_flow():
+    """Regression: text_router.py registers a CallbackQueryHandler on pattern
+    "^voice_" for the voice-note transcript confirm/edit flow, registered
+    before this module's handler in bot.py's startup order. PTB dispatches to
+    the first matching handler, so a "voice_"-prefixed CALLBACK_DATA here gets
+    silently swallowed there instead of ever reaching us — which is exactly
+    what made the Listen button do nothing at all, no matter what the TTS call
+    itself did."""
+    assert not voice.CALLBACK_DATA.startswith("voice_")
+
+
 def test_auto_enabled_defaults_false_when_no_file():
     assert voice.is_auto_enabled() is False
 
@@ -83,9 +94,9 @@ async def test_offer_preserves_an_existing_keyboard():
 async def test_offer_does_not_speak_when_auto_disabled():
     msg = _message("x" * 200)
     bot = MagicMock()
-    bot.send_audio = AsyncMock()
+    bot.send_voice = AsyncMock()
     await voice.offer(bot=bot, message=msg)
-    bot.send_audio.assert_not_called()
+    bot.send_voice.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -96,26 +107,26 @@ async def test_offer_speaks_when_auto_enabled(monkeypatch):
     monkeypatch.setattr(voice.tts, "get_provider", lambda: fake_provider)
     msg = _message("x" * 200)
     bot = MagicMock()
-    bot.send_audio = AsyncMock()
+    bot.send_voice = AsyncMock()
     await voice.offer(bot=bot, message=msg)
-    bot.send_audio.assert_awaited_once()
-    assert bot.send_audio.call_args.kwargs["audio"] == b"audio-bytes"
-    assert bot.send_audio.call_args.kwargs["chat_id"] == 555
+    bot.send_voice.assert_awaited_once()
+    assert bot.send_voice.call_args.kwargs["voice"] == b"audio-bytes"
+    assert bot.send_voice.call_args.kwargs["chat_id"] == 555
 
 
 @pytest.mark.asyncio
 async def test_speak_passes_a_filename_for_the_audio_bytes(monkeypatch):
-    """Regression: send_audio(audio=<bytes>) with no filename makes PTB upload it
-    as application/octet-stream, which Telegram won't play as audio — the 🔊
-    button looked like it did nothing. filename= must always be passed alongside
-    raw bytes so PTB/Telegram recognize it as mp3."""
+    """Regression: send_voice(voice=<bytes>) with no filename makes PTB upload it
+    as application/octet-stream, which Telegram won't play as a voice note —
+    filename= must always be passed alongside raw bytes so PTB/Telegram
+    recognize it as audio/ogg."""
     fake_provider = MagicMock()
     fake_provider.synthesize = AsyncMock(return_value=b"audio-bytes")
     monkeypatch.setattr(voice.tts, "get_provider", lambda: fake_provider)
     bot = MagicMock()
-    bot.send_audio = AsyncMock()
+    bot.send_voice = AsyncMock()
     await voice.speak(bot, chat_id=1, text="hello")
-    assert bot.send_audio.call_args.kwargs["filename"]
+    assert bot.send_voice.call_args.kwargs["filename"]
 
 
 @pytest.mark.asyncio
@@ -133,10 +144,10 @@ async def test_speak_reports_provider_failures_instead_of_going_silent(monkeypat
     broken_provider.synthesize = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(voice.tts, "get_provider", lambda: broken_provider)
     bot = MagicMock()
-    bot.send_audio = AsyncMock()
+    bot.send_voice = AsyncMock()
     bot.send_message = AsyncMock()
     await voice.speak(bot, chat_id=1, text="hello")  # must not raise
-    bot.send_audio.assert_not_called()
+    bot.send_voice.assert_not_called()
     bot.send_message.assert_awaited_once()
     assert "boom" in bot.send_message.call_args.kwargs["text"]
     assert bot.send_message.call_args.kwargs["chat_id"] == 1
@@ -157,11 +168,11 @@ async def test_speak_times_out_instead_of_hanging_forever(monkeypatch):
     hanging_provider.synthesize = _never_returns
     monkeypatch.setattr(voice.tts, "get_provider", lambda: hanging_provider)
     bot = MagicMock()
-    bot.send_audio = AsyncMock()
+    bot.send_voice = AsyncMock()
     bot.send_message = AsyncMock()
     await asyncio.wait_for(
         voice.speak(bot, chat_id=1, text="hello"), timeout=2
     )  # must not hang
-    bot.send_audio.assert_not_called()
+    bot.send_voice.assert_not_called()
     bot.send_message.assert_awaited_once()
     assert "timed out" in bot.send_message.call_args.kwargs["text"]

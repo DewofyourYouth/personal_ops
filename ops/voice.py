@@ -34,7 +34,13 @@ _MIN_CHARS_FOR_BUTTON = 150
 # broken. Bound it ourselves so a hang always surfaces as a normal failure.
 _SYNTHESIZE_TIMEOUT_S = 30
 
-CALLBACK_DATA = "voice_speak"
+# NOT "voice_*" — text_router.py already registers a CallbackQueryHandler on
+# pattern "^voice_" for the voice-note transcript confirm/edit flow, and PTB
+# dispatches to the first registered handler whose pattern matches. That
+# handler is registered before this module's, so a "voice_"-prefixed value
+# here would be silently swallowed there instead of ever reaching us — which
+# is exactly what happened (see the regression test for this in test_voice.py).
+CALLBACK_DATA = "tts_speak"
 
 _PREFS_PATH = (
     Path(os.environ.get("OPS_DATA_DIR", str(Path(__file__).parent / "log")))
@@ -71,12 +77,11 @@ async def speak(
         audio = await asyncio.wait_for(
             tts.get_provider().synthesize(text), timeout=_SYNTHESIZE_TIMEOUT_S
         )
-        await bot.send_audio(
+        await bot.send_voice(
             chat_id=chat_id,
-            audio=audio,
-            filename="speech.mp3",  # without this, PTB uploads it as
-            # application/octet-stream and Telegram won't play it as audio
-            title="personal_ops",
+            voice=audio,
+            filename="speech.ogg",  # without this, PTB uploads it as
+            # application/octet-stream and Telegram won't recognize it as audio
             reply_to_message_id=reply_to_message_id,
         )
     except Exception as e:
