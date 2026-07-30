@@ -7,6 +7,7 @@ an existing inline keyboard (several call sites attach a 🔊 button to a
 message that already has resolve/accept buttons on it).
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -139,3 +140,28 @@ async def test_speak_reports_provider_failures_instead_of_going_silent(monkeypat
     bot.send_message.assert_awaited_once()
     assert "boom" in bot.send_message.call_args.kwargs["text"]
     assert bot.send_message.call_args.kwargs["chat_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_speak_times_out_instead_of_hanging_forever(monkeypatch):
+    """Regression: a provider call that never returns (e.g. the host can't reach
+    the TTS provider at all) must not hang forever with zero visible outcome —
+    that's indistinguishable from the feature being silently broken. It must
+    time out and report like any other failure."""
+    monkeypatch.setattr(voice, "_SYNTHESIZE_TIMEOUT_S", 0.05)
+    hanging_provider = MagicMock()
+
+    async def _never_returns(text):
+        await asyncio.sleep(10)
+
+    hanging_provider.synthesize = _never_returns
+    monkeypatch.setattr(voice.tts, "get_provider", lambda: hanging_provider)
+    bot = MagicMock()
+    bot.send_audio = AsyncMock()
+    bot.send_message = AsyncMock()
+    await asyncio.wait_for(
+        voice.speak(bot, chat_id=1, text="hello"), timeout=2
+    )  # must not hang
+    bot.send_audio.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    assert "timed out" in bot.send_message.call_args.kwargs["text"]

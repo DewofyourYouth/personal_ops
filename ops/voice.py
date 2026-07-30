@@ -11,6 +11,7 @@ delegated entirely to tts.py, so switching TTS providers never touches this
 module.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -26,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 # Replies shorter than this are quick enough to just read; no button clutter.
 _MIN_CHARS_FOR_BUTTON = 150
+
+# The openai SDK's own default timeout is long enough that a network-level
+# hang (e.g. the host can't reach the provider at all) never raises — it just
+# sits there forever, silent and indistinguishable from the feature being
+# broken. Bound it ourselves so a hang always surfaces as a normal failure.
+_SYNTHESIZE_TIMEOUT_S = 30
 
 CALLBACK_DATA = "voice_speak"
 
@@ -61,7 +68,9 @@ async def speak(
     if not text:
         return
     try:
-        audio = await tts.get_provider().synthesize(text)
+        audio = await asyncio.wait_for(
+            tts.get_provider().synthesize(text), timeout=_SYNTHESIZE_TIMEOUT_S
+        )
         await bot.send_audio(
             chat_id=chat_id,
             audio=audio,
@@ -72,10 +81,16 @@ async def speak(
         )
     except Exception as e:
         logger.exception("Text-to-speech failed")
+        reason = (
+            f"timed out after {_SYNTHESIZE_TIMEOUT_S}s (network issue reaching the "
+            "TTS provider?)"
+            if isinstance(e, asyncio.TimeoutError)
+            else str(e) or type(e).__name__
+        )
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"🔊 Couldn't generate audio: {e}",
+                text=f"🔊 Couldn't generate audio: {reason}",
                 reply_to_message_id=reply_to_message_id,
             )
         except Exception:
