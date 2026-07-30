@@ -103,6 +103,21 @@ async def test_offer_speaks_when_auto_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_speak_passes_a_filename_for_the_audio_bytes(monkeypatch):
+    """Regression: send_audio(audio=<bytes>) with no filename makes PTB upload it
+    as application/octet-stream, which Telegram won't play as audio — the 🔊
+    button looked like it did nothing. filename= must always be passed alongside
+    raw bytes so PTB/Telegram recognize it as mp3."""
+    fake_provider = MagicMock()
+    fake_provider.synthesize = AsyncMock(return_value=b"audio-bytes")
+    monkeypatch.setattr(voice.tts, "get_provider", lambda: fake_provider)
+    bot = MagicMock()
+    bot.send_audio = AsyncMock()
+    await voice.speak(bot, chat_id=1, text="hello")
+    assert bot.send_audio.call_args.kwargs["filename"]
+
+
+@pytest.mark.asyncio
 async def test_offer_with_none_message_is_a_noop():
     """send_long returns None if every chunk send raised; offer() must tolerate it."""
     await voice.offer(bot=MagicMock(), message=None)
