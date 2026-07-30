@@ -1,10 +1,14 @@
 """voice.py — read bot responses aloud: an on-demand 🔊 button on substantial
 replies, plus a standing /voice on|off preference that also auto-sends audio.
 
-Leaf cross-cutting module (same shape as media.py): plain functions, best-effort
-(a synthesis failure is logged and swallowed — it must never take down the
-underlying reply it's attached to). Provider selection is delegated entirely
-to tts.py, so switching TTS providers never touches this module.
+Leaf cross-cutting module (same shape as media.py): plain functions. A
+synthesis failure never raises — it must never take down the underlying reply
+it's attached to — but unlike media.py's stickers, this is a result the user
+directly asked for by tapping a button, so a failure is reported back into the
+chat instead of only going to the log; silently doing nothing is
+indistinguishable from the feature being broken. Provider selection is
+delegated entirely to tts.py, so switching TTS providers never touches this
+module.
 """
 
 import json
@@ -47,8 +51,13 @@ def set_auto_enabled(enabled: bool) -> None:
 async def speak(
     bot, chat_id: int, text: str, reply_to_message_id: int | None = None
 ) -> None:
-    """Synthesize `text` and send it as a playable audio message. Best-effort —
-    failures are logged, never raised, so a bad TTS call can't break a reply."""
+    """Synthesize `text` and send it as a playable audio message.
+
+    Never raises — a bad TTS call must not break the reply it's attached to —
+    but on failure it tells the chat why, rather than doing nothing visibly:
+    the user triggered this directly (tap or /voice on), so silence here reads
+    as "the feature doesn't work" instead of "here's the actual error."
+    """
     if not text:
         return
     try:
@@ -61,8 +70,16 @@ async def speak(
             title="personal_ops",
             reply_to_message_id=reply_to_message_id,
         )
-    except Exception:
+    except Exception as e:
         logger.exception("Text-to-speech failed")
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"🔊 Couldn't generate audio: {e}",
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception:
+            logger.exception("Also failed to report the TTS error back to the chat")
 
 
 async def offer(bot, message) -> None:

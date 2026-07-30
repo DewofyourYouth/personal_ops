@@ -124,11 +124,18 @@ async def test_offer_with_none_message_is_a_noop():
 
 
 @pytest.mark.asyncio
-async def test_speak_swallows_provider_failures(monkeypatch):
+async def test_speak_reports_provider_failures_instead_of_going_silent(monkeypatch):
+    """A synthesis failure must never raise (it can't break the reply it's
+    attached to) but must not go silently unnoticed either — the user tapped a
+    button expecting a result, so they get told what broke instead of nothing."""
     broken_provider = MagicMock()
     broken_provider.synthesize = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(voice.tts, "get_provider", lambda: broken_provider)
     bot = MagicMock()
     bot.send_audio = AsyncMock()
+    bot.send_message = AsyncMock()
     await voice.speak(bot, chat_id=1, text="hello")  # must not raise
     bot.send_audio.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    assert "boom" in bot.send_message.call_args.kwargs["text"]
+    assert bot.send_message.call_args.kwargs["chat_id"] == 1
