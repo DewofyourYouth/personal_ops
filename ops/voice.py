@@ -56,6 +56,8 @@ async def speak(
         await bot.send_audio(
             chat_id=chat_id,
             audio=audio,
+            filename="speech.mp3",  # without this, PTB uploads it as
+            # application/octet-stream and Telegram won't play it as audio
             title="personal_ops",
             reply_to_message_id=reply_to_message_id,
         )
