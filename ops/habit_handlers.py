@@ -12,6 +12,7 @@ generated fresh from the table at prompt time. Notes are added from Telegram
 
 import html
 import re
+from datetime import date, timedelta
 
 import anthropic
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -58,19 +59,29 @@ def _match_key(s: str) -> str:
 
 _HABITS_DDL = """
 CREATE TABLE IF NOT EXISTS habits (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    section  TEXT NOT NULL,
-    name     TEXT NOT NULL,
-    days     TEXT NOT NULL DEFAULT '',   -- CSV of weekday ints (0=Mon..6=Sun); '' = every day
-    tracked  INTEGER NOT NULL DEFAULT 1, -- 0 = kept for context only (e.g. "Always off")
-    position INTEGER NOT NULL DEFAULT 0,
-    cue      TEXT NOT NULL DEFAULT '',   -- implementation intention / habit-stack anchor
-    identity TEXT NOT NULL DEFAULT ''    -- the identity this habit casts a vote for
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    section      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    days         TEXT NOT NULL DEFAULT '',   -- CSV of weekday ints (0=Mon..6=Sun); '' = every day
+    tracked      INTEGER NOT NULL DEFAULT 1, -- 0 = kept for context only (e.g. "Always off")
+    position     INTEGER NOT NULL DEFAULT 0,
+    cue          TEXT NOT NULL DEFAULT '',   -- implementation intention / habit-stack anchor
+    identity     TEXT NOT NULL DEFAULT '',   -- the identity this habit casts a vote for
+    -- On-hold window, both inclusive ISO dates; '' on either means "not paused". Both are
+    -- required together (not just paused_until) — without a lower bound, "paused until
+    -- next week" would also retroactively exempt every day since the habit was created.
+    paused_from  TEXT NOT NULL DEFAULT '',
+    paused_until TEXT NOT NULL DEFAULT ''
 );
 """
 
 # Columns added after the table's original shape; backfilled idempotently on startup.
-_ADDED_COLUMNS = {"cue": "''", "identity": "''"}
+_ADDED_COLUMNS = {
+    "cue": "''",
+    "identity": "''",
+    "paused_from": "''",
+    "paused_until": "''",
+}
 
 _HABIT_NOTES_DDL = """
 CREATE TABLE IF NOT EXISTS habit_notes (
@@ -139,6 +150,29 @@ def _csv_to_days(csv: str) -> list[int] | None:
     return vals or None
 
 
+def _parse_paused_until(s: str) -> date | None:
+    return date.fromisoformat(s) if s else None
+
+
+def _parse_pause_duration(s: str, today: date) -> date | None:
+    """'14' / '14d' -> 14 days from today (today counts as day 1). '2w' -> 2 weeks.
+    'until 2026-08-16' -> that explicit end date. None if unparseable."""
+    s = s.strip().lower()
+    m = re.match(r"^until\s+(\d{4}-\d{2}-\d{2})$", s)
+    if m:
+        try:
+            return date.fromisoformat(m.group(1))
+        except ValueError:
+            return None
+    m = re.match(r"^(\d+)\s*(?:d|day|days)?$", s)
+    if m:
+        return today + timedelta(days=int(m.group(1)) - 1)
+    m = re.match(r"^(\d+)\s*(?:w|week|weeks)$", s)
+    if m:
+        return today + timedelta(weeks=int(m.group(1))) - timedelta(days=1)
+    return None
+
+
 class HabitStore:
     """Habit definitions in SQLite. The habits plugin creates and owns this table."""
 
@@ -197,6 +231,12 @@ class HabitStore:
                     "cue": (r["cue"] if "cue" in r.keys() else "") or "",
                     "identity": (r["identity"] if "identity" in r.keys() else "") or "",
                     "identities": self._identities(r["id"]),
+                    "paused_from": _parse_paused_until(
+                        r["paused_from"] if "paused_from" in r.keys() else ""
+                    ),
+                    "paused_until": _parse_paused_until(
+                        r["paused_until"] if "paused_until" in r.keys() else ""
+                    ),
                 }
             )
         return out
@@ -247,6 +287,42 @@ class HabitStore:
     def set_cue_by_name(self, name: str, cue: str) -> str | None:
         """Set the cue (implementation intention / stack anchor). Returns matched name or None."""
         return self._set_field_by_name("cue", name, cue)
+
+    # --- Pausing (temporary hold, e.g. vacation — no nag, no streak break) ---
+
+    def pause_by_name(
+        self, name: str, until: date, start: date | None = None
+    ) -> str | None:
+        """Put a habit on hold for [start, until] (both inclusive; start defaults to
+        today). Returns matched name or None. Sets both bounds together — a lone
+        paused_until with no paused_from would exempt every day in the habit's
+        history, not just the intended window (see _is_due in habit_tracker.py)."""
+        from datetime import date as _date
+
+        start = start or _date.today()
+        target = _match_key(name)
+        for h in self.list_habits(tracked_only=False):
+            display = self.context.habit_display_name(h["name"])
+            if _match_key(display) == target or _match_key(h["name"]) == target:
+                self.db.execute(
+                    "UPDATE habits SET paused_from = ?, paused_until = ? WHERE id = ?",
+                    (start.isoformat(), until.isoformat(), h["id"]),
+                )
+                return display
+        return None
+
+    def resume_by_name(self, name: str) -> str | None:
+        """End an active pause early. Returns matched name or None."""
+        target = _match_key(name)
+        for h in self.list_habits(tracked_only=False):
+            display = self.context.habit_display_name(h["name"])
+            if _match_key(display) == target or _match_key(h["name"]) == target:
+                self.db.execute(
+                    "UPDATE habits SET paused_from = '', paused_until = '' WHERE id = ?",
+                    (h["id"],),
+                )
+                return display
+        return None
 
     # --- Identity (many-to-many: a habit votes for several identities) ---
 
@@ -634,6 +710,8 @@ class HabitHandlers:
         app.add_handler(CommandHandler("addhabit", self.cmd_add_habit))
         app.add_handler(CommandHandler("edithabit", self.cmd_edit_habit))
         app.add_handler(CommandHandler("habitcue", self.cmd_habit_cue))
+        app.add_handler(CommandHandler("pausehabit", self.cmd_pause_habit))
+        app.add_handler(CommandHandler("resumehabit", self.cmd_resume_habit))
         app.add_handler(CommandHandler("habitnote", self.cmd_habit_note))
         app.add_handler(CommandHandler("identity", self.cmd_identity))
         app.add_handler(CommandHandler("habitstrategy", self.cmd_habit_strategy))
@@ -671,7 +749,12 @@ class HabitHandlers:
             return ""
         parts = []
         for h in habits:
-            current, _ = compute_streak(self.logs, h["name"], lookback=max(days, 1))
+            current, _ = compute_streak(
+                self.logs,
+                h["name"],
+                lookback=max(days, 1),
+                paused=self._pause_window(h),
+            )
             disp = self.context.habit_display_name(h["name"])
             parts.append(f"{disp} 🔥{current}" if current else f"{disp} —")
         return f"Habit streaks (last {days}d): " + ", ".join(parts)
@@ -687,6 +770,17 @@ class HabitHandlers:
                 return h
         return None
 
+    @staticmethod
+    def _is_paused(h: dict, today: date) -> bool:
+        return h["paused_until"] is not None and h["paused_until"] >= today
+
+    @staticmethod
+    def _pause_window(h: dict) -> tuple[date, date] | None:
+        """(from, until) for habit_tracker's streak/chain functions, or None."""
+        if h["paused_from"] is not None and h["paused_until"] is not None:
+            return (h["paused_from"], h["paused_until"])
+        return None
+
     def _message(self) -> tuple[str, InlineKeyboardMarkup]:
         from datetime import date as _date
 
@@ -699,6 +793,7 @@ class HabitHandlers:
                 InlineKeyboardMarkup([]),
             )
         today_weekday = _date.today().weekday()
+        today = _date.today()
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
@@ -706,11 +801,17 @@ class HabitHandlers:
             if e.get("tag") == "habit"
         ]
 
+        def _visible(habits):
+            return [
+                h
+                for h in habits
+                if (h["days"] is None or today_weekday in h["days"])
+                and not self._is_paused(h, today)
+            ]
+
         all_visible = []
         for habits in sections.values():
-            all_visible.extend(
-                h for h in habits if h["days"] is None or today_weekday in h["days"]
-            )
+            all_visible.extend(_visible(habits))
         done_ids = set()
         for logged in logged_today:
             h = self._resolve_logged_to_habit(logged, all_visible)
@@ -723,9 +824,7 @@ class HabitHandlers:
         rows = []
         at_risk_any = False
         for section, habits in sections.items():
-            visible = [
-                h for h in habits if h["days"] is None or today_weekday in h["days"]
-            ]
+            visible = _visible(habits)
             if not visible:
                 continue
             lines.append(f"<b>{html.escape(section)}</b>")
@@ -737,6 +836,7 @@ class HabitHandlers:
                     h["name"],
                     due_weekdays=h["days"],
                     logged_by_day=logged_by_day,
+                    paused=self._pause_window(h),
                 )
                 chain = "".join(
                     "🟩" if x else "⬜"
@@ -746,10 +846,15 @@ class HabitHandlers:
                         h["days"],
                         n=10,
                         logged_by_day=logged_by_day,
+                        paused=self._pause_window(h),
                     )
                 )
                 at_risk = (not done) and missed_last_due_day(
-                    self.logs, h["name"], h["days"], logged_by_day=logged_by_day
+                    self.logs,
+                    h["name"],
+                    h["days"],
+                    logged_by_day=logged_by_day,
+                    paused=self._pause_window(h),
                 )
                 at_risk_any = at_risk_any or at_risk
                 flame = f"  🔥{cur}" if cur else ""
@@ -802,7 +907,10 @@ class HabitHandlers:
         all_visible = []
         for habits in sections.values():
             all_visible.extend(
-                h for h in habits if h["days"] is None or target_weekday in h["days"]
+                h
+                for h in habits
+                if (h["days"] is None or target_weekday in h["days"])
+                and not self._is_paused(h, target)
             )
         resolved_ids = set()
         for logged in resolved:
@@ -835,6 +943,7 @@ class HabitHandlers:
         from datetime import date as _date
 
         today_weekday = _date.today().weekday()
+        today = _date.today()
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
@@ -844,7 +953,10 @@ class HabitHandlers:
         all_visible = []
         for habits in sections.values():
             all_visible.extend(
-                h for h in habits if h["days"] is None or today_weekday in h["days"]
+                h
+                for h in habits
+                if (h["days"] is None or today_weekday in h["days"])
+                and not self._is_paused(h, today)
             )
         done_ids = set()
         for logged in logged_today:
@@ -1147,11 +1259,14 @@ class HabitHandlers:
                 if habit["days"]
                 else "daily"
             )
+            paused = habit["paused_until"] and habit["paused_until"] >= date.today()
+            paused_line = f"Paused: until {habit['paused_until']}\n" if paused else ""
             await update.message.reply_text(
                 f"<b>{html.escape(disp)}</b>\n"
                 f"Section: {html.escape(habit['section'])}\n"
                 f"Days: {days_str}\n"
                 f"Tracked: {'yes' if habit['tracked'] else 'no'}\n"
+                f"{paused_line}"
                 f"Cue: {html.escape(habit['cue'] or '—')}\n\n"
                 f"To edit: <code>/edithabit {html.escape(raw)}: name=New name</code>",
                 parse_mode="HTML",
@@ -1266,6 +1381,108 @@ class HabitHandlers:
                 f"No habit matching “{html.escape(name.strip())}”. Try /habits to see names."
             )
 
+    async def cmd_pause_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/pausehabit <habit>: <duration> — put a habit on hold. While paused it
+        won't show in the checklist, won't nag at end-of-day, and won't count
+        against (or break) its streak.
+
+        Duration: a number of days (<code>14</code> or <code>14d</code>), weeks
+        (<code>2w</code>), or an explicit end date (<code>until 2026-08-16</code>).
+        <code>/pausehabit <habit>: off</code> ends an active pause early (same as
+        /resumehabit). With no args, lists any currently-paused habits.
+        """
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if not raw:
+            today = date.today()
+            paused = [
+                h
+                for h in self.store.list_habits(tracked_only=False)
+                if h["paused_until"] and h["paused_until"] >= today
+            ]
+            if not paused:
+                await update.message.reply_text(
+                    "No habits currently paused. "
+                    "<code>/pausehabit Shacharit: 14d</code> to pause one.",
+                    parse_mode="HTML",
+                )
+                return
+            lines = ["⏸ <b>Paused habits</b>\n"]
+            for h in paused:
+                disp = self.context.habit_display_name(h["name"])
+                lines.append(f"• {html.escape(disp)} — until {h['paused_until']}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+        if ":" not in raw:
+            await update.message.reply_text(
+                "Usage: <code>/pausehabit Shacharit: 14d</code>, "
+                "<code>/pausehabit Shacharit: 2w</code>, or "
+                "<code>/pausehabit Shacharit: until 2026-08-16</code>",
+                parse_mode="HTML",
+            )
+            return
+        name, dur = raw.split(":", 1)
+        name = name.strip()
+        dur = dur.strip()
+        matched = await self._resolve_or_match(name)
+        if not matched:
+            await update.message.reply_text(
+                f"No habit matching “{html.escape(name)}”. Try /habits to see names."
+            )
+            return
+        if dur.lower() in ("off", "cancel", "resume"):
+            self.store.resume_by_name(matched)
+            await update.message.reply_text(
+                f"▶️ <b>{html.escape(matched)}</b> resumed.", parse_mode="HTML"
+            )
+            return
+        until = _parse_pause_duration(dur, date.today())
+        if until is None:
+            await update.message.reply_text(
+                "Couldn't parse that duration. Use a number of days "
+                "(<code>14</code> or <code>14d</code>), weeks (<code>2w</code>), "
+                "or <code>until 2026-08-16</code>.",
+                parse_mode="HTML",
+            )
+            return
+        self.store.pause_by_name(matched, until)
+        await update.message.reply_text(
+            f"⏸ <b>{html.escape(matched)}</b> paused until <b>{until.isoformat()}</b> "
+            "— won't nag or count against your streak until then.",
+            parse_mode="HTML",
+        )
+
+    async def cmd_resume_habit(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """/resumehabit <habit> — end an active pause early."""
+        if update.effective_user.id != self.allowed_user:
+            return
+        raw = " ".join(context.args).strip() if context.args else ""
+        if not raw:
+            await update.message.reply_text(
+                "Usage: <code>/resumehabit Shacharit</code>", parse_mode="HTML"
+            )
+            return
+        matched = await self._resolve_or_match(raw)
+        if not matched:
+            await update.message.reply_text(
+                f"No habit matching “{html.escape(raw)}”. Try /habits to see names."
+            )
+            return
+        h = self.store._habit_by_name(matched)
+        today = date.today()
+        if not h or not h["paused_until"] or h["paused_until"] < today:
+            await update.message.reply_text(
+                f"<b>{html.escape(matched)}</b> isn't paused.", parse_mode="HTML"
+            )
+            return
+        self.store.resume_by_name(matched)
+        await update.message.reply_text(
+            f"▶️ <b>{html.escape(matched)}</b> resumed.", parse_mode="HTML"
+        )
+
     async def cmd_identity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/identity — show habits grouped by the identities they vote for.
         /identity <habit>: <id1>, <id2> — add identities (a habit can vote for several);
@@ -1321,6 +1538,7 @@ class HabitHandlers:
                 h["name"],
                 due_weekdays=h["days"],
                 logged_by_day=logged_by_day,
+                paused=self._pause_window(h),
             )
             label = f"{disp} 🔥{cur}" if cur else disp
             if h["identities"]:
@@ -1652,9 +1870,12 @@ class HabitHandlers:
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []
+        today = date.today()
         for h in self.store.list_habits(tracked_only=False):
             disp = self.context.habit_display_name(h["name"])
             mark = "" if h["tracked"] else " (off)"
+            if h["paused_until"] and h["paused_until"] >= today:
+                mark += f" (⏸ until {h['paused_until']})"
             rows.append(
                 [
                     InlineKeyboardButton(f"{disp}{mark}", callback_data="noop"),

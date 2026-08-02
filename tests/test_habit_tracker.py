@@ -6,15 +6,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from habit_tracker import (
-    SHABBAT,
-    _is_due,
-    anchor_flow_state,
-    compute_streak,
-    load_habit_logs,
-    missed_last_due_day,
-    recent_chain,
-)
+from habit_tracker import (SHABBAT, _is_due, anchor_flow_state, compute_streak,
+                           load_habit_logs, missed_last_due_day, recent_chain)
 from logs import Logs
 
 
@@ -42,6 +35,32 @@ def test_is_due():
     assert _is_due(saturday, None) is False  # Shabbat never counts
     assert _is_due(monday, [0, 2, 4]) is True  # Monday is in Mon/Wed/Fri
     assert _is_due(monday, [1, 3]) is False  # not a Tue/Thu day
+
+
+def test_is_due_respects_pause_window():
+    """A day inside an active [from, until] pause is non-due, exactly like Shabbat;
+    days outside the window (before it starts or after it ends) are unaffected."""
+    sunday = date(2026, 5, 31)  # day before the pause starts
+    monday = date(2026, 6, 1)  # inside the pause
+    tuesday = date(2026, 6, 2)  # inside the pause (inclusive end)
+    wednesday = date(2026, 6, 3)  # day after the pause ends
+    window = (monday, tuesday)
+    assert _is_due(sunday, None, paused=window) is True  # before the window
+    assert _is_due(monday, None, paused=window) is False  # inclusive start
+    assert _is_due(tuesday, None, paused=window) is False  # inclusive end
+    assert _is_due(wednesday, None, paused=window) is True  # after the window
+
+
+def test_is_due_pause_without_a_lower_bound_would_exempt_all_history():
+    """Regression: a paused_until with no paused_from must never be passed through
+    as if it bounded anything — this is exactly the bug where 'pause until next
+    week' silently zeroed out a habit's entire pre-pause history. _is_due only
+    accepts a (from, until) pair, so there is no way to pass an unbounded end."""
+    ancient = date(2020, 1, 1)
+    monday = date(2026, 6, 1)
+    tuesday = date(2026, 6, 2)
+    # A day from years before the pause was ever set must still be due.
+    assert _is_due(ancient, None, paused=(monday, tuesday)) is True
 
 
 def test_recent_chain_all_done(tmp_path):
@@ -84,7 +103,8 @@ _HABITS_TABLE = """
 CREATE TABLE habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT, section TEXT, name TEXT,
     days TEXT DEFAULT '', tracked INTEGER DEFAULT 1, position INTEGER DEFAULT 0,
-    cue TEXT DEFAULT '', identity TEXT DEFAULT ''
+    cue TEXT DEFAULT '', identity TEXT DEFAULT '',
+    paused_from TEXT DEFAULT '', paused_until TEXT DEFAULT ''
 )
 """
 
@@ -294,6 +314,82 @@ def test_saturday_night_log_extends_existing_streak(tmp_path):
     # Fri (due) + Sat (bonus) + forgiven Sun → streak must be at least 5.
     assert current >= 5, (
         "Saturday night log must count toward streak when checked Sunday before logging"
+    )
+
+
+def test_pause_prevents_streak_break_during_vacation(tmp_path):
+    """The motivating case: a habit paused for a stretch of unlogged days must not
+    have its streak broken by them — the whole point of pausing is 'don't nag or
+    penalize me while I'm intentionally not doing this'."""
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    # A 10-day streak, done every day, ending 10 days ago...
+    _write_habit_days(logs, "5:30 wake", range(10, 20))
+    # ...then a pause covering the gap from 9 days ago through today, nothing logged.
+    paused = (today - timedelta(days=9), today)
+    current, _ = compute_streak(logs, "5:30 wake", due_weekdays=None, paused=paused)
+    # The gap is entirely non-due (paused), so it doesn't count as misses — the
+    # pre-pause streak must survive intact once the paused gap is skipped over.
+    assert current == 10, "a paused gap must not zero out the pre-pause streak"
+
+
+def test_pause_window_has_a_lower_bound(tmp_path):
+    """Regression for the actual bug this module had: a miss OLDER than the pause
+    window (before paused_from) must still show up as a real miss — the pause
+    only covers its own [from, until] dates, not everything before it too."""
+    logs = Logs(str(tmp_path))
+    tuesday = date(2026, 6, 2)
+    monday = date(2026, 6, 1)
+    sunday = date(2026, 5, 31)  # the day before the pause window starts
+    chain = recent_chain(
+        logs,
+        "5:30 wake",
+        due_weekdays=None,
+        n=1,
+        logged_by_day={},  # nothing logged anywhere
+        paused=(monday, tuesday),
+        today=tuesday,
+    )
+    # Tuesday and Monday are inside the pause + unlogged -> skipped, not misses.
+    # Sunday is outside the pause window -> it's the one real due-day miss.
+    assert chain == [False]
+
+
+def test_recent_chain_skips_paused_days(tmp_path):
+    """recent_chain excludes paused days from the hit/miss chain entirely (the
+    same treatment Shabbat gets) — it reaches further back for real due days
+    instead of counting an unlogged paused day as a miss."""
+    logs = Logs(str(tmp_path))
+    tuesday = date(2026, 6, 2)  # pinned, non-Shabbat reference date
+    monday = date(2026, 6, 1)
+    sunday = date(2026, 5, 31)
+    # Logged on Sunday and Monday; Tuesday (today) is paused and unlogged.
+    logged_by_day = {sunday.isoformat(): ["5:30 wake"], monday.isoformat(): ["5:30 wake"]}
+    chain = recent_chain(
+        logs,
+        "5:30 wake",
+        due_weekdays=None,
+        n=2,
+        logged_by_day=logged_by_day,
+        paused=(tuesday, tuesday),  # pauses through today only
+        today=tuesday,
+    )
+    # Tuesday is skipped (paused, unlogged) rather than showing up as a miss —
+    # the last 2 due days found are Sunday and Monday, both hits.
+    assert chain == [True, True]
+
+
+def test_missed_last_due_day_ignores_paused_days(tmp_path):
+    """A habit paused as of today (and yesterday) must not be flagged 'missed
+    last time' just because the paused days have nothing logged — the check
+    should reach past them to the last real due day, which was done."""
+    logs = Logs(str(tmp_path))
+    today = date.today()
+    _write_habit_days(logs, "5:30 wake", range(2, 20))  # done up through 2 days ago
+    paused = (today - timedelta(days=1), today)  # today + yesterday are paused
+    assert (
+        missed_last_due_day(logs, "5:30 wake", None, paused=paused, today=today)
+        is False
     )
 
 

@@ -54,6 +54,8 @@ HELP_SECTIONS = {
 /edithabit — edit name, days, or section (e.g. <code>/edithabit Stretch: days=mon,wed,fri</code>)
 /managehabits — toggle tracking or delete habits
 /habitcue — set a habit's cue (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
+/pausehabit — put a habit on hold, no nag/no streak break (e.g. <code>/pausehabit 5:30 wake: 14d</code>, <code>2w</code>, or <code>until 2026-08-16</code>; no args lists paused habits)
+/resumehabit — end an active pause early (e.g. <code>/resumehabit 5:30 wake</code>)
 /identity — habits grouped by identities they vote for; a habit can vote for several (<code>/identity Strength: healthy, disciplined</code>; <code>-</code> to remove)
 /habitstrategy — a 4-Laws plan for habits you keep missing (on demand)
 /weeklyhabits — run weekly habit suggestions now (also fires automatically Sunday 09:00)
@@ -143,6 +145,8 @@ BOT_COMMANDS = [
     ("edithabit", "Edit an existing habit"),
     ("managehabits", "Delete or toggle habits"),
     ("habitcue", "Set an implementation intention / habit-stack anchor"),
+    ("pausehabit", "Put a habit on hold for a while"),
+    ("resumehabit", "End an active habit pause early"),
     ("habitnote", "Attach a note to a habit"),
     ("identity", "Habits grouped by the identities they vote for"),
     ("habitstrategy", "A 4-Laws plan for a habit you keep missing"),

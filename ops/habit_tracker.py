@@ -14,16 +14,26 @@ def format_habits_for_prompt(db) -> str:
 
     Replaces the old habits.md projection: the habits table is the single source of
     truth, and this is generated fresh at prompt time rather than via a file on disk.
+    Currently-paused habits are pulled out of their section and listed separately, so
+    the planner knows not to schedule around them without losing track that they exist.
     """
     rows = db.query(
-        "SELECT section, name, days, cue FROM habits WHERE tracked = 1 ORDER BY position, id"
+        "SELECT section, name, days, cue, paused_until FROM habits "
+        "WHERE tracked = 1 ORDER BY position, id"
     )
     if not rows:
         return ""
+    today = date.today()
     # Group by section (first-appearance order) so each header appears once even if a
     # habit's position sorts it apart from its section-mates.
     sections: dict[str, list[str]] = {}
+    paused: list[str] = []
     for r in rows:
+        pu_raw = r["paused_until"] if "paused_until" in r.keys() else ""
+        paused_until = date.fromisoformat(pu_raw) if pu_raw else None
+        if paused_until is not None and paused_until >= today:
+            paused.append(f"- {r['name']} (paused until {paused_until.isoformat()})")
+            continue
         days = [int(d) for d in r["days"].split(",") if d != ""]
         tag = f" [{','.join(_ABBR[d] for d in sorted(days))}]" if days else ""
         cue = f" — cue: {r['cue']}" if r["cue"] else ""
@@ -32,6 +42,9 @@ def format_habits_for_prompt(db) -> str:
     for section, items in sections.items():
         out.append(f"\n### {section}")
         out.extend(items)
+    if paused:
+        out.append("\n### Paused (don't schedule around these)")
+        out.extend(paused)
     return "\n".join(out)
 
 
@@ -79,9 +92,21 @@ def _logged_for(
     return _logged_on(logs, d)
 
 
-def _is_due(d: date, due_weekdays: list[int] | None) -> bool:
-    """A day counts toward a habit only if it's not Shabbat and is a scheduled weekday."""
+def _is_due(
+    d: date,
+    due_weekdays: list[int] | None,
+    paused: tuple[date, date] | None = None,
+) -> bool:
+    """A day counts toward a habit only if it's not Shabbat, isn't inside an active
+    pause window, and is a scheduled weekday. `paused` is an inclusive (from, until)
+    date range — without a lower bound, "paused until next week" would also silently
+    exempt every day since the dawn of time, wiping out unrelated history. A paused
+    day is treated exactly like Shabbat elsewhere in this module: skipped if not
+    done, a bonus if done anyway — so a habit on hold for vacation neither nags nor
+    breaks its streak."""
     if d.weekday() == SHABBAT:
+        return False
+    if paused is not None and paused[0] <= d <= paused[1]:
         return False
     return due_weekdays is None or d.weekday() in due_weekdays
 
@@ -93,6 +118,7 @@ def compute_streak(
     due_weekdays: list[int] | None = None,
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
+    paused: tuple[date, date] | None = None,
 ) -> tuple[int, int]:
     """Return (current_streak, longest_streak).
 
@@ -114,7 +140,7 @@ def compute_streak(
         d = today - timedelta(days=i)
         done = any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
         # Non-due days are *bonus*: quiet ones are transparent, done ones extend the run.
-        if not _is_due(d, due_weekdays) and not done:
+        if not _is_due(d, due_weekdays, paused) and not done:
             continue
         if done:
             run += 1
@@ -141,9 +167,10 @@ def recent_chain(
     lookback: int = 400,
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
+    paused: tuple[date, date] | None = None,
 ) -> list[bool]:
     """Done/not-done for the last `n` DUE days, oldest→newest — the 'don't break the
-    chain' visual. Off/Shabbat days are skipped so the chain is pure hits and misses."""
+    chain' visual. Off/Shabbat/paused days are skipped so the chain is pure hits and misses."""
     if today is None:
         today = date.today()
     chain: list[bool] = []
@@ -151,7 +178,7 @@ def recent_chain(
         if len(chain) >= n:
             break
         d = today - timedelta(days=i)
-        if not _is_due(d, due_weekdays):
+        if not _is_due(d, due_weekdays, paused):
             continue
         chain.append(
             any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
@@ -175,13 +202,26 @@ def struggling_habits(
     if logged_by_day is None:
         logged_by_day = load_habit_logs(logs)
     rows = logs.db.query(
-        "SELECT name, days, cue, identity FROM habits WHERE tracked = 1"
+        "SELECT name, days, cue, identity, paused_from, paused_until FROM habits "
+        "WHERE tracked = 1"
     )
     out = []
     for r in rows:
         due = [int(d) for d in r["days"].split(",") if d != ""] or None
+        pf_raw = r["paused_from"] if "paused_from" in r.keys() else ""
+        pu_raw = r["paused_until"] if "paused_until" in r.keys() else ""
+        paused = (
+            (date.fromisoformat(pf_raw), date.fromisoformat(pu_raw))
+            if pf_raw and pu_raw
+            else None
+        )
         chain = recent_chain(
-            logs, r["name"], due, n=window, logged_by_day=logged_by_day
+            logs,
+            r["name"],
+            due,
+            n=window,
+            logged_by_day=logged_by_day,
+            paused=paused,
         )
         if not chain:
             continue
@@ -189,7 +229,11 @@ def struggling_habits(
         if rate >= threshold:
             continue
         cur, longest = compute_streak(
-            logs, r["name"], due_weekdays=due, logged_by_day=logged_by_day
+            logs,
+            r["name"],
+            due_weekdays=due,
+            logged_by_day=logged_by_day,
+            paused=paused,
         )
         if longest == 0:  # never started — not a failing habit, just an unbegun one
             continue
@@ -279,13 +323,14 @@ def missed_last_due_day(
     lookback: int = 400,
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
+    paused: tuple[date, date] | None = None,
 ) -> bool:
     """True if the most recent prior due day was missed — the 'never miss twice' trigger."""
     if today is None:
         today = date.today()
     for i in range(1, lookback):
         d = today - timedelta(days=i)
-        if not _is_due(d, due_weekdays):
+        if not _is_due(d, due_weekdays, paused):
             continue
         return not any(
             _matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day)
