@@ -113,7 +113,9 @@ class DigestHandlers:
             self.baseline.compute_and_save_weekly(self.logs)
             text = await self.planner.digest()
             self._save(text, label="digest")
-            msg = await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            msg = await update.message.reply_text(
+                self._to_html(text), parse_mode="HTML"
+            )
             await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Digest failed: {e}")
@@ -134,7 +136,9 @@ class DigestHandlers:
         try:
             text = await self.planner.daily_digest(target_date=target)
             self._save(text, label="daily")
-            msg = await update.message.reply_text(self._to_html(text), parse_mode="HTML")
+            msg = await update.message.reply_text(
+                self._to_html(text), parse_mode="HTML"
+            )
             await voice.offer(self.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"Daily digest failed: {e}")

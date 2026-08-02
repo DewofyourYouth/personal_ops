@@ -613,7 +613,9 @@ async def handle_voice_speak(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await safe_answer(query, "🔊 Synthesizing…")
     msg = query.message
     text = msg.text or msg.caption or ""
-    await voice.speak(context.bot, msg.chat_id, text, reply_to_message_id=msg.message_id)
+    await voice.speak(
+        context.bot, msg.chat_id, text, reply_to_message_id=msg.message_id
+    )
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):

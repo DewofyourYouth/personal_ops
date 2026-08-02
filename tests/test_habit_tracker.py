@@ -6,8 +6,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from habit_tracker import (SHABBAT, _is_due, anchor_flow_state, compute_streak,
-                           load_habit_logs, missed_last_due_day, recent_chain)
+from habit_tracker import (
+    SHABBAT,
+    _is_due,
+    anchor_flow_state,
+    compute_streak,
+    load_habit_logs,
+    missed_last_due_day,
+    recent_chain,
+)
 from logs import Logs
 
 
@@ -364,7 +371,10 @@ def test_recent_chain_skips_paused_days(tmp_path):
     monday = date(2026, 6, 1)
     sunday = date(2026, 5, 31)
     # Logged on Sunday and Monday; Tuesday (today) is paused and unlogged.
-    logged_by_day = {sunday.isoformat(): ["5:30 wake"], monday.isoformat(): ["5:30 wake"]}
+    logged_by_day = {
+        sunday.isoformat(): ["5:30 wake"],
+        monday.isoformat(): ["5:30 wake"],
+    }
     chain = recent_chain(
         logs,
         "5:30 wake",

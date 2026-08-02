@@ -20,6 +20,9 @@ def _dt(iso: str) -> datetime:
 
 def _make_store(habits: list[dict] | None = None):
     store = MagicMock()
+    for h in habits or []:
+        h.setdefault("paused_from", None)
+        h.setdefault("paused_until", None)
     store.sections.return_value = {"Morning": habits} if habits else {}
     return store
 

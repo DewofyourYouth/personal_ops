@@ -308,7 +308,7 @@ class HabitStore:
                     "UPDATE habits SET paused_from = ?, paused_until = ? WHERE id = ?",
                     (start.isoformat(), until.isoformat(), h["id"]),
                 )
-                return display
+                return h["name"]
         return None
 
     def resume_by_name(self, name: str) -> str | None:
@@ -321,7 +321,7 @@ class HabitStore:
                     "UPDATE habits SET paused_from = '', paused_until = '' WHERE id = ?",
                     (h["id"],),
                 )
-                return display
+                return h["name"]
         return None
 
     # --- Identity (many-to-many: a habit votes for several identities) ---
