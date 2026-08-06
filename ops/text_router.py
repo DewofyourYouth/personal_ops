@@ -1035,6 +1035,25 @@ class TextRouter:
             self.food_registry.suppress_prompt(proposal["alias"])
             await query.edit_message_text("👍 Won't ask again for a while.")
 
+    async def _estimate_food_retrying(
+        self, text: str, correction: str = ""
+    ) -> dict | None:
+        """planner.estimate_food, with one retry — Anthropic hiccups (timeouts, rate
+        limits) are usually transient, and silently falling back to a macro-less log
+        entry on the first failure is worse than one extra call. Logs both failures
+        so a persistent problem is visible instead of just showing up as unexplained
+        macro-less entries in /macros."""
+        for attempt in (1, 2):
+            try:
+                estimate = await self.planner.estimate_food(text, correction)
+                if estimate:
+                    return estimate
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "estimate_food failed (attempt %d/2) for %r", attempt, text
+                )
+        return None
+
     async def try_handle_food_adjust(self, update: Update) -> bool:
         """If a food estimate is awaiting a portion correction, re-estimate from the
         user's reply. Returns True if it consumed the message."""
@@ -1043,10 +1062,7 @@ class TextRouter:
         if not pending or not pending.get("adjusting"):
             return False
         correction = update.message.text.strip()
-        try:
-            estimate = await self.planner.estimate_food(pending["raw"], correction)
-        except Exception:
-            estimate = None
+        estimate = await self._estimate_food_retrying(pending["raw"], correction)
         if not estimate:
             pending["adjusting"] = False
             await update.message.reply_text(
@@ -1759,10 +1775,7 @@ class TextRouter:
                 remainder = " + ".join(
                     _part_display_text(p, m) for p, m in unmatched_parts
                 )
-                try:
-                    llm_estimate = await self.planner.estimate_food(remainder)
-                except Exception:
-                    llm_estimate = None
+                llm_estimate = await self._estimate_food_retrying(remainder)
                 if llm_estimate:
                     merged = known_items + llm_estimate["items"]
                     estimate = {"items": merged, "total": _estimate_total(merged)}
@@ -1771,10 +1784,7 @@ class TextRouter:
                 # LLM call, but still confirm since we're not fully certain.
                 estimate = {"items": known_items, "total": _estimate_total(known_items)}
             else:
-                try:
-                    estimate = await self.planner.estimate_food(content)
-                except Exception:
-                    estimate = None
+                estimate = await self._estimate_food_retrying(content)
 
             if estimate:
                 self._awaiting_food[chat_id] = {
@@ -1789,11 +1799,13 @@ class TextRouter:
                     parse_mode="HTML",
                 )
                 return
-            # No usable estimate — fall back to logging the raw description.
+            # No usable estimate even after a retry — fall back to logging the raw
+            # description, but say so plainly so it isn't mistaken for a normal log
+            # with macros just not shown (this entry won't count toward /macros totals).
             entry_id = self.logs.write(tag, content, extra=extra)
             self._last_food_entry[chat_id] = entry_id
             await reply(
-                f"🍽 Logged: {content}",
+                f"🍽 Logged (no macro estimate — nutrition lookup failed): {content}",
                 reply_markup=self._entry_keyboard(entry_id, tag, confidence, extra),
             )
             return
