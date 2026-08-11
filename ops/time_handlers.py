@@ -278,7 +278,9 @@ class TimeHandlers:
             parse_mode="HTML",
         )
 
-    async def cmd_timer_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_timer_status(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         if update.effective_user.id != self.allowed_user:
             return
         chat_id = update.effective_chat.id
@@ -295,7 +297,9 @@ class TimeHandlers:
             parse_mode="HTML",
         )
 
-    async def cmd_timer_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_timer_cancel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         if update.effective_user.id != self.allowed_user:
             return
         chat_id = update.effective_chat.id

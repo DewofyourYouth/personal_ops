@@ -30,9 +30,7 @@ class TimeTracker:
         self.db.ensure_schema(_RUNNING_DDL)
 
     def running(self, chat_id: int) -> dict | None:
-        rows = self.db.query(
-            "SELECT * FROM time_running WHERE chat_id = ?", (chat_id,)
-        )
+        rows = self.db.query("SELECT * FROM time_running WHERE chat_id = ?", (chat_id,))
         return dict(rows[0]) if rows else None
 
     def start(self, chat_id: int, description: str, project: str = "") -> None:
