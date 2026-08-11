@@ -1227,11 +1227,21 @@ class Planner:
         b64 = base64.standard_b64encode(image_bytes).decode("ascii")
         prompt = "Estimate the nutrition of the food in this photo."
         if hint:
-            prompt += f" The user says: {hint}."
+            prompt += (
+                f" The user says: {hint}. If that states a quantity or weight, trust "
+                "it over your own visual read of portion size."
+            )
         prompt += (
             " If a nutrition label is visible, read it; otherwise identify the food and "
-            "estimate from general knowledge. Split it into component items with realistic "
-            "portions. If there is no food in the image, return no items."
+            "estimate from general knowledge. To judge portion size, look for scale "
+            "references actually in the photo — the size of the plate/bowl/cup/glass "
+            "against standard dinnerware (~26-28cm dinner plate, ~15cm side plate, "
+            "~350ml mug, ~250ml glass), cutlery, a hand, or packaging with a printed "
+            "size/weight — rather than defaulting to a generic 'typical serving'. State "
+            "each portion as the concrete quantity that scale reference implies (e.g. "
+            "'~180g', '~300ml'), not a textbook serving size, and let that quantity "
+            "drive the kcal/macro numbers. Split the meal into component items. If "
+            "there is no food in the image, return no items."
         )
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -1275,7 +1285,10 @@ class Planner:
             system=(
                 "Estimate the nutrition of food shown in a photo. Prefer reading a visible "
                 "nutrition label; otherwise identify the food and estimate kcal/protein/fat/"
-                "carbs per item from general knowledge. Estimates are approximate — fine."
+                "carbs per item from general knowledge, calibrating portion size against "
+                "scale references visible in the photo (dinnerware, cutlery, hands, "
+                "packaging) rather than assuming a typical serving. Estimates are "
+                "approximate — fine."
             ),
             messages=[
                 {

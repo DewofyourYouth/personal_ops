@@ -591,6 +591,22 @@ def _part_display_text(item_text: str, mult: float) -> str:
     return f"{item_text} x{mult:g}" if mult != 1 else item_text
 
 
+def _apply_registry_defaults(estimate: dict, food_registry) -> dict:
+    """Swap in the user's saved defaults for any vision-identified item that matches
+    the food registry, in place of the model's per-photo guess — the same "your own
+    numbers beat a fresh guess" rule the text `food:` path applies via `_registry_items`.
+    Unmatched items keep whatever the vision call estimated."""
+    items = estimate["items"]
+    parts = [(item.get("name", ""), 1.0) for item in items]
+    known_items, unmatched_parts, _ = _registry_items(parts, food_registry)
+    if not known_items:
+        return estimate
+    unmatched_names = {p[0] for p in unmatched_parts}
+    kept = [i for i in items if i.get("name", "") in unmatched_names]
+    merged = known_items + kept
+    return {"items": merged, "total": _estimate_total(merged)}
+
+
 class TextRouter:
     def __init__(self, bot, services, shabbat, allowed_user: int) -> None:
         self.bot = bot
@@ -878,6 +894,7 @@ class TextRouter:
                 parse_mode="HTML",
             )
             return
+        estimate = _apply_registry_defaults(estimate, self.food_registry)
 
         raw = hint or "this"
         self._awaiting_food[chat_id] = {
