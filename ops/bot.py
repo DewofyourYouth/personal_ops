@@ -64,6 +64,7 @@ from tg_common import (
     mono_table,
     safe_answer,
 )
+from time_tracker import TimeTracker
 from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
@@ -95,6 +96,7 @@ backlog_ = Backlog(LOG_DIR)
 reminders = Reminders()
 hypotheses_ = Hypotheses(logs.db)
 food_registry_ = FoodRegistry(logs.db)
+time_tracker_ = TimeTracker(logs.db)
 gcal_ = GCal()
 context_ = Context()
 planner_ = Planner(MODEL, logs, context_)
@@ -1007,6 +1009,7 @@ def main():
         reminders=reminders,
         hypotheses=hypotheses_,
         food_registry=food_registry_,
+        time_tracker=time_tracker_,
         allowed_user=ALLOWED_USER,
         quiet_window=quiet_window_,
     )

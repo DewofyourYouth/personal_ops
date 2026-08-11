@@ -101,6 +101,12 @@ TAGS = [
         in_picker=True,
     ),
     Tag(
+        "time",
+        "a block of time spent on an activity or project, reported with a duration",
+        prefixes=("time:",),
+        in_picker=True,
+    ),
+    Tag(
         "injection", "a medication injection", prefixes=("injection:", "shot:", "jab:")
     ),
     Tag(

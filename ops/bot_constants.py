@@ -80,6 +80,8 @@ HELP_SECTIONS = {
 /foodlog — today's food with macro totals (net of any retractions)
 /macros week|month|quarter|year — rolling macro totals, averages, and foods consumed
 /undofood — retract (not delete) a food entry from today
+/time — today's time log with total
+/timereport week|month|quarter|year — rolling time totals, by-project breakdown, itemized entries
 /grocery — shared grocery checklist (<code>/addgrocery</code> to add, <code>/grocerycopy</code> to copy, <code>/cleargrocery</code> to reset)
 /backlog — someday items, grouped by domain
 /logs — today's log entries
@@ -91,6 +93,8 @@ HELP_SECTIONS = {
 🍽 foods you've logged before are recognized automatically (no re-estimating); <code>#default protein shake = 130kcal 24p 0f 3c</code> to seed one yourself
 ↩️ <code>didn't finish the X</code> / <code>#unlog</code> / <code>scratch that</code> — retract a food entry (never deletes — appends a negation, original stays visible)
 📷 send a food / nutrition-label <b>photo</b> → macros to confirm
+<code>time: 1h30m client call #acme</code> — log time spent, with an optional #project tag
+/timerstart, /timerstop, /timerstatus, /timercancel — live timer for the thing you're doing now
 <code>pick up eggs and milk at the grocery</code> — add grocery items
 📎 upload an <b>HTML/text file</b> → tasks to /backlog + insights
 🎙 <b>voice notes</b> are transcribed automatically
@@ -169,6 +173,12 @@ BOT_COMMANDS = [
     ("foodlog", "Today's food log with macro totals"),
     ("macros", "Macro results for week, month, quarter, or year"),
     ("undofood", "Retract (not delete) a food entry from today"),
+    ("time", "Today's time log with total"),
+    ("timereport", "Time totals for week, month, quarter, or year"),
+    ("timerstart", "Start a live timer for an activity or project"),
+    ("timerstop", "Stop the running timer and log it"),
+    ("timerstatus", "What's running and elapsed so far"),
+    ("timercancel", "Discard the running timer without logging"),
     ("backlog", "Someday items, grouped by domain"),
     ("logs", "Today's log entries"),
     ("hypotheses", "Open hypotheses and their follow-ups"),

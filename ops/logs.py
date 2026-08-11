@@ -40,6 +40,30 @@ def _parse_macros(content: str) -> dict | None:
     return {"kcal": kcal, "protein_g": protein, "fat_g": fat, "carbs_g": carbs}
 
 
+# Mirrors the format written by time_handlers._time_log_content, e.g.
+# "reviewing contract — 2h 30m [project: acme]" or "deep work — 45m". Anchored to
+# the end of the string so a stray em-dash inside a real description can't false-match.
+_TIME_ENTRY_RE = re.compile(
+    r"—\s*(?:(?P<h>\d+(?:\.\d+)?)h)?\s*(?:(?P<m>\d+(?:\.\d+)?)m)?"
+    r"(?:\s*\[project:\s*(?P<project>[^\]]*)\])?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_time_entry(content: str) -> dict | None:
+    """Pull (minutes, project) out of a time entry's summary line, or None if
+    the entry has no parseable duration. Mirrors _parse_macros above."""
+    m = _TIME_ENTRY_RE.search(content)
+    if not m or (not m.group("h") and not m.group("m")):
+        return None
+    hours = float(m.group("h") or 0)
+    minutes = float(m.group("m") or 0)
+    return {
+        "minutes": hours * 60 + minutes,
+        "project": (m.group("project") or "").strip(),
+    }
+
+
 logger = logging.getLogger(__name__)
 
 # Mood: 1-5 (bad→great). Energy: 1-3 (drained→high).

@@ -15,6 +15,7 @@ from food_handlers import FoodHandlers
 from grocery import GroceryHandlers
 from habit_handlers import HabitHandlers
 from routines import RoutineHandlers
+from time_handlers import TimeHandlers
 
 
 def build_plugins(bot, services: SimpleNamespace) -> list:
@@ -32,6 +33,7 @@ def build_plugins(bot, services: SimpleNamespace) -> list:
         FoodHandlers(bot, services.logs, services.allowed_user),
         RoutineHandlers(bot, services.logs, services.context, services.allowed_user),
         GroceryHandlers(bot, services.logs, services.allowed_user),
+        TimeHandlers(bot, services.logs, services.time_tracker, services.allowed_user),
     ]
 
 
