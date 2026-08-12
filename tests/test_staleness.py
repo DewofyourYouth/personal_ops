@@ -83,7 +83,7 @@ class TestStaleTracks:
 
     def test_no_entries_and_no_prompt_is_stale(self):
         checker = self._checker(last_entry_ts=None, last_prompted_ts=None)
-        assert "checkin" in checker.stale_tracks()
+        assert "food" in checker.stale_tracks()
 
     def test_recent_entry_is_not_stale(self):
         # Entry logged 1 hour ago; threshold is 4h → not stale
@@ -98,7 +98,7 @@ class TestStaleTracks:
 
         old = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=5)).isoformat()
         checker = self._checker(last_entry_ts=old)
-        assert "checkin" in checker.stale_tracks()
+        assert "food" in checker.stale_tracks()
 
     def test_recently_prompted_suppresses_nudge(self):
         from zoneinfo import ZoneInfo
@@ -117,7 +117,7 @@ class TestStaleTracks:
         old_entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=6)).isoformat()
         old_prompt = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=5)).isoformat()
         checker = self._checker(last_entry_ts=old_entry, last_prompted_ts=old_prompt)
-        assert "checkin" in checker.stale_tracks()
+        assert "food" in checker.stale_tracks()
 
     def test_quiet_window_suppresses_all_tracks(self):
         checker = self._checker(last_entry_ts=None, should_prompt=False)

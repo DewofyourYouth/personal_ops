@@ -1,10 +1,11 @@
 """StalenessChecker — sends nudges when a tracked log tag hasn't been written.
 
 Deterministic domain service; no Telegram concerns beyond `bot.send_message`.
-`check_and_prompt` is the scheduled entry point; everything else is pure data.
+`check_and_prompt` is the scheduled entry point for the rolling-threshold tracks;
+everything else is pure data.
 
 Per-track thresholds (hours) are loaded from a JSON config file:
-    {"checkin": 4, "food": 6, "metric:sleep": 22}
+    {"food": 6, "metric:sleep": 22}
 Defaults are applied for any track not present in the file. A track prefixed
 "metric:" (e.g. "metric:sleep") looks up its last entry in the metrics table
 by key, not the entries table by tag — metrics (sleep, weight, steps, ...)
@@ -15,6 +16,11 @@ A track is "stale" when:
 1. We are currently in a should-prompt window (waking hours, not a quiet day).
 2. The last entry with that tag is older than the configured threshold.
 3. We haven't already sent a staleness nudge for this track within the same window.
+
+"checkin" is NOT one of these rolling-threshold tracks — a rolling "N hours since
+last checkin" nag drifts (its own nudge resets the clock) and can fire more than
+the 3x/day the user actually wants. It instead gets fixed daily slots (morning/
+noon/evening) via `checkin_due()`, called from bot.py at 3 specific cron times.
 """
 
 import json
@@ -31,13 +37,14 @@ CREATE TABLE IF NOT EXISTS staleness_prompts (
 );
 """
 
-_DEFAULT_CONFIG: dict[str, int] = {"checkin": 4}
+_DEFAULT_CONFIG: dict[str, int] = {"food": 4}
 
 _NUDGES: dict[str, str] = {
-    "checkin": "👋 How are you doing? (checkin:)",
     "food": "🍽 Have you eaten? (food:)",
     "metric:sleep": "😴 No sleep logged — rough guess is fine: /sleep 7",
 }
+
+CHECKIN_NUDGE_TEXT = "👋 How are you doing? (checkin:)"
 
 
 class StalenessChecker:
@@ -55,6 +62,16 @@ class StalenessChecker:
                 except Exception:
                     pass
         db.ensure_schema(_DDL)
+
+    def checkin_due(self, since: datetime) -> bool:
+        """True if a checkin nudge should fire right now: we're in a prompt
+        window, and no #checkin entry has landed since `since` (the start of
+        the current morning/noon/evening slot) — so an early, proactive
+        checkin suppresses the later scheduled nudge for that slot."""
+        if not self._qw.should_prompt():
+            return False
+        last = self._last_entry_ts("checkin")
+        return last is None or last < since
 
     def _last_entry_ts(self, track: str) -> "datetime | None":
         if track.startswith("metric:"):

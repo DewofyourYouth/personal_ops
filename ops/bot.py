@@ -106,6 +106,7 @@ shabbat_ = Shabbat(LOG_DIR)
 
 from pathlib import Path as _Path
 from quiet_window import QuietWindow as _QuietWindow
+from staleness import CHECKIN_NUDGE_TEXT as _CHECKIN_NUDGE_TEXT
 from staleness import StalenessChecker as _StalenessChecker
 
 _CHAGIM_PATH = _Path(__file__).parent / "chagim.json"
@@ -401,6 +402,29 @@ async def weekly_digest():
 
 async def _staleness_check():
     await staleness_.check_and_prompt(_bot, ALLOWED_USER)
+
+
+# Checkin nudges: exactly 3/day (morning/noon/evening), not a rolling "N hours
+# since last checkin" nag — that drifts and can fire more than 3x/day. Each slot
+# only nudges if no #checkin has landed since the previous slot's boundary, so
+# checking in early (proactively) suppresses the later scheduled nudge.
+async def _checkin_nudge(since_hour: int) -> None:
+    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    since = now.replace(hour=since_hour, minute=0, second=0, microsecond=0)
+    if staleness_.checkin_due(since):
+        await _bot.send_message(chat_id=ALLOWED_USER, text=_CHECKIN_NUDGE_TEXT)
+
+
+async def _checkin_morning():  # slot: [00:00, 10:00)
+    await _checkin_nudge(0)
+
+
+async def _checkin_noon():  # slot: [10:00, 14:00)
+    await _checkin_nudge(10)
+
+
+async def _checkin_evening():  # slot: [14:00, 20:00)
+    await _checkin_nudge(14)
 
 
 def _mine_db_path() -> str:
@@ -951,6 +975,24 @@ async def _post_init(application):
                 "func": _staleness_check,
                 "trigger": "interval",
                 "kwargs": {"minutes": 30},
+            },
+            {
+                "id": "checkin_morning",
+                "func": _checkin_morning,
+                "trigger": "cron",
+                "kwargs": {"hour": 10, "minute": 0},
+            },
+            {
+                "id": "checkin_noon",
+                "func": _checkin_noon,
+                "trigger": "cron",
+                "kwargs": {"hour": 14, "minute": 0},
+            },
+            {
+                "id": "checkin_evening",
+                "func": _checkin_evening,
+                "trigger": "cron",
+                "kwargs": {"hour": 20, "minute": 0},
             },
         ],
     )
