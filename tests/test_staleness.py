@@ -235,4 +235,7 @@ class TestConfigLoading:
         qw = _make_quiet_window()
         checker = StalenessChecker(db, qw, config_path="/nonexistent/config.json")
 
-        assert "checkin" in checker._config
+        assert "food" in checker._config  # the real rolling-threshold default
+        assert (
+            "checkin" not in checker._config
+        )  # checkin uses fixed daily slots, not thresholds
