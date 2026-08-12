@@ -128,15 +128,15 @@ class TestStaleTracks:
 
         # Entry 3 hours ago; custom threshold = 2h → stale
         entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=3)).isoformat()
-        checker = self._checker(last_entry_ts=entry, config={"checkin": 2})
-        assert "checkin" in checker.stale_tracks()
+        checker = self._checker(last_entry_ts=entry, config={"food": 2})
+        assert "food" in checker.stale_tracks()
 
     def test_custom_threshold_not_yet_exceeded(self):
         from zoneinfo import ZoneInfo
 
         # Entry 1 hour ago; custom threshold = 2h → not stale
         entry = (datetime.now(ZoneInfo(_TZ_STR)) - timedelta(hours=1)).isoformat()
-        checker = self._checker(last_entry_ts=entry, config={"checkin": 2})
+        checker = self._checker(last_entry_ts=entry, config={"food": 2})
         assert checker.stale_tracks() == []
 
     def test_metric_prefixed_track_reads_the_metrics_table(self):
