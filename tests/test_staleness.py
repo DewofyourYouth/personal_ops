@@ -236,4 +236,6 @@ class TestConfigLoading:
         checker = StalenessChecker(db, qw, config_path="/nonexistent/config.json")
 
         assert "food" in checker._config  # the real rolling-threshold default
-        assert "checkin" not in checker._config  # checkin uses fixed daily slots, not thresholds
+        assert (
+            "checkin" not in checker._config
+        )  # checkin uses fixed daily slots, not thresholds
