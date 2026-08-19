@@ -21,15 +21,20 @@ from habit_handlers import HabitStore, exact_habit_match
 from logs import Logs
 from text_router import (
     TextRouter,
+    _ADD_HABIT_PREFIX_RE,
+    _ADD_HABIT_SUFFIX_RE,
     _AGENDA_DEST_RE,
     _extract_agenda_item,
     _is_nutrition_breakdown,
     _parse_metric_body,
     _food_negative_signal,
     _PARTIAL_FRACTION_WORDS,
+    _REMOVE_HABIT_PREFIX_RE,
+    _REMOVE_HABIT_SUFFIX_RE,
     _RETRACT_BARE_RE,
     _RETRACT_NAMED_RE,
     _RETRACT_PARTIAL_RE,
+    _STOP_TRACKING_HABIT_RE,
 )
 
 classify = TextRouter._classify_entry
@@ -156,6 +161,66 @@ def test_agenda_destination_does_not_fire_without_the_phrase():
     'agenda' elsewhere, or none at all, must not trigger agenda routing."""
     assert not _AGENDA_DEST_RE.search("the meeting agenda was long")
     assert not _AGENDA_DEST_RE.search("add milk to the shopping list")
+
+
+def _add_habit_name(text: str) -> str | None:
+    m = _ADD_HABIT_PREFIX_RE.match(text.strip()) or _ADD_HABIT_SUFFIX_RE.match(
+        text.strip()
+    )
+    return m.group(1).strip(" .,:;-") if m else None
+
+
+def _remove_habit_name(text: str) -> str | None:
+    m = (
+        _REMOVE_HABIT_PREFIX_RE.match(text.strip())
+        or _REMOVE_HABIT_SUFFIX_RE.match(text.strip())
+        or _STOP_TRACKING_HABIT_RE.match(text.strip())
+    )
+    return m.group(1).strip(" .,:;-") if m else None
+
+
+def test_add_habit_phrasing_extracts_name():
+    """'add X habit' and 'add habit X' (and create/start/new variants) are both
+    recognised, whichever side of the name the word 'habit' lands on."""
+    for text, name in [
+        ("add stretch habit", "stretch"),
+        ("add a stretch habit", "stretch"),
+        ("Start meditation habit.", "meditation"),
+        ("new habit: cold shower", "cold shower"),
+        ("add habit called drink water", "drink water"),
+        ("create habit water drinking", "water drinking"),
+    ]:
+        assert _add_habit_name(text) == name, text
+
+
+def test_add_habit_phrasing_does_not_fire_on_unrelated_add_requests():
+    """An ordinary 'add X to my agenda'/'add to calendar' utterance must not be
+    misread as a habit-creation request just because it starts with 'add'."""
+    for text in [
+        "add milk to my agenda",
+        "add task to buy groceries",
+        "add to calendar: dentist tomorrow",
+        "new event: dentist",
+    ]:
+        assert _add_habit_name(text) is None, text
+
+
+def test_remove_habit_phrasing_extracts_name():
+    """'remove/delete/drop/untrack habit X', its 'X habit' mirror, and
+    'stop tracking X' are all recognised as the natural-language delete."""
+    for text, name in [
+        ("remove habit stretch", "stretch"),
+        ("remove stretch habit", "stretch"),
+        ("delete the stretch habit", "stretch"),
+        ("stop tracking cold shower", "cold shower"),
+        ("untrack habit: meditation", "meditation"),
+    ]:
+        assert _remove_habit_name(text) == name, text
+
+
+def test_remove_habit_phrasing_does_not_fire_on_unrelated_text():
+    assert _remove_habit_name("remove the milk from the shopping list") is None
+    assert _remove_habit_name("stretch habit was hard today") is None
 
 
 def test_exact_habit_match_is_conservative(tmp_path):

@@ -324,6 +324,16 @@ class HabitStore:
                 return h["name"]
         return None
 
+    def remove_by_name(self, name: str) -> str | None:
+        """Delete a habit definition (identities + row) by display/raw name match —
+        past log entries are untouched, only the tracked definition goes away.
+        Returns the matched display name, or None if nothing matched."""
+        h = self._habit_by_name(name)
+        if h is None:
+            return None
+        self.remove(h["id"])
+        return self.context.habit_display_name(h["name"])
+
     # --- Identity (many-to-many: a habit votes for several identities) ---
 
     def _habit_by_name(self, name: str) -> dict | None:
@@ -1194,6 +1204,30 @@ class HabitHandlers:
 
     # --- Handlers: CRUD ---
 
+    def add_habit_from_text(self, raw: str) -> str:
+        """Parse '<name> [mon,wed,fri]' and create a new tracked habit. Shared by
+        /addhabit and the natural-language 'add X habit' router intercept."""
+        days = None
+        tag_m = re.search(r"\[([^\]]+)\]$", raw)
+        if tag_m:
+            days = [
+                Context._DAY_NAMES[d.strip()]
+                for d in tag_m.group(1).split(",")
+                if d.strip() in Context._DAY_NAMES
+            ] or None
+            raw = raw[: tag_m.start()].strip()
+        self.store.add(raw, days=days)
+        return raw
+
+    async def remove_habit_by_text(self, name: str) -> str | None:
+        """Resolve a typed/spoken habit name (exact or fuzzy) and delete it — the
+        natural-language mirror of /managehabits' 🗑 button. Returns the removed
+        habit's display name, or None if nothing matched."""
+        resolved = await self._resolve_or_match(name)
+        if not resolved:
+            return None
+        return self.store.remove_by_name(resolved)
+
     async def cmd_add_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addhabit <name> [days]  — e.g. /addhabit Stretch [mon,wed,fri]"""
         if update.effective_user.id != self.allowed_user:
@@ -1205,18 +1239,9 @@ class HabitHandlers:
                 parse_mode="HTML",
             )
             return
-        days = None
-        tag_m = re.search(r"\[([^\]]+)\]$", raw)
-        if tag_m:
-            days = [
-                Context._DAY_NAMES[d.strip()]
-                for d in tag_m.group(1).split(",")
-                if d.strip() in Context._DAY_NAMES
-            ] or None
-            raw = raw[: tag_m.start()].strip()
-        self.store.add(raw, days=days)
+        added = self.add_habit_from_text(raw)
         await update.message.reply_text(
-            f"➕ Added habit: <b>{html.escape(raw)}</b>", parse_mode="HTML"
+            f"➕ Added habit: <b>{html.escape(added)}</b>", parse_mode="HTML"
         )
 
     async def cmd_edit_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

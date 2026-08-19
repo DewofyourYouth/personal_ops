@@ -1077,6 +1077,11 @@ def main():
     # Hand the grocery plugin to the router so confirmed voice transcripts opening
     # with "grocery"/"groceries" route into the list (the plugin owns the logic).
     router.grocery = next((p for p in plugins if hasattr(p, "handle_voice_text")), None)
+    # Hand the habit plugin to the router so "add X habit" / "remove habit X"
+    # utterances route into the tracked-habits list (the plugin owns the logic).
+    router.habit_feature = next(
+        (p for p in plugins if hasattr(p, "add_habit_from_text")), None
+    )
     router.plugins = plugins
     router.register(app)
 

@@ -206,6 +206,35 @@ _AGENDA_DEST_RE = re.compile(
     r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
 )
 
+# "add X habit" / "add habit X" — natural-language habit creation, the conversational
+# mirror of /addhabit. The word "habit" can land right after the imperative verb or
+# trail the name, so two shapes are matched.
+_ADD_HABIT_PREFIX_RE = re.compile(
+    r"^(?:add|create|start|new)\s+(?:a\s+|an\s+)?habit"
+    r"(?:\s+(?:called|named))?\s*[:\-]?\s*(.+)$",
+    re.IGNORECASE,
+)
+_ADD_HABIT_SUFFIX_RE = re.compile(
+    r"^(?:add|create|start|new)\s+(?:a\s+|an\s+)?(.+?)\s+habit\.?$",
+    re.IGNORECASE,
+)
+
+# "remove/delete habit X" / "remove X habit" / "stop tracking X" — the natural-
+# language mirror of /managehabits' 🗑 delete button.
+_REMOVE_HABIT_PREFIX_RE = re.compile(
+    r"^(?:remove|delete|drop|untrack)\s+(?:the\s+|my\s+)?habit"
+    r"(?:\s+(?:called|named))?\s*[:\-]?\s*(.+)$",
+    re.IGNORECASE,
+)
+_REMOVE_HABIT_SUFFIX_RE = re.compile(
+    r"^(?:remove|delete|drop|untrack)\s+(?:the\s+|my\s+)?(.+?)\s+habit\.?$",
+    re.IGNORECASE,
+)
+_STOP_TRACKING_HABIT_RE = re.compile(
+    r"^stop\s+tracking\s+(?:the\s+|my\s+)?(.+?)(?:\s+habit)?\.?$",
+    re.IGNORECASE,
+)
+
 # A cheap pre-filter for whether a task/agenda note might name more than one distinct
 # item ("add applying to jobs and cleaning the room to today's agenda"). Only gates
 # whether the (LLM-backed) split is worth attempting — never does the split itself,
@@ -627,6 +656,9 @@ class TextRouter:
         # Set by bot.py — the grocery plugin, so confirmed voice transcripts opening
         # with "grocery"/"groceries" route into the list instead of a plain log.
         self.grocery = None
+        # Set by bot.py — the habit plugin, so "add X habit" / "remove habit X"
+        # utterances route into the tracked-habits list instead of a plain log.
+        self.habit_feature = None
         # Set by bot.py after plugins are built — used to collect plugin classification
         # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
         self.plugins: list = []
@@ -1646,6 +1678,43 @@ class TextRouter:
                 self.agenda_feature.commit_agenda(items, source="user")
                 await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
                 return
+
+        # "add X habit" / "add habit X" / "remove habit X" / "stop tracking X" —
+        # natural-language habit list management, the conversational mirror of
+        # /addhabit and /managehabits' delete button. Checked before the "add to"
+        # queue matcher below since it also starts with an imperative "add".
+        if self.habit_feature:
+            stripped = text.strip()
+            add_m = _ADD_HABIT_PREFIX_RE.match(stripped) or _ADD_HABIT_SUFFIX_RE.match(
+                stripped
+            )
+            if add_m:
+                name = add_m.group(1).strip(" .,:;-")
+                if name:
+                    added = self.habit_feature.add_habit_from_text(name)
+                    await reply(
+                        f"➕ Added habit: <b>{html.escape(added)}</b>",
+                        parse_mode="HTML",
+                    )
+                    return
+
+            remove_m = (
+                _REMOVE_HABIT_PREFIX_RE.match(stripped)
+                or _REMOVE_HABIT_SUFFIX_RE.match(stripped)
+                or _STOP_TRACKING_HABIT_RE.match(stripped)
+            )
+            if remove_m:
+                name = remove_m.group(1).strip(" .,:;-")
+                if name:
+                    removed = await self.habit_feature.remove_habit_by_text(name)
+                    if removed:
+                        await reply(
+                            f"🗑 Removed habit: <b>{html.escape(removed)}</b>",
+                            parse_mode="HTML",
+                        )
+                    else:
+                        await reply(f"No habit matching “{html.escape(name)}”.")
+                    return
 
         # queue for <day> [: | ,] <item> — add to a future agenda (works with voice)
         if re.match(r"^(?:queue|schedule|defer|add to)\b", lower):
