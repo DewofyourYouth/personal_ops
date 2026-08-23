@@ -6,6 +6,7 @@ without a circular import.
 
 import html
 import random
+import re
 
 from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest
@@ -14,6 +15,31 @@ from bot_constants import ENCOURAGEMENTS
 
 
 TG_MAX_CHARS = 4000  # Telegram hard limit is 4096; leave a small buffer
+
+
+def markdown_to_html(text: str) -> str:
+    """Convert the light markdown an LLM tends to write (headers, **bold**, *italic*)
+    into Telegram HTML, escaping everything else so raw '<'/'&' in the source text
+    can't break parse_mode=HTML or be misread as markup."""
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"^#{1,3}\s*", "", line)
+        if line.strip() == "---":
+            lines.append("")
+            continue
+        # escape plain text segments, preserve bold/italic as HTML tags
+        result = ""
+        last = 0
+        for m in re.finditer(r"\*\*(.+?)\*\*|\*(.+?)\*", line):
+            result += html.escape(line[last : m.start()])
+            if m.group(1) is not None:
+                result += f"<b>{html.escape(m.group(1))}</b>"
+            else:
+                result += f"<i>{html.escape(m.group(2))}</i>"
+            last = m.end()
+        result += html.escape(line[last:])
+        lines.append(result)
+    return "\n".join(lines).strip()
 
 
 def mono_table(headers: list[str], rows: list[list[str]]) -> str:

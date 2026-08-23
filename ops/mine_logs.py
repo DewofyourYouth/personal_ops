@@ -29,10 +29,11 @@ import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 
+from habit_tracker import _matches
 from tags import TEXT_MINING_TAGS
 
 DB_PATH = "ops/log/ops.db"
@@ -75,6 +76,28 @@ THEMES = {
 def _num(v: str) -> float | None:
     m = re.match(r"^-?\d+(\.\d+)?", v.strip())
     return float(m.group(0)) if m else None
+
+
+def active_habit_names(c: sqlite3.Connection) -> set[str]:
+    """Names of habits still tracked and not currently paused. Adherence rows keyed
+    by a logged habit name that doesn't match any of these are ones the user has
+    cancelled or put on hold — reporting on them reads as nagging about something
+    they already stopped, so the adherence sections filter down to this set."""
+    today = date.today().isoformat()
+    rows = c.execute(
+        "SELECT name, paused_until FROM habits WHERE tracked = 1"
+    ).fetchall()
+    return {
+        name for name, paused_until in rows if not paused_until or paused_until < today
+    }
+
+
+def _filter_to_active(names: set[str], active: set[str] | None) -> set[str]:
+    """Keep only logged habit-content strings that word-match a currently active
+    habit name. `active=None` means no habits table was available — don't filter."""
+    if active is None:
+        return names
+    return {n for n in names if any(_matches(a, n) for a in active)}
 
 
 def load_days(c) -> dict[str, dict]:
@@ -235,7 +258,7 @@ class Finding:
     note: str = ""
 
 
-def report(days: dict) -> str:
+def report(days: dict, active_habit_names: set[str] | None = None) -> str:
     out: list[str] = []
     p = out.append
     dated = _dated_only(days)
@@ -377,7 +400,8 @@ def report(days: dict) -> str:
             done_c[h] += 1
         for h in r["missed"]:
             miss_c[h] += 1
-    tracked = [h for h in set(done_c) | set(miss_c) if done_c[h] + miss_c[h] >= MIN_N]
+    candidates = _filter_to_active(set(done_c) | set(miss_c), active_habit_names)
+    tracked = [h for h in candidates if done_c[h] + miss_c[h] >= MIN_N]
     for h in sorted(tracked, key=lambda h: -(done_c[h] + miss_c[h]))[:12]:
         tot = done_c[h] + miss_c[h]
         rate = done_c[h] / tot if tot else 0
@@ -388,10 +412,13 @@ def report(days: dict) -> str:
 def report_for(db_path: str = DB_PATH) -> str:
     """Build the deterministic mining report for a given DB — used by the /mine command
     and the weekly job so they share the CLI's exact logic."""
-    return report(load_days(sqlite3.connect(db_path)))
+    c = sqlite3.connect(db_path)
+    return report(load_days(c), active_habit_names(c))
 
 
-def build_findings(days: dict) -> list[Finding]:
+def build_findings(
+    days: dict, active_habit_names: set[str] | None = None
+) -> list[Finding]:
     """The stats layer for LLM synthesis: every candidate finding, gated BEFORE
     it can reach a prompt. A row only gets verdict="report" if it clears both
     MIN_N_ADVICE and a 95% CI that excludes zero — nothing is filtered by
@@ -670,7 +697,9 @@ def build_findings(days: dict) -> list[Finding]:
             )
         )
 
-    # ⑦ habit adherence — descriptive only, no correlation/causal claim possible
+    # ⑦ habit adherence — descriptive only, no correlation/causal claim possible.
+    # Filtered to currently active habits: a habit the user cancelled or paused
+    # shouldn't keep showing up in adherence advice.
     done_c: dict[str, int] = defaultdict(int)
     miss_c: dict[str, int] = defaultdict(int)
     for r in dated.values():
@@ -678,7 +707,7 @@ def build_findings(days: dict) -> list[Finding]:
             done_c[h] += 1
         for h in r["missed"]:
             miss_c[h] += 1
-    for h in sorted(set(done_c) | set(miss_c)):
+    for h in sorted(_filter_to_active(set(done_c) | set(miss_c), active_habit_names)):
         tot = done_c[h] + miss_c[h]
         if tot < MIN_N_ADVICE:
             continue
@@ -846,7 +875,8 @@ async def advise_for(db_path: str = DB_PATH) -> str:
     """Build findings and run the synthesis for a given DB — used by /mine
     advise and the weekly job. Independent of report_for(): the advice path
     reads structured findings, never the printed report's free text."""
-    findings = build_findings(load_days(sqlite3.connect(db_path)))
+    c = sqlite3.connect(db_path)
+    findings = build_findings(load_days(c), active_habit_names(c))
     return await advise(findings)
 
 
@@ -866,10 +896,11 @@ async def main() -> None:
         print(affect_report(load_affect_pairs(c)))
         return
     days = load_days(c)
-    print(report(days))
+    active = active_habit_names(c)
+    print(report(days, active))
     if args.advise:
         print("\n═══ SYNTHESIS ═══")
-        print(await advise(build_findings(days)))
+        print(await advise(build_findings(days, active)))
 
 
 if __name__ == "__main__":

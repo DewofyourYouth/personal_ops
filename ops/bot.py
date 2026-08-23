@@ -61,6 +61,7 @@ from text_router import (
 from tg_common import (
     inline_keyboard_markup,
     inline_keyboard_rows,
+    markdown_to_html,
     mono_table,
     safe_answer,
 )
@@ -486,7 +487,9 @@ async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if want_advice:
         try:
             advice = await mine_logs.advise_for(_mine_db_path())
-            msg = await update.message.reply_text(advice)
+            msg = await update.message.reply_text(
+                markdown_to_html(advice), parse_mode="HTML"
+            )
             await voice.offer(context.bot, msg)
         except Exception as e:
             await update.message.reply_text(f"(Synthesis failed: {e})")
@@ -506,7 +509,9 @@ async def weekly_mine():
         )
         advice = await mine_logs.advise_for(_mine_db_path())
         msg = await _bot.send_message(
-            chat_id=ALLOWED_USER, text=f"⛏ <b>Weekly log-mining</b>\n\n{advice}"
+            chat_id=ALLOWED_USER,
+            text=f"⛏ <b>Weekly log-mining</b>\n\n{markdown_to_html(advice)}",
+            parse_mode="HTML",
         )
         await voice.offer(_bot, msg)
     except Exception:

@@ -12,8 +12,6 @@ scheduler, because the persistent job store needs picklable callables (a bound
 method holding the Bot isn't picklable).
 """
 
-import html
-import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,7 +23,7 @@ from baseline_tracker import Baseline
 from context import Context
 from logs import Logs
 from planner import Planner
-from tg_common import send_long
+from tg_common import markdown_to_html, send_long
 
 _TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -57,28 +55,6 @@ class DigestHandlers:
         app.add_handler(CommandHandler("insights", self.cmd_insights))
 
     # --- Rendering + persistence ---
-
-    @staticmethod
-    def _to_html(text: str) -> str:
-        lines = []
-        for line in text.splitlines():
-            line = re.sub(r"^#{1,3}\s*", "", line)
-            if line.strip() == "---":
-                lines.append("")
-                continue
-            # escape plain text segments, preserve bold/italic as HTML tags
-            result = ""
-            last = 0
-            for m in re.finditer(r"\*\*(.+?)\*\*|\*(.+?)\*", line):
-                result += html.escape(line[last : m.start()])
-                if m.group(1) is not None:
-                    result += f"<b>{html.escape(m.group(1))}</b>"
-                else:
-                    result += f"<i>{html.escape(m.group(2))}</i>"
-                last = m.end()
-            result += html.escape(line[last:])
-            lines.append(result)
-        return "\n".join(lines).strip()
 
     def _save(self, text: str, label: str = "digest") -> None:
         self._dir.mkdir(exist_ok=True)
@@ -114,7 +90,7 @@ class DigestHandlers:
             text = await self.planner.digest()
             self._save(text, label="digest")
             msg = await update.message.reply_text(
-                self._to_html(text), parse_mode="HTML"
+                markdown_to_html(text), parse_mode="HTML"
             )
             await voice.offer(self.bot, msg)
         except Exception as e:
@@ -137,7 +113,7 @@ class DigestHandlers:
             text = await self.planner.daily_digest(target_date=target)
             self._save(text, label="daily")
             msg = await update.message.reply_text(
-                self._to_html(text), parse_mode="HTML"
+                markdown_to_html(text), parse_mode="HTML"
             )
             await voice.offer(self.bot, msg)
         except Exception as e:
@@ -185,7 +161,7 @@ class DigestHandlers:
             self._save(text, label="daily")
             msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
-                text=f"🌙 <b>Daily digest:</b>\n\n{self._to_html(text)}",
+                text=f"🌙 <b>Daily digest:</b>\n\n{markdown_to_html(text)}",
                 parse_mode="HTML",
             )
             await voice.offer(self.bot, msg)
@@ -206,7 +182,7 @@ class DigestHandlers:
             self._save(text, label="weekly-digest")
             msg = await self.bot.send_message(
                 chat_id=self.allowed_user,
-                text=f"📋 <b>Weekly digest:</b>\n\n{self._to_html(text)}",
+                text=f"📋 <b>Weekly digest:</b>\n\n{markdown_to_html(text)}",
                 parse_mode="HTML",
             )
             await voice.offer(self.bot, msg)

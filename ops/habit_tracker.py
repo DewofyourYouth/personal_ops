@@ -201,6 +201,7 @@ def struggling_habits(
     """
     if logged_by_day is None:
         logged_by_day = load_habit_logs(logs)
+    today = date.today()
     rows = logs.db.query(
         "SELECT name, days, cue, identity, paused_from, paused_until FROM habits "
         "WHERE tracked = 1"
@@ -210,6 +211,11 @@ def struggling_habits(
         due = [int(d) for d in r["days"].split(",") if d != ""] or None
         pf_raw = r["paused_from"] if "paused_from" in r.keys() else ""
         pu_raw = r["paused_until"] if "paused_until" in r.keys() else ""
+        if pu_raw and date.fromisoformat(pu_raw) >= today:
+            # Currently on hold — a paused habit shouldn't read as "struggling",
+            # even while the window still has to reach back past the pause start
+            # to find its last `window` due days.
+            continue
         paused = (
             (date.fromisoformat(pf_raw), date.fromisoformat(pu_raw))
             if pf_raw and pu_raw
