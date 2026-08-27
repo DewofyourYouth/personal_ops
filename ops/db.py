@@ -60,10 +60,13 @@ CREATE TABLE IF NOT EXISTS reminders (
 """
 
 
-# Append-only correction/confirmation events for classifier labels. A row is
-# training data ("this text should be labelled X") and an audit trail — the
-# original entry's first label survives here even after entries.tag is updated
-# to the corrected value for the rest of the app to read.
+# Append-only correction/confirmation events. Originally classifier-only (a row
+# is training data — "this text should be labelled X" — and an audit trail: the
+# entry's first label survives here even after entries.tag is updated to the
+# corrected value). Generalized via the `call_site` column so other interpretive
+# calls (e.g. agenda-item extraction) can log corrections into the same table
+# without polluting the classifier's own retrain loop — every reader of this
+# table must filter by call_site (see Database.label_events_after).
 _CREATE_LABEL_EVENTS = """
 CREATE TABLE IF NOT EXISTS label_events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +168,15 @@ class Database:
         if "extra" not in cols:
             conn.execute(
                 "ALTER TABLE entries ADD COLUMN extra TEXT NOT NULL DEFAULT ''"
+            )
+        # Migration: label_events.call_site — generalizes the table beyond the
+        # classifier (see _CREATE_LABEL_EVENTS). Existing rows are all classifier
+        # events, hence the default.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(label_events)")}
+        if "call_site" not in cols:
+            conn.execute(
+                "ALTER TABLE label_events ADD COLUMN call_site TEXT NOT NULL "
+                "DEFAULT 'classifier'"
             )
         conn.commit()
 
@@ -342,19 +354,27 @@ class Database:
         from_label: str,
         to_label: str,
         source: str = "user_tap",
+        call_site: str = "classifier",
     ) -> int:
         cur = self._conn().execute(
-            "INSERT INTO label_events (ts, ref_entry_id, event_type, from_label, to_label, source) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, ref_entry_id, event_type, from_label, to_label, source),
+            "INSERT INTO label_events "
+            "(ts, ref_entry_id, event_type, from_label, to_label, source, call_site) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ts, ref_entry_id, event_type, from_label, to_label, source, call_site),
         )
         self._conn().commit()
         return cur.lastrowid
 
-    def label_events_after(self, after_id: int) -> list[sqlite3.Row]:
-        """Label events newer than `after_id`, oldest first — the retrain loop's feed."""
+    def label_events_after(
+        self, after_id: int, call_site: str = "classifier"
+    ) -> list[sqlite3.Row]:
+        """Label events newer than `after_id` for one `call_site`, oldest first —
+        the retrain loop's feed. Filtered by call_site so events from other
+        interpretive calls (e.g. agenda-item extraction) never leak into the
+        classifier's own accuracy accounting."""
         return self.query(
-            "SELECT * FROM label_events WHERE id > ? ORDER BY id", (after_id,)
+            "SELECT * FROM label_events WHERE id > ? AND call_site = ? ORDER BY id",
+            (after_id, call_site),
         )
 
     # --- Retrain runs (weekly active-learning bookkeeping) ---

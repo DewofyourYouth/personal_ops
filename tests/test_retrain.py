@@ -108,6 +108,31 @@ def test_latest_correction_per_entry_wins(logs):
     assert last_id == logs.db.label_events_after(0)[-1]["id"]
 
 
+def test_retrain_ignores_label_events_from_other_call_sites(logs):
+    """label_events is shared with non-classifier callers (e.g. the agenda-item
+    extraction escalation) via call_site — the classifier's retrain loop must only
+    ever see its own ('classifier') events, or its accuracy accounting and
+    n_events/n_reclassify/n_confirm bookkeeping would be corrupted by unrelated
+    corrections landing in the same table."""
+    _seed_reference(logs)
+    # A non-classifier correction lands in the same table, same id sequence.
+    logs.log_label_event(
+        0,
+        "reclassify",
+        "whatever I missed",
+        "call the dentist",
+        source="auto_escalation",
+        call_site="agenda_extraction",
+    )
+    assert retrain.run_retrain(logs.db)["n_events"] == 0  # nothing classifier-scoped
+
+    handlers = ReclassifyHandlers(None, logs, allowed_user=1)
+    entry = logs.write("insight", "meal variant real correction")
+    handlers.apply_reclassify(entry, "food")
+    summary = retrain.run_retrain(logs.db)
+    assert summary["n_events"] == 1  # only the classifier event, not the agenda one
+
+
 def test_uncurateable_labels_and_deleted_entries_are_skipped(logs):
     _seed_reference(logs)
     handlers = ReclassifyHandlers(None, logs, allowed_user=1)

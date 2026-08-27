@@ -2071,16 +2071,38 @@ class TextRouter:
         """Resolve the regex-extracted `item`, escalating to the LLM when
         `_agenda_extraction_is_suspect` flags it. Returns `(resolved_item, False)` on
         success, or `(None, True)` when neither the regex nor the LLM can name a
-        concrete task and the user should be asked instead."""
+        concrete task and the user should be asked instead.
+
+        Every escalation is logged to label_events (call_site='agenda_extraction')
+        via the same append-only corrections table the tag classifier's retrain
+        loop uses — the accumulating labeled data a future few-shot/DSPy pass over
+        this call site would train against."""
         if not _agenda_extraction_is_suspect(text, item):
             return item, False
         try:
             parsed = await self.planner.parse_agenda_item(text)
         except Exception:
             parsed = None
-        if not parsed or parsed.get("clarification_needed") or not parsed.get("item"):
+        resolved = None
+        if parsed and not parsed.get("clarification_needed") and parsed.get("item"):
+            resolved = parsed["item"]
+        if getattr(self, "logs", None) is not None:
+            try:
+                self.logs.log_label_event(
+                    0,
+                    "reclassify" if resolved else "unresolved",
+                    item,
+                    resolved or "",
+                    source="auto_escalation",
+                    call_site="agenda_extraction",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to log agenda_extraction correction event"
+                )
+        if resolved is None:
             return None, True
-        return parsed["item"], False
+        return resolved, False
 
     async def _agenda_items_from_text(self, text: str) -> list[str]:
         """Split `text` into distinct agenda items when it plausibly names more

@@ -168,8 +168,12 @@ class Logs:
         from_label: str,
         to_label: str,
         source: str = "user_tap",
+        call_site: str = "classifier",
     ) -> int:
-        """Append a classifier correction/confirmation — append-only training data.
+        """Append a correction/confirmation — append-only training data. Originally
+        classifier-only; `call_site` lets other interpretive calls (e.g. agenda-item
+        extraction) log into the same table without affecting the classifier's own
+        retrain loop, which filters by call_site.
 
         Same durability order as write(): JSONL first, then SQLite. The line is
         tagged `label_event` so sync_jsonl_to_db never replays it into entries.
@@ -183,6 +187,7 @@ class Logs:
             "from_label": from_label,
             "to_label": to_label,
             "source": source,
+            "call_site": call_site,
         }
         try:
             with open(self._jsonl_path(now.date()), "a") as f:
@@ -190,7 +195,13 @@ class Logs:
         except Exception:
             logger.exception("Failed to append label event to JSONL: %s", record)
         return self.db.insert_label_event(
-            record["ts"], ref_entry_id, event_type, from_label, to_label, source
+            record["ts"],
+            ref_entry_id,
+            event_type,
+            from_label,
+            to_label,
+            source,
+            call_site,
         )
 
     def rewrite_jsonl_entry(

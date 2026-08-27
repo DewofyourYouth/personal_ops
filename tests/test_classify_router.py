@@ -189,10 +189,19 @@ def test_agenda_extraction_not_suspect_for_the_clean_common_case():
     assert not _agenda_extraction_is_suspect(text, item)
 
 
-def _router_with_planner(parse_agenda_item):
+def _router_with_planner(parse_agenda_item, logs=None):
     r = TextRouter.__new__(TextRouter)
     r.planner = types.SimpleNamespace(parse_agenda_item=parse_agenda_item)
+    r.logs = logs
     return r
+
+
+class _FakeLogs:
+    def __init__(self):
+        self.events = []
+
+    def log_label_event(self, ref_entry_id, event_type, from_label, to_label, **kw):
+        self.events.append((ref_entry_id, event_type, from_label, to_label, kw))
 
 
 def test_resolve_agenda_item_escalates_and_asks_for_clarification():
@@ -237,6 +246,63 @@ def test_resolve_agenda_item_skips_llm_for_the_clean_case():
     )
     assert not needs_clarification
     assert item == "finish the deck"
+
+
+def test_resolve_agenda_item_logs_a_correction_when_llm_resolves_it():
+    """The escalation must land in label_events so future examples accumulate —
+    this is the corrections substrate the audit's multishot/eval-loop design
+    depends on, reusing the same table the classifier's retrain loop feeds from."""
+
+    async def fake_parse(text):
+        return {"item": "call the dentist"}
+
+    logs = _FakeLogs()
+    r = _router_with_planner(fake_parse, logs=logs)
+    asyncio.run(
+        r._resolve_agenda_item(
+            "put whatever I forgot on my agenda on my agenda", "whatever I forgot"
+        )
+    )
+    assert len(logs.events) == 1
+    ref_entry_id, event_type, from_label, to_label, kw = logs.events[0]
+    assert ref_entry_id == 0
+    assert event_type == "reclassify"
+    assert from_label == "whatever I forgot"
+    assert to_label == "call the dentist"
+    assert kw["call_site"] == "agenda_extraction"
+    assert kw["source"] == "auto_escalation"
+
+
+def test_resolve_agenda_item_logs_unresolved_when_llm_also_cant_tell():
+    async def fake_parse(text):
+        return {"clarification_needed": True}
+
+    logs = _FakeLogs()
+    r = _router_with_planner(fake_parse, logs=logs)
+    asyncio.run(
+        r._resolve_agenda_item(
+            "Put whatever I missed on my agenda today on my agenda tomorrow",
+            "whatever I missed",
+        )
+    )
+    assert len(logs.events) == 1
+    _, event_type, from_label, to_label, kw = logs.events[0]
+    assert event_type == "unresolved"
+    assert from_label == "whatever I missed"
+    assert to_label == ""
+    assert kw["call_site"] == "agenda_extraction"
+
+
+def test_resolve_agenda_item_does_not_log_for_the_clean_case():
+    async def fake_parse(text):
+        raise AssertionError("must not call the LLM for an unambiguous extraction")
+
+    logs = _FakeLogs()
+    r = _router_with_planner(fake_parse, logs=logs)
+    asyncio.run(
+        r._resolve_agenda_item("add finish the deck to my agenda", "finish the deck")
+    )
+    assert logs.events == []
 
 
 def _add_habit_name(text: str) -> str | None:
