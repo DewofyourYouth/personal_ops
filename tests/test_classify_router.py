@@ -12,7 +12,9 @@ that must NOT silently regress:
   checkin/insight.
 """
 
+import asyncio
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
@@ -24,6 +26,7 @@ from text_router import (
     _ADD_HABIT_PREFIX_RE,
     _ADD_HABIT_SUFFIX_RE,
     _AGENDA_DEST_RE,
+    _agenda_extraction_is_suspect,
     _extract_agenda_item,
     _is_nutrition_breakdown,
     _parse_metric_body,
@@ -161,6 +164,79 @@ def test_agenda_destination_does_not_fire_without_the_phrase():
     'agenda' elsewhere, or none at all, must not trigger agenda routing."""
     assert not _AGENDA_DEST_RE.search("the meeting agenda was long")
     assert not _AGENDA_DEST_RE.search("add milk to the shopping list")
+
+
+def test_agenda_extraction_flags_the_rambling_voice_transcript_bug():
+    """Regression: a rambling voice transcript that mentions 'agenda' twice used to
+    have its regex extraction silently commit meta-commentary ('whatever I missed')
+    as a literal agenda item. The suspicion check must catch this so the caller
+    escalates to the LLM instead of trusting the regex blindly."""
+    text = (
+        "Put whatever I missed on my agenda today on my agenda tomorrow just "
+        "because yeah I think that's like I think what was on my agenda was worth "
+        "doing it just wasn't what I needed to do today."
+    )
+    item = _extract_agenda_item(text)
+    assert item == "whatever I missed"  # the exact bad extraction that shipped
+    assert _agenda_extraction_is_suspect(text, item)
+
+
+def test_agenda_extraction_not_suspect_for_the_clean_common_case():
+    """The common single-mention, named-task case must NOT pay for an LLM round-trip."""
+    text = "add finish the deck to my agenda"
+    item = _extract_agenda_item(text)
+    assert item == "finish the deck"
+    assert not _agenda_extraction_is_suspect(text, item)
+
+
+def _router_with_planner(parse_agenda_item):
+    r = TextRouter.__new__(TextRouter)
+    r.planner = types.SimpleNamespace(parse_agenda_item=parse_agenda_item)
+    return r
+
+
+def test_resolve_agenda_item_escalates_and_asks_for_clarification():
+    """When the LLM also can't name a concrete task, the caller must ask the user
+    instead of committing the regex's bad guess — the actual fix for the bug above."""
+
+    async def fake_parse(text):
+        return {"clarification_needed": True}
+
+    r = _router_with_planner(fake_parse)
+    item, needs_clarification = asyncio.run(
+        r._resolve_agenda_item(
+            "Put whatever I missed on my agenda today on my agenda tomorrow",
+            "whatever I missed",
+        )
+    )
+    assert needs_clarification
+    assert item is None
+
+
+def test_resolve_agenda_item_uses_llm_result_when_suspect():
+    async def fake_parse(text):
+        return {"item": "call the dentist"}
+
+    r = _router_with_planner(fake_parse)
+    item, needs_clarification = asyncio.run(
+        r._resolve_agenda_item(
+            "put whatever I forgot on my agenda on my agenda", "whatever I forgot"
+        )
+    )
+    assert not needs_clarification
+    assert item == "call the dentist"
+
+
+def test_resolve_agenda_item_skips_llm_for_the_clean_case():
+    async def fake_parse(text):
+        raise AssertionError("must not call the LLM for an unambiguous extraction")
+
+    r = _router_with_planner(fake_parse)
+    item, needs_clarification = asyncio.run(
+        r._resolve_agenda_item("add finish the deck to my agenda", "finish the deck")
+    )
+    assert not needs_clarification
+    assert item == "finish the deck"
 
 
 def _add_habit_name(text: str) -> str | None:

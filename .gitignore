@@ -15,5 +15,11 @@ ops/reminders.json
 ops/context
 draft-difficulty-post.md
 draft-difficulty-math.md
-.idea
+.idea/
 scripts/sync_db_from_vps.sh
+.idea/data_source_mapping.xml
+.idea/data_source_mapping.xml
+.idea/data_source_mapping.xml
+.idea/dataSources.xml
+.idea/db-forest-config.xml
+.idea/sqldialects.xml

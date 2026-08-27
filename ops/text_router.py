@@ -206,6 +206,31 @@ _AGENDA_DEST_RE = re.compile(
     r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
 )
 
+# A vague self-reference to unnamed past content ("whatever I missed", "what I
+# didn't get to") rather than a concrete task — a tell that the regex extractor
+# below grabbed meta-commentary, not an item. See _agenda_extraction_is_suspect.
+_VAGUE_AGENDA_REFERENT_RE = re.compile(
+    r"^(?:whatever|what)\b.*\bi\s+(?:missed|had|forgot|didn't\s+(?:get\s+to|do|finish))\b",
+    re.IGNORECASE,
+)
+
+
+def _agenda_extraction_is_suspect(original: str, item: str) -> bool:
+    """True when `_extract_agenda_item`'s regex result probably isn't a real task.
+
+    Two independent tells, found from a real failure: 'Put whatever I missed on my
+    agenda today on my agenda tomorrow...' extracted as item 'whatever I missed'.
+    (1) The source mentions 'agenda' more than once — the regex's non-greedy match
+    stops at the first mention, so a second one downstream usually means it captured
+    commentary leading up to that first mention, not the task. (2) The captured item
+    is itself a vague reference to unnamed past content rather than a named task.
+    Either signal routes the ambiguous case to an LLM instead of committing garbage.
+    """
+    if len(re.findall(r"\bagenda\b", original, re.IGNORECASE)) > 1:
+        return True
+    return bool(_VAGUE_AGENDA_REFERENT_RE.search(item))
+
+
 # "add X habit" / "add habit X" — natural-language habit creation, the conversational
 # mirror of /addhabit. The word "habit" can land right after the imperative verb or
 # trail the name, so two shapes are matched.
@@ -1674,6 +1699,13 @@ class TextRouter:
         if _AGENDA_DEST_RE.search(lower) and self.agenda_feature:
             item = _extract_agenda_item(text)
             if item:
+                item, needs_clarification = await self._resolve_agenda_item(text, item)
+                if needs_clarification:
+                    await reply(
+                        "Not sure what to add — could you name the specific task? "
+                        'e.g. "add finish the deck to my agenda"'
+                    )
+                    return
                 items = await self._agenda_items_from_text(item)
                 self.agenda_feature.commit_agenda(items, source="user")
                 await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
@@ -2032,6 +2064,23 @@ class TextRouter:
                 )
             ]
         return None
+
+    async def _resolve_agenda_item(
+        self, text: str, item: str
+    ) -> tuple[str | None, bool]:
+        """Resolve the regex-extracted `item`, escalating to the LLM when
+        `_agenda_extraction_is_suspect` flags it. Returns `(resolved_item, False)` on
+        success, or `(None, True)` when neither the regex nor the LLM can name a
+        concrete task and the user should be asked instead."""
+        if not _agenda_extraction_is_suspect(text, item):
+            return item, False
+        try:
+            parsed = await self.planner.parse_agenda_item(text)
+        except Exception:
+            parsed = None
+        if not parsed or parsed.get("clarification_needed") or not parsed.get("item"):
+            return None, True
+        return parsed["item"], False
 
     async def _agenda_items_from_text(self, text: str) -> list[str]:
         """Split `text` into distinct agenda items when it plausibly names more

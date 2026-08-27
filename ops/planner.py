@@ -1129,6 +1129,60 @@ class Planner:
                 return block.input
         return None
 
+    async def parse_agenda_item(self, text: str) -> dict | None:
+        """Extract the single concrete agenda item from a message that mentions
+        'agenda', for cases the deterministic regex extractor (`_extract_agenda_item`
+        in text_router.py) can't be trusted on — rambling voice transcripts, multiple
+        'agenda' mentions, or a vague referent like 'whatever I missed'. Returns
+        `{"item": str}`, or `{"clarification_needed": True}` when the text doesn't
+        name one concrete task (e.g. it's really a bulk carry-over request)."""
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            tools=[
+                {
+                    "name": "extract_agenda_item",
+                    "description": (
+                        "Extract the single concrete task the user wants added to "
+                        "their agenda from a message that mentions 'agenda'. The "
+                        "message may be a rambling voice transcript with meta-"
+                        "commentary about the agenda itself rather than naming one "
+                        "task — in that case set clarification_needed=true and omit "
+                        "item, rather than guessing.\n\n"
+                        'Example of the failure to avoid: given "Put whatever I '
+                        "missed on my agenda today on my agenda tomorrow just "
+                        "because yeah I think that's like I think what was on my "
+                        "agenda was worth doing it just wasn't what I needed to do "
+                        'today...", the user is asking to carry over unfinished '
+                        "items to tomorrow, not naming a task called 'whatever I "
+                        "missed'. The correct output is clarification_needed=true, "
+                        "NOT item='whatever I missed'."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "item": {
+                                "type": "string",
+                                "description": "The concrete task text to add. Omit if clarification_needed is true.",
+                            },
+                            "clarification_needed": {
+                                "type": "boolean",
+                                "description": "True if no single concrete task can be identified — e.g. a bulk 'carry over what I missed' request, or text too vague/rambling to name one item.",
+                            },
+                        },
+                        "required": ["clarification_needed"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "extract_agenda_item"},
+            messages=[{"role": "user", "content": text}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                return block.input
+        return None
+
     async def estimate_food(self, text: str, correction: str = "") -> dict | None:
         """Itemise a described meal and estimate per-item + total nutrition from knowledge.
 
