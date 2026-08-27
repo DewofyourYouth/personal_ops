@@ -18,8 +18,6 @@ draft-difficulty-math.md
 .idea/
 scripts/sync_db_from_vps.sh
 .idea/data_source_mapping.xml
-.idea/data_source_mapping.xml
-.idea/data_source_mapping.xml
 .idea/dataSources.xml
 .idea/db-forest-config.xml
 .idea/sqldialects.xml
