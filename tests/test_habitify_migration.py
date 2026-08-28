@@ -28,9 +28,7 @@ def test_create_payload_preserves_context_and_weekly_goal():
         "SELECT 'Weekly anchors' section, 'x' name, '' days, "
         "'after coffee' cue, 'writer' identity"
     ).fetchone()
-    rule = MigrationRule(
-        "Writing", ("Writing",), periodicity="weekly", goal_value=3
-    )
+    rule = MigrationRule("Writing", ("Writing",), periodicity="weekly", goal_value=3)
 
     payload = habit_payload(row, rule, "2026-06-01")
 

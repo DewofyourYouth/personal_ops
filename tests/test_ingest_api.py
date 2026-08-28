@@ -19,9 +19,7 @@ def _client(logs=None, habitify_sync=None):
     habitify_sync = habitify_sync or MagicMock()
     return (
         TestClient(
-            create_app(
-                ingest_token=TOKEN, logs=logs, habitify_sync=habitify_sync
-            )
+            create_app(ingest_token=TOKEN, logs=logs, habitify_sync=habitify_sync)
         ),
         logs,
     )

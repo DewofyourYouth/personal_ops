@@ -195,5 +195,6 @@ BOT_COMMANDS = [
     ("fix", "Reclassify the most recent logged entry"),
     ("context", "View and edit your goals, priorities, constraints, projects"),
     ("voice", "Toggle auto-reading substantial replies aloud"),
+    ("candles", "Show candle-lighting time now (manual fallback)"),
     ("help", "Category menu of everything the bot can do"),
 ]

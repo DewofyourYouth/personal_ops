@@ -52,10 +52,7 @@ def _matches(template_name: str, logged: str, aliases: list[str] | None = None) 
     templates = [template_name, *(aliases or [])]
     l_words = {w for w in re.split(r"\W+", logged.lower()) if len(w) >= 3}
     return any(
-        bool(
-            {w for w in re.split(r"\W+", template.lower()) if len(w) >= 3}
-            & l_words
-        )
+        bool({w for w in re.split(r"\W+", template.lower()) if len(w) >= 3} & l_words)
         for template in templates
     )
 
@@ -89,9 +86,7 @@ def load_habit_logs(logs: Logs, days: int = 400) -> dict[str, list[str]]:
             by_day.setdefault(r["date"], []).append(r["content"].strip().lower())
     tables = {
         row["name"]
-        for row in logs.db.query(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
+        for row in logs.db.query("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     if "habitify_completions" in tables:
         for row in logs.db.query(

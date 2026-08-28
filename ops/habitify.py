@@ -20,7 +20,9 @@ def normalize_habit_name(value: str) -> str:
 # These four habits existed in Habitify before the migration and intentionally kept
 # their Habitify names. Every newly-created habit kept its Personal Ops name.
 REMOTE_NAME_OVERRIDES = {
-    normalize_habit_name("Daily walk (7000 steps minimum, includes walk to shul)"): "Step Count",
+    normalize_habit_name(
+        "Daily walk (7000 steps minimum, includes walk to shul)"
+    ): "Step Count",
     normalize_habit_name("Daily walk"): "Step Count",
     normalize_habit_name("Strength training — 3x/week minimum"): "Core Training",
     normalize_habit_name("Strength training"): "Core Training",
@@ -31,12 +33,18 @@ REMOTE_NAME_OVERRIDES = {
 # Context.habit_display_name deliberately shortens these labels for Telegram. Map
 # them back to the full Habitify names created by the migration.
 DISPLAY_NAME_OVERRIDES = {
-    normalize_habit_name("Take morning meds"): "Take morning meds (before anything else)",
+    normalize_habit_name(
+        "Take morning meds"
+    ): "Take morning meds (before anything else)",
     normalize_habit_name("Shacharit"): "Shacharit (07:00–08:00)",
     normalize_habit_name("Anki"): "Anki (minimum daily streak)",
     normalize_habit_name("Yoma chavrusa"): "10:00–11:00 Yoma chavrusa",
-    normalize_habit_name("Weigh in"): "Weigh in — at least 3x/week, morning, log in Apple Health",
-    normalize_habit_name("Writing output"): "Writing output — at least 3 times per week (genealogy, dailyderja, or technical)",
+    normalize_habit_name(
+        "Weigh in"
+    ): "Weigh in — at least 3x/week, morning, log in Apple Health",
+    normalize_habit_name(
+        "Writing output"
+    ): "Writing output — at least 3 times per week (genealogy, dailyderja, or technical)",
 }
 
 
@@ -97,10 +105,7 @@ class HabitifyClient:
                     return json.loads(raw) if raw else None
             except urllib.error.HTTPError as exc:
                 message = exc.read().decode(errors="replace")
-                if (
-                    exc.code in {429, 500, 502, 503, 504}
-                    and attempt < attempts - 1
-                ):
+                if exc.code in {429, 500, 502, 503, 504} and attempt < attempts - 1:
                     time.sleep(2**attempt)
                     continue
                 raise HabitifyError(exc.code, message) from exc
@@ -159,9 +164,7 @@ class HabitifyClient:
         return (result or {}).get("data", result or {})
 
     def journal(self, target_date: str) -> list[dict[str, Any]]:
-        result = self._request(
-            "GET", "/habits/journal", query={"date": target_date}
-        )
+        result = self._request("GET", "/habits/journal", query={"date": target_date})
         return (result or {}).get("data", [])
 
     def complete(self, habit_id: str, target_date: str) -> None:
@@ -212,11 +215,11 @@ class HabitifyHabitSync:
         self._habits = [
             habit
             for habit in self._all_habits
-            if not habit.get("isArchived", False) and habit.get("type", "good") == "good"
+            if not habit.get("isArchived", False)
+            and habit.get("type", "good") == "good"
         ]
         self._habit_ids = {
-            normalize_habit_name(habit["name"]): habit["id"]
-            for habit in self._habits
+            normalize_habit_name(habit["name"]): habit["id"] for habit in self._habits
         }
         self._loaded_at = time.monotonic()
 

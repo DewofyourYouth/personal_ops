@@ -86,9 +86,7 @@ RULES = (
         periodicity="weekly",
         goal_value=3,
     ),
-    MigrationRule(
-        "Shnayim Mikra vEchad Targum", ("Shnayim Mikra vEchad Targum",)
-    ),
+    MigrationRule("Shnayim Mikra vEchad Targum", ("Shnayim Mikra vEchad Targum",)),
     MigrationRule("brush teeth", ("brush teeth",), remote_name="Brush teeth"),
     MigrationRule(
         "Call Rebbe at 5:30 am.",
@@ -152,7 +150,9 @@ def load_local(db_path: Path) -> tuple[dict[str, sqlite3.Row], dict[str, set[str
     habits = {row["name"]: row for row in rows}
     completions: dict[str, set[str]] = {rule.local_name: set() for rule in RULES}
     alias_owner = {
-        normalize_name(alias): rule.local_name for rule in RULES for alias in rule.aliases
+        normalize_name(alias): rule.local_name
+        for rule in RULES
+        for alias in rule.aliases
     }
     for row in conn.execute(
         "SELECT date, content FROM entries WHERE tag = 'habit' ORDER BY date, id"
@@ -198,10 +198,14 @@ def migrate(
         return 2
 
     local_habits, completions = load_local(db_path)
-    missing_rules = [rule.local_name for rule in RULES if rule.local_name not in local_habits]
+    missing_rules = [
+        rule.local_name for rule in RULES if rule.local_name not in local_habits
+    ]
     unruled = sorted(set(local_habits) - {rule.local_name for rule in RULES})
     if missing_rules or unruled:
-        print(f"Migration manifest mismatch. Missing: {missing_rules}; unruled: {unruled}")
+        print(
+            f"Migration manifest mismatch. Missing: {missing_rules}; unruled: {unruled}"
+        )
         return 2
 
     client = HabitifyClient(api_key)
@@ -229,9 +233,7 @@ def migrate(
 
         just_created = remote is None
         if just_created:
-            remote = client.create_habit(
-                habit_payload(row, rule, earliest_for(dates))
-            )
+            remote = client.create_habit(habit_payload(row, rule, earliest_for(dates)))
             remote_habits.append(remote)
             created += 1
             print(f"  created {remote['name']}")
@@ -335,9 +337,7 @@ def migrate(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument(
-        "--db", type=Path, default=ROOT / "ops" / "log" / "ops.db"
-    )
+    parser.add_argument("--db", type=Path, default=ROOT / "ops" / "log" / "ops.db")
     parser.add_argument(
         "--delay",
         type=float,

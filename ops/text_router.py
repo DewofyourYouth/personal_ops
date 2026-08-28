@@ -1536,9 +1536,7 @@ class TextRouter:
         update_chat_id = chat_id
         lower = _normalize(text.lower()).strip(".,!?;: ")
         if self.habit_feature:
-            refresh = getattr(
-                self.habit_feature, "refresh_habits_from_habitify", None
-            )
+            refresh = getattr(self.habit_feature, "refresh_habits_from_habitify", None)
             if refresh is not None:
                 await refresh()
 

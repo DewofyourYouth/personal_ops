@@ -89,8 +89,18 @@ def test_completion_projection_handles_daily_and_weekly_goals():
     class Client:
         def list_habits(self):
             return [
-                {"id": "daily", "name": "Tefillin", "type": "good", "isArchived": False},
-                {"id": "weekly", "name": "Core Training", "type": "good", "isArchived": False},
+                {
+                    "id": "daily",
+                    "name": "Tefillin",
+                    "type": "good",
+                    "isArchived": False,
+                },
+                {
+                    "id": "weekly",
+                    "name": "Core Training",
+                    "type": "good",
+                    "isArchived": False,
+                },
             ]
 
         def journal(self, target_date):
@@ -128,7 +138,12 @@ def test_failed_weekly_read_is_left_unresolved():
     class Client:
         def list_habits(self):
             return [
-                {"id": "weekly", "name": "Core Training", "type": "good", "isArchived": False}
+                {
+                    "id": "weekly",
+                    "name": "Core Training",
+                    "type": "good",
+                    "isArchived": False,
+                }
             ]
 
         def journal(self, target_date):

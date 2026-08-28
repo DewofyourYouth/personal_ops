@@ -89,9 +89,7 @@ def create_app(
         duplicate = log_store.db.metric_exists(ts, metric.key)
         if not duplicate:
             try:
-                log_store.write_metric(
-                    metric.key, metric.value, metric.unit, when=when
-                )
+                log_store.write_metric(metric.key, metric.value, metric.unit, when=when)
             except Exception as exc:
                 raise HTTPException(
                     status_code=500,

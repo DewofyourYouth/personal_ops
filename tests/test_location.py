@@ -121,3 +121,32 @@ class TestExpiry:
         monkeypatch.setattr("location.Nominatim", _fake_nominatim(*_MIAMI))
         location.set_travel("Miami")
         assert location.current().name == "Miami"
+
+
+class TestComputedSunset:
+    def test_matches_default_location_sunset(self):
+        from astral.sun import sun
+
+        d = date(2026, 8, 28)
+        expected = sun(
+            location.DEFAULT_LOCATION.observer, date=d, tzinfo=location.current_tz()
+        )["sunset"]
+        assert location.computed_sunset(d) == expected
+
+    def test_follows_travel_override(self, monkeypatch):
+        from astral.sun import sun
+
+        d = date(2026, 8, 28)
+        beit_shemesh_sunset = sun(
+            location.DEFAULT_LOCATION.observer, date=d, tzinfo=location.current_tz()
+        )["sunset"]
+
+        monkeypatch.setattr("location.Nominatim", _fake_nominatim(*_MIAMI))
+        location.set_travel("Miami")
+        # Miami and Beit Shemesh must not agree on sunset.
+        assert location.computed_sunset(d) != beit_shemesh_sunset
+
+    def test_varies_by_date(self):
+        summer = location.computed_sunset(date(2026, 8, 28))
+        winter = location.computed_sunset(date(2026, 12, 25))
+        assert summer.time() != winter.time()

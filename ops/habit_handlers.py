@@ -277,7 +277,10 @@ class HabitStore:
                     "identity": (r["identity"] if "identity" in r.keys() else "") or "",
                     "identities": self._identities(r["id"]),
                     "aliases": self._aliases(r["id"]),
-                    "habitify_id": (r["habitify_id"] if "habitify_id" in r.keys() else "") or "",
+                    "habitify_id": (
+                        r["habitify_id"] if "habitify_id" in r.keys() else ""
+                    )
+                    or "",
                     "habitify_managed": bool(
                         int(r["habitify_managed"] or 0)
                         if "habitify_managed" in r.keys()
@@ -285,13 +288,12 @@ class HabitStore:
                     ),
                     "goal_periodicity": (
                         r["goal_periodicity"] if "goal_periodicity" in r.keys() else ""
-                    ) or "",
-                    "goal_value": (
-                        r["goal_value"] if "goal_value" in r.keys() else ""
-                    ) or "",
-                    "goal_unit": (
-                        r["goal_unit"] if "goal_unit" in r.keys() else ""
-                    ) or "",
+                    )
+                    or "",
+                    "goal_value": (r["goal_value"] if "goal_value" in r.keys() else "")
+                    or "",
+                    "goal_unit": (r["goal_unit"] if "goal_unit" in r.keys() else "")
+                    or "",
                     "paused_from": _parse_paused_until(
                         r["paused_from"] if "paused_from" in r.keys() else ""
                     ),
@@ -456,7 +458,10 @@ class HabitStore:
 
         inverse_overrides = {
             normalize_habit_name(remote): local
-            for local, remote in {**REMOTE_NAME_OVERRIDES, **DISPLAY_NAME_OVERRIDES}.items()
+            for local, remote in {
+                **REMOTE_NAME_OVERRIDES,
+                **DISPLAY_NAME_OVERRIDES,
+            }.items()
         }
         seen_ids: set[str] = set()
         seen_local_ids: set[int] = set()
@@ -477,7 +482,9 @@ class HabitStore:
                 if habit is None and remote_key in inverse_overrides:
                     habit = by_name.get(inverse_overrides[remote_key])
 
-            goals = [goal for goal in remote.get("goals", []) if goal.get("isActive", True)]
+            goals = [
+                goal for goal in remote.get("goals", []) if goal.get("isActive", True)
+            ]
             goal = goals[0] if goals else {}
             areas = [a.get("name", "").strip() for a in remote.get("areas", [])]
             times = [t.get("name", "").strip() for t in remote.get("timeOfDays", [])]
@@ -537,7 +544,10 @@ class HabitStore:
             updated += 1
 
         for habit in self.list_habits(tracked_only=False):
-            if habit["id"] not in seen_local_ids and habit["habitify_id"] not in seen_ids:
+            if (
+                habit["id"] not in seen_local_ids
+                and habit["habitify_id"] not in seen_ids
+            ):
                 self.db.execute(
                     "UPDATE habits SET tracked = 0 WHERE id = ?", (habit["id"],)
                 )
@@ -785,7 +795,9 @@ def exact_habit_match(content: str, db) -> str | None:
         for alias in db.query(
             "SELECT alias FROM habit_aliases WHERE habit_id = ?", (row["id"],)
         ):
-            by_lower[Context.habit_display_name(alias["alias"]).strip().lower()] = canonical
+            by_lower[Context.habit_display_name(alias["alias"]).strip().lower()] = (
+                canonical
+            )
     return by_lower.get(content.strip().lower())
 
 
@@ -979,9 +991,7 @@ class HabitHandlers:
                 result = self.store.sync_from_habitify(habits)
                 self._habitify_projection_loaded_at = time.monotonic()
 
-            completions_loaded = getattr(
-                self, "_habitify_completions_loaded_at", 0.0
-            )
+            completions_loaded = getattr(self, "_habitify_completions_loaded_at", 0.0)
             if (
                 force
                 or force_completions
@@ -999,7 +1009,9 @@ class HabitHandlers:
                 self._habitify_completions_loaded_at = time.monotonic()
             return result
         except HabitifyError:
-            logger.exception("Habitify definition refresh failed; using cached projection")
+            logger.exception(
+                "Habitify definition refresh failed; using cached projection"
+            )
             return None
 
     def register(self, app: Application) -> None:
