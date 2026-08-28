@@ -152,11 +152,14 @@ class Logs:
             logger.exception("DB write FAILED (kept in JSONL for recovery): %s", entry)
             raise
 
-    def write_metric(self, key: str, value, unit: str = ""):
+    def write_metric(
+        self, key: str, value, unit: str = "", when: datetime | None = None
+    ):
         self.write(
             "metric",
             f"{key} {value}{unit}",
             extra={"key": key, "value": value, "unit": unit},
+            when=when,
         )
 
     def log_label_event(

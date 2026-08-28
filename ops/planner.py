@@ -40,8 +40,8 @@ class Planner:
         self.weight = Weight(logs.db)
 
     def _context_block(self) -> str:
-        """The `## User context` system block: the context files plus the habit
-        schedule rendered live from the DB (the single source of truth, no habits.md)."""
+        """The `## User context` system block: context files plus the Habitify
+        schedule rendered from the synchronized DB projection (no habits.md)."""
         from habit_tracker import format_habits_for_prompt
 
         ctx = self.context.load_all()

@@ -30,6 +30,7 @@ import location
 import voice
 from food_registry import parse_composition
 from habit_handlers import exact_habit_match, match_habit
+from habitify import HabitifyError
 from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
 from location import current_tz
 from media import send_sticker
@@ -1512,7 +1513,10 @@ class TextRouter:
         now = datetime.now(current_tz())
         when = datetime.combine(when_date, now.timetz())
         try:
-            self.logs.write(tag, content, when=when)
+            if tag == "habit" and self.habit_feature:
+                await self.habit_feature.record_habit_completion(content, when=when)
+            else:
+                self.logs.write(tag, content, when=when)
         except Exception as e:
             await reply(f"Couldn't save that: {e}")
             return
@@ -1531,6 +1535,12 @@ class TextRouter:
         text = _UNICODE_JUNK.sub("", text).strip()
         update_chat_id = chat_id
         lower = _normalize(text.lower()).strip(".,!?;: ")
+        if self.habit_feature:
+            refresh = getattr(
+                self.habit_feature, "refresh_habits_from_habitify", None
+            )
+            if refresh is not None:
+                await refresh()
 
         # edit N <text> — update agenda item text
         edit_match = re.match(r"^edit\s+(\d+)\s+(.+)$", lower)
@@ -1830,6 +1840,12 @@ class TextRouter:
             if add_m:
                 name = add_m.group(1).strip(" .,:;-")
                 if name:
+                    if getattr(self.habit_feature, "habitify_is_source", False):
+                        await reply(
+                            "Habitify owns the habit list. Add it there and Personal Ops "
+                            "will recognize it automatically within five minutes."
+                        )
+                        return
                     added = self.habit_feature.add_habit_from_text(name)
                     await reply(
                         f"➕ Added habit: <b>{html.escape(added)}</b>",
@@ -1845,6 +1861,12 @@ class TextRouter:
             if remove_m:
                 name = remove_m.group(1).strip(" .,:;-")
                 if name:
+                    if getattr(self.habit_feature, "habitify_is_source", False):
+                        await reply(
+                            "Habitify owns the habit list. Archive or delete it there; "
+                            "Personal Ops will update automatically."
+                        )
+                        return
                     removed = await self.habit_feature.remove_habit_by_text(name)
                     if removed:
                         await reply(
@@ -2067,7 +2089,18 @@ class TextRouter:
         # Route through logs.write() so the entry lands in SQLite (primary) AND the JSONL
         # backup. Writing the file directly here bypassed the DB — the bug that made
         # prefix entries (values, insight, note, …) invisible to /values and other readers.
-        entry_id = self.logs.write(tag, content, extra=extra)
+        if tag == "habit" and self.habit_feature:
+            try:
+                entry_id = await self.habit_feature.record_habit_completion(
+                    content, extra=extra
+                )
+            except HabitifyError:
+                await reply(
+                    "⚠️ Habitify couldn't record that completion. Nothing was logged; please try again."
+                )
+                return
+        else:
+            entry_id = self.logs.write(tag, content, extra=extra)
 
         if tag in ("insight", "hypothesis"):
             await send_sticker(self.bot, chat_id, "idea")

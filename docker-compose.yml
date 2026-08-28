@@ -26,3 +26,22 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+
+  api:
+    build: .
+    profiles: ["ingest"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OPS_DATA_DIR: /app/ops/log
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Jerusalem
+    volumes:
+      - ./ops/log:/app/ops/log
+    working_dir: /app
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1

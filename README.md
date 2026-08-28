@@ -42,7 +42,7 @@ single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`,
 |---|---|
 | `/habits` | Daily checklist with streaks 🔥, chain 🟩⬜, ⚠️ flags |
 | `/habitcheck` | On-demand end-of-day habit check (also runs nightly) |
-| `/addhabit`, `/edithabit`, `/managehabits` | Add / edit / delete or toggle habits |
+| `/addhabit`, `/edithabit`, `/managehabits` | Points definition changes to Habitify (the source of truth) |
 | `/habitcue` | Set an implementation intention / habit-stack anchor |
 | `/habitnote` | Attach a note to a habit (no args shows recent notes) |
 | `/identity` | Habits grouped by the identities they vote for |

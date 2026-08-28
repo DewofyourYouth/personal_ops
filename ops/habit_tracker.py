@@ -10,10 +10,10 @@ _ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
 
 def format_habits_for_prompt(db) -> str:
-    """Render tracked habits (grouped by section) for the planner context, from the DB.
+    """Render Habitify's local read projection for planner context.
 
-    Replaces the old habits.md projection: the habits table is the single source of
-    truth, and this is generated fresh at prompt time rather than via a file on disk.
+    Habitify owns definitions; the habits table is its synchronized projection plus
+    Personal Ops-only metadata. This is generated fresh rather than via a file.
     Currently-paused habits are pulled out of their section and listed separately, so
     the planner knows not to schedule around them without losing track that they exist.
     """
@@ -38,7 +38,7 @@ def format_habits_for_prompt(db) -> str:
         tag = f" [{','.join(_ABBR[d] for d in sorted(days))}]" if days else ""
         cue = f" — cue: {r['cue']}" if r["cue"] else ""
         sections.setdefault(r["section"], []).append(f"- {r['name']}{tag}{cue}")
-    out = ["## Habits (schedule — source of truth is the habits table)"]
+    out = ["## Habits (definitions synchronized from Habitify)"]
     for section, items in sections.items():
         out.append(f"\n### {section}")
         out.extend(items)
@@ -48,10 +48,16 @@ def format_habits_for_prompt(db) -> str:
     return "\n".join(out)
 
 
-def _matches(template_name: str, logged: str) -> bool:
-    t_words = {w for w in re.split(r"\W+", template_name.lower()) if len(w) >= 3}
+def _matches(template_name: str, logged: str, aliases: list[str] | None = None) -> bool:
+    templates = [template_name, *(aliases or [])]
     l_words = {w for w in re.split(r"\W+", logged.lower()) if len(w) >= 3}
-    return bool(t_words & l_words)
+    return any(
+        bool(
+            {w for w in re.split(r"\W+", template.lower()) if len(w) >= 3}
+            & l_words
+        )
+        for template in templates
+    )
 
 
 def _logged_on(logs: Logs, d: date) -> list[str]:
@@ -119,6 +125,7 @@ def compute_streak(
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
     paused: tuple[date, date] | None = None,
+    aliases: list[str] | None = None,
 ) -> tuple[int, int]:
     """Return (current_streak, longest_streak).
 
@@ -138,7 +145,10 @@ def compute_streak(
 
     for i in range(lookback):
         d = today - timedelta(days=i)
-        done = any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
+        done = any(
+            _matches(habit_name, h, aliases)
+            for h in _logged_for(logs, d, logged_by_day)
+        )
         # Non-due days are *bonus*: quiet ones are transparent, done ones extend the run.
         if not _is_due(d, due_weekdays, paused) and not done:
             continue
@@ -168,6 +178,7 @@ def recent_chain(
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
     paused: tuple[date, date] | None = None,
+    aliases: list[str] | None = None,
 ) -> list[bool]:
     """Done/not-done for the last `n` DUE days, oldest→newest — the 'don't break the
     chain' visual. Off/Shabbat/paused days are skipped so the chain is pure hits and misses."""
@@ -181,7 +192,10 @@ def recent_chain(
         if not _is_due(d, due_weekdays, paused):
             continue
         chain.append(
-            any(_matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day))
+            any(
+                _matches(habit_name, h, aliases)
+                for h in _logged_for(logs, d, logged_by_day)
+            )
         )
     chain.reverse()
     return chain
@@ -330,6 +344,7 @@ def missed_last_due_day(
     logged_by_day: dict[str, list[str]] | None = None,
     today: date | None = None,
     paused: tuple[date, date] | None = None,
+    aliases: list[str] | None = None,
 ) -> bool:
     """True if the most recent prior due day was missed — the 'never miss twice' trigger."""
     if today is None:
@@ -339,6 +354,7 @@ def missed_last_due_day(
         if not _is_due(d, due_weekdays, paused):
             continue
         return not any(
-            _matches(habit_name, h) for h in _logged_for(logs, d, logged_by_day)
+            _matches(habit_name, h, aliases)
+            for h in _logged_for(logs, d, logged_by_day)
         )
     return False

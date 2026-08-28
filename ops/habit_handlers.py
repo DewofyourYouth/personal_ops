@@ -4,15 +4,20 @@ Owns the whole vertical: its own SQLite table (plugins own their schema — the
 table is created here, not in core db.py), its data access, the Telegram
 checklist + CRUD, and semantic free-text matching.
 
-The `habits` table is the single source of truth — no markdown round-trip. The
-planner gets the schedule via `habit_tracker.format_habits_for_prompt(db)`,
-generated fresh from the table at prompt time. Notes are added from Telegram
+Habitify is the source of truth for habit definitions when its API key is configured.
+The `habits` table is then a synchronized read projection plus storage for Personal
+Ops-only coaching metadata. The planner gets the projected schedule via
+`habit_tracker.format_habits_for_prompt(db)`. Notes are added from Telegram
 (`/habitnote`) into the `habit_notes` table, not edited in Obsidian files.
 """
 
+import asyncio
 import html
+import logging
+import os
 import re
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta
 
 import anthropic
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -26,12 +31,24 @@ from habit_tracker import (
     missed_last_due_day,
     recent_chain,
 )
+from habitify import (
+    DISPLAY_NAME_OVERRIDES,
+    REMOTE_NAME_OVERRIDES,
+    HabitifyClient,
+    HabitifyError,
+    HabitifyHabitSync,
+    normalize_habit_name,
+)
 from logs import Logs
 from media import send_sticker
 from pathlib import Path
 from quiet_window import QuietWindow
 from shabbat import Shabbat
 from tg_common import safe_answer
+
+
+_AUTO_HABITIFY = object()
+logger = logging.getLogger(__name__)
 
 
 def _make_quiet_window(shabbat: Shabbat) -> QuietWindow:
@@ -78,6 +95,11 @@ _ADDED_COLUMNS = {
     "identity": "''",
     "paused_from": "''",
     "paused_until": "''",
+    "habitify_id": "''",
+    "habitify_managed": "'0'",
+    "goal_periodicity": "''",
+    "goal_value": "''",
+    "goal_unit": "''",
 }
 
 _HABIT_NOTES_DDL = """
@@ -102,6 +124,15 @@ CREATE TABLE IF NOT EXISTS habit_identities (
     PRIMARY KEY (habit_id, identity)
 );
 CREATE INDEX IF NOT EXISTS idx_habit_identities_identity ON habit_identities(identity);
+"""
+
+_HABIT_ALIASES_DDL = """
+CREATE TABLE IF NOT EXISTS habit_aliases (
+    habit_id INTEGER NOT NULL,
+    alias    TEXT NOT NULL,
+    PRIMARY KEY (habit_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_habit_aliases_habit ON habit_aliases(habit_id);
 """
 
 _NEGATIVE_HABITS_DDL = """
@@ -179,10 +210,15 @@ class HabitStore:
         self.db.ensure_schema(_HABITS_DDL)
         self.db.ensure_schema(_HABIT_NOTES_DDL)
         self.db.ensure_schema(_HABIT_IDENTITIES_DDL)
+        self.db.ensure_schema(_HABIT_ALIASES_DDL)
         self.db.ensure_schema(_NEGATIVE_HABITS_DDL)
         self.db.ensure_schema(_SLIP_LOGS_DDL)
         self.db.ensure_schema(_HABIT_SUGGESTIONS_DDL)
         self._migrate_cue_column()
+        self.db.ensure_schema(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_habitify_id "
+            "ON habits(habitify_id) WHERE habitify_id != '';"
+        )
         self._migrate_identities_to_join()
 
     def _migrate_cue_column(self) -> None:
@@ -228,6 +264,22 @@ class HabitStore:
                     "cue": (r["cue"] if "cue" in r.keys() else "") or "",
                     "identity": (r["identity"] if "identity" in r.keys() else "") or "",
                     "identities": self._identities(r["id"]),
+                    "aliases": self._aliases(r["id"]),
+                    "habitify_id": (r["habitify_id"] if "habitify_id" in r.keys() else "") or "",
+                    "habitify_managed": bool(
+                        int(r["habitify_managed"] or 0)
+                        if "habitify_managed" in r.keys()
+                        else 0
+                    ),
+                    "goal_periodicity": (
+                        r["goal_periodicity"] if "goal_periodicity" in r.keys() else ""
+                    ) or "",
+                    "goal_value": (
+                        r["goal_value"] if "goal_value" in r.keys() else ""
+                    ) or "",
+                    "goal_unit": (
+                        r["goal_unit"] if "goal_unit" in r.keys() else ""
+                    ) or "",
                     "paused_from": _parse_paused_until(
                         r["paused_from"] if "paused_from" in r.keys() else ""
                     ),
@@ -260,6 +312,7 @@ class HabitStore:
 
     def remove(self, habit_id: int) -> None:
         self.db.execute("DELETE FROM habit_identities WHERE habit_id = ?", (habit_id,))
+        self.db.execute("DELETE FROM habit_aliases WHERE habit_id = ?", (habit_id,))
         self.db.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
 
     def set_tracked(self, habit_id: int, tracked: bool) -> None:
@@ -273,7 +326,11 @@ class HabitStore:
         target = _match_key(name)
         for h in self.list_habits(tracked_only=False):
             display = self.context.habit_display_name(h["name"])
-            if _match_key(display) == target or _match_key(h["name"]) == target:
+            if (
+                _match_key(display) == target
+                or _match_key(h["name"]) == target
+                or any(_match_key(alias) == target for alias in h["aliases"])
+            ):
                 self.db.execute(
                     f"UPDATE habits SET {field} = ? WHERE id = ?",
                     (value.strip(), h["id"]),
@@ -338,7 +395,11 @@ class HabitStore:
         target = _match_key(name)
         for h in self.list_habits(tracked_only=False):
             display = self.context.habit_display_name(h["name"])
-            if _match_key(display) == target or _match_key(h["name"]) == target:
+            if (
+                _match_key(display) == target
+                or _match_key(h["name"]) == target
+                or any(_match_key(alias) == target for alias in h["aliases"])
+            ):
                 return h
         return None
 
@@ -348,6 +409,127 @@ class HabitStore:
             (habit_id,),
         )
         return [r["identity"] for r in rows]
+
+    def _aliases(self, habit_id: int) -> list[str]:
+        rows = self.db.query(
+            "SELECT alias FROM habit_aliases WHERE habit_id = ? ORDER BY alias",
+            (habit_id,),
+        )
+        return [r["alias"] for r in rows]
+
+    @staticmethod
+    def _habitify_days(occurrence: dict | None) -> list[int] | None:
+        occurrence = occurrence or {}
+        if occurrence.get("type") == "weekDays":
+            # Habitify Sunday=0; Python Monday=0.
+            return sorted({(int(day) - 1) % 7 for day in occurrence.get("days", [])})
+        return None
+
+    def sync_from_habitify(self, remote_habits: list[dict]) -> dict[str, int]:
+        """Refresh the local read projection without making it an authority.
+
+        Habitify-owned fields are overwritten. Personal Ops-only annotations (cue,
+        identities, pause window) remain attached to the stable local row.
+        """
+        current = self.list_habits(tracked_only=False)
+        by_remote_id = {h["habitify_id"]: h for h in current if h["habitify_id"]}
+        by_name = {}
+        for habit in current:
+            for candidate in [
+                habit["name"],
+                self.context.habit_display_name(habit["name"]),
+                *habit["aliases"],
+            ]:
+                by_name[normalize_habit_name(candidate)] = habit
+
+        inverse_overrides = {
+            normalize_habit_name(remote): local
+            for local, remote in {**REMOTE_NAME_OVERRIDES, **DISPLAY_NAME_OVERRIDES}.items()
+        }
+        seen_ids: set[str] = set()
+        seen_local_ids: set[int] = set()
+        active_count = 0
+        created = updated = 0
+        for remote in remote_habits:
+            if remote.get("type", "good") != "good":
+                continue
+            remote_id = str(remote["id"])
+            remote_name = remote["name"].strip()
+            seen_ids.add(remote_id)
+            if not remote.get("isArchived"):
+                active_count += 1
+            habit = by_remote_id.get(remote_id)
+            if habit is None:
+                remote_key = normalize_habit_name(remote_name)
+                habit = by_name.get(remote_key)
+                if habit is None and remote_key in inverse_overrides:
+                    habit = by_name.get(inverse_overrides[remote_key])
+
+            goals = [goal for goal in remote.get("goals", []) if goal.get("isActive", True)]
+            goal = goals[0] if goals else {}
+            areas = [a.get("name", "").strip() for a in remote.get("areas", [])]
+            times = [t.get("name", "").strip() for t in remote.get("timeOfDays", [])]
+            section = next((x for x in areas if x), "")
+            if not section and len([x for x in times if x]) == 1:
+                section = next(x for x in times if x)
+            section = section or "Habitify"
+            days_csv = _days_to_csv(self._habitify_days(remote.get("occurrence")))
+
+            if habit is None:
+                if remote.get("isArchived"):
+                    continue
+                nxt = self.db.query(
+                    "SELECT COALESCE(MAX(position), 0) + 1 AS p FROM habits"
+                )[0]["p"]
+                self.db.execute(
+                    "INSERT INTO habits "
+                    "(section, name, days, tracked, position, habitify_id, "
+                    "habitify_managed, goal_periodicity, goal_value, goal_unit) "
+                    "VALUES (?, ?, ?, 1, ?, ?, 1, ?, ?, ?)",
+                    (
+                        section,
+                        remote_name,
+                        days_csv,
+                        nxt,
+                        remote_id,
+                        str(goal.get("periodicity", "")),
+                        str(goal.get("value", "")),
+                        str(goal.get("unit", "")),
+                    ),
+                )
+                created += 1
+                continue
+
+            seen_local_ids.add(habit["id"])
+            if habit["name"] != remote_name:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO habit_aliases (habit_id, alias) VALUES (?, ?)",
+                    (habit["id"], habit["name"]),
+                )
+            self.db.execute(
+                "UPDATE habits SET name = ?, days = ?, tracked = ?, habitify_id = ?, "
+                "habitify_managed = 1, goal_periodicity = ?, goal_value = ?, goal_unit = ?, "
+                "section = ? WHERE id = ?",
+                (
+                    remote_name,
+                    days_csv,
+                    0 if remote.get("isArchived") else 1,
+                    remote_id,
+                    str(goal.get("periodicity", "")),
+                    str(goal.get("value", "")),
+                    str(goal.get("unit", "")),
+                    section,
+                    habit["id"],
+                ),
+            )
+            updated += 1
+
+        for habit in self.list_habits(tracked_only=False):
+            if habit["id"] not in seen_local_ids and habit["habitify_id"] not in seen_ids:
+                self.db.execute(
+                    "UPDATE habits SET tracked = 0 WHERE id = ?", (habit["id"],)
+                )
+        return {"created": created, "updated": updated, "active": active_count}
 
     def _sync_identity_cache(self, habit_id: int) -> None:
         """Rewrite the denormalised habits.identity cache from the join table."""
@@ -553,9 +735,15 @@ def exact_habit_match(content: str, db) -> str | None:
     "brush teeth" resolves but "I should brush teeth later" does not — deliberately
     conservative to avoid false positives in the classifier.
     """
-    rows = db.query("SELECT name FROM habits WHERE tracked = 1")
-    names = [Context.habit_display_name(r["name"]) for r in rows]
-    by_lower = {n.strip().lower(): n for n in names}
+    rows = db.query("SELECT id, name FROM habits WHERE tracked = 1")
+    by_lower: dict[str, str] = {}
+    for row in rows:
+        canonical = Context.habit_display_name(row["name"])
+        by_lower[canonical.strip().lower()] = canonical
+        for alias in db.query(
+            "SELECT alias FROM habit_aliases WHERE habit_id = ?", (row["id"],)
+        ):
+            by_lower[Context.habit_display_name(alias["alias"]).strip().lower()] = canonical
     return by_lower.get(content.strip().lower())
 
 
@@ -679,6 +867,7 @@ class HabitHandlers:
         allowed_user: int,
         planner=None,
         quiet_window: QuietWindow | None = None,
+        habitify_sync=_AUTO_HABITIFY,
     ) -> None:
         self.bot = bot
         self.logs = logs
@@ -693,8 +882,21 @@ class HabitHandlers:
             else _make_quiet_window(self.shabbat)
         )
         self.store = HabitStore(logs.db, context)  # plugin creates/owns its table here
+        if habitify_sync is _AUTO_HABITIFY:
+            api_key = os.environ.get("HABITIFY_API_KEY", "").strip()
+            habitify_sync = (
+                HabitifyHabitSync(HabitifyClient(api_key)) if api_key else None
+            )
+        self.habitify_sync = habitify_sync
+        self._habitify_projection_loaded_at = 0.0
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
+            {
+                "id": "habitify_definition_sync",
+                "func": self.refresh_habits_from_habitify,
+                "trigger": "interval",
+                "kwargs": {"minutes": 5},
+            },
             {
                 "id": "habit_eod_check",
                 "func": self.daily_habit_check,
@@ -714,6 +916,29 @@ class HabitHandlers:
                 "kwargs": {"day_of_week": "sun", "hour": 9, "minute": 0},
             },
         ]
+
+    @property
+    def habitify_is_source(self) -> bool:
+        return getattr(self, "habitify_sync", None) is not None
+
+    async def refresh_habits_from_habitify(
+        self, force: bool = False
+    ) -> dict[str, int] | None:
+        """Refresh Habitify-owned definitions into the local read projection."""
+        sync = getattr(self, "habitify_sync", None)
+        if sync is None:
+            return None
+        loaded_at = getattr(self, "_habitify_projection_loaded_at", 0.0)
+        if not force and time.monotonic() - loaded_at < 300:
+            return None
+        try:
+            habits = await asyncio.to_thread(sync.definition_habits, force)
+            result = self.store.sync_from_habitify(habits)
+            self._habitify_projection_loaded_at = time.monotonic()
+            return result
+        except HabitifyError:
+            logger.exception("Habitify definition refresh failed; using cached projection")
+            return None
 
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))
@@ -765,6 +990,7 @@ class HabitHandlers:
                 h["name"],
                 lookback=max(days, 1),
                 paused=self._pause_window(h),
+                aliases=h.get("aliases"),
             )
             disp = self.context.habit_display_name(h["name"])
             parts.append(f"{disp} 🔥{current}" if current else f"{disp} —")
@@ -777,7 +1003,11 @@ class HabitHandlers:
         paths store the canonical name, so exact match is all that's needed)."""
         logged_l = logged.strip().lower()
         for h in all_habits:
-            if logged_l == self.context.habit_display_name(h["name"]).strip().lower():
+            candidates = [h["name"], *h.get("aliases", [])]
+            if any(
+                logged_l == self.context.habit_display_name(name).strip().lower()
+                for name in candidates
+            ):
                 return h
         return None
 
@@ -845,6 +1075,7 @@ class HabitHandlers:
                 cur, _ = compute_streak(
                     self.logs,
                     h["name"],
+                    aliases=h.get("aliases"),
                     due_weekdays=h["days"],
                     logged_by_day=logged_by_day,
                     paused=self._pause_window(h),
@@ -854,7 +1085,8 @@ class HabitHandlers:
                     for x in recent_chain(
                         self.logs,
                         h["name"],
-                        h["days"],
+                        due_weekdays=h["days"],
+                        aliases=h.get("aliases"),
                         n=10,
                         logged_by_day=logged_by_day,
                         paused=self._pause_window(h),
@@ -863,7 +1095,8 @@ class HabitHandlers:
                 at_risk = (not done) and missed_last_due_day(
                     self.logs,
                     h["name"],
-                    h["days"],
+                    due_weekdays=h["days"],
+                    aliases=h.get("aliases"),
                     logged_by_day=logged_by_day,
                     paused=self._pause_window(h),
                 )
@@ -1030,10 +1263,6 @@ class HabitHandlers:
         pending = self._pending_today_habits()
         if not pending:
             return
-        from datetime import datetime
-        from location import current_tz
-
-        now = datetime.now(current_tz())
         for h in pending:
             self.logs.write("habit_missed", h["name"])
         names = ", ".join(self.context.habit_display_name(h["name"]) for h in pending)
@@ -1086,11 +1315,18 @@ class HabitHandlers:
             else None
         )
 
-        self.logs.write(
-            "habit" if action == "hbq_done" else "habit_missed",
-            name,
-            when=msg_local if eod_date else None,
-        )
+        when = msg_local if eod_date else None
+        if action == "hbq_done":
+            try:
+                await self.record_habit_completion(name, when=when)
+            except HabitifyError:
+                await self.bot.send_message(
+                    chat_id=self.allowed_user,
+                    text="⚠️ Habitify couldn't record that completion. Nothing was logged; please try again.",
+                )
+                return
+        else:
+            self.logs.write("habit_missed", name, when=when)
         text, keyboard = self._eod_message(for_date=eod_date)
         if text is None:
             await query.edit_message_text(
@@ -1110,6 +1346,7 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         assert update.message is not None
+        await self.refresh_habits_from_habitify()
         if not self.store.list_habits():
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
@@ -1128,14 +1365,38 @@ class HabitHandlers:
         await safe_answer(query)
         assert query.data is not None  # every button we create sets callback_data
         habit_name = query.data.split(":", 1)[1]
-        self.logs.write("habit", habit_name)
+        try:
+            await self.record_habit_completion(habit_name)
+        except HabitifyError:
+            await self.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Habitify couldn't record that completion. Nothing was logged; please try again.",
+            )
+            return
         # Celebrate milestones on the checklist (not every tap — that'd be spam). 3 is the
         # early "don't break the chain" win; then the usual 1/4/15-week-ish marks.
-        cur, _ = compute_streak(self.logs, habit_name)
+        habit = self.store._habit_by_name(habit_name)
+        cur, _ = compute_streak(
+            self.logs,
+            habit_name,
+            aliases=habit.get("aliases") if habit else None,
+        )
         if cur in (3, 7, 30, 100, 365):
             await send_sticker(self.bot, update.effective_chat.id, "streak")
         text, keyboard = self._message()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def record_habit_completion(
+        self, habit_name: str, when: datetime | None = None, extra: dict | None = None
+    ) -> int:
+        """Write a completion to Habitify first, then the local audit/streak log."""
+        sync = getattr(self, "habitify_sync", None)
+        if sync is not None:
+            from location import current_tz
+
+            target_date = (when or datetime.now(current_tz())).date().isoformat()
+            await asyncio.to_thread(sync.complete, habit_name, target_date)
+        return self.logs.write("habit", habit_name, when=when, extra=extra)
 
     async def cmd_habit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/habitnote <habit>: <note> — attach a dated note to a habit.
@@ -1253,6 +1514,12 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         assert update.message is not None
+        if self.habitify_is_source:
+            await update.message.reply_text(
+                "Habitify is the source of truth. Add the habit there; Personal Ops "
+                "will recognize it automatically within five minutes."
+            )
+            return
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
@@ -1287,6 +1554,13 @@ class HabitHandlers:
                 "Fields: <code>name</code>, <code>days</code> (e.g. mon,wed,fri or daily), "
                 "<code>section</code>",
                 parse_mode="HTML",
+            )
+            return
+
+        if self.habitify_is_source and ":" in raw:
+            await update.message.reply_text(
+                "Habitify owns habit names, schedules, goals, and organization. "
+                "Edit this habit in Habitify; Personal Ops will refresh automatically."
             )
             return
 
@@ -1605,6 +1879,7 @@ class HabitHandlers:
                 due_weekdays=h["days"],
                 logged_by_day=logged_by_day,
                 paused=self._pause_window(h),
+                aliases=h.get("aliases"),
             )
             label = f"{disp} 🔥{cur}" if cur else disp
             if h["identities"]:
@@ -1918,6 +2193,15 @@ class HabitHandlers:
         habit = sugg["habit"]
         action = sugg["action"]
         val = sugg["value"]
+        if self.habitify_is_source and action in {"set_days", "rename", "archive"}:
+            self.store.update_suggestion_status(suggestion_id, "rejected")
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n"
+                "Habitify owns that field. If you want this change, make it in "
+                "Habitify and Personal Ops will pick it up automatically.",
+                parse_mode="HTML",
+            )
+            return
         try:
             if action == "set_cue":
                 cue = val.get("cue", "")
@@ -1996,6 +2280,12 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         assert update.message is not None
+        if self.habitify_is_source:
+            await update.message.reply_text(
+                "Manage, archive, and delete habits in Habitify. Personal Ops keeps a "
+                "read-only projection for Telegram and its coaching features."
+            )
+            return
         if not self.store.list_habits(tracked_only=False):
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
@@ -2011,6 +2301,12 @@ class HabitHandlers:
         assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
+        if self.habitify_is_source:
+            await query.edit_message_text(
+                "Habitify now owns habit management. Make this change there; "
+                "Personal Ops will refresh automatically."
+            )
+            return
         assert query.data is not None  # every button we create sets callback_data
         action, hid = query.data.split(":", 1)
         habit_id = int(hid)

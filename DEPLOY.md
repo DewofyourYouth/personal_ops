@@ -63,6 +63,56 @@ First start:
 cd /opt/personal_ops && docker compose up -d --build
 ```
 
+### Enable Apple Health metric ingestion
+
+The ingestion API is opt-in, so existing deployments do not break before its token and
+HTTPS proxy are ready. Add these two values to the VPS `.env`:
+
+```dotenv
+INGEST_TOKEN=<a separate random token, e.g. openssl rand -hex 32>
+COMPOSE_PROFILES=ingest
+```
+
+Then rebuild with `docker compose up -d --build`. The API listens only on
+`127.0.0.1:8081`; expose it through the box's HTTPS reverse proxy, not as a public plain-HTTP
+port. Point the proxy's `/metrics` route (or a dedicated hostname) to
+`http://127.0.0.1:8081`.
+
+Verify from outside the VPS before configuring the phone:
+
+```bash
+curl -sS https://<your-ingest-host>/metrics \
+  -H 'Authorization: Bearer <INGEST_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  --data '{"key":"weight","value":91.2,"unit":"kg","recorded_at":"2026-08-28T05:42:10+03:00"}'
+```
+
+The response includes `duplicate` (safe Shortcut retry) and `habitify_synced`. A weight
+sample writes its numeric value to Personal Ops and completes the Habitify “Weigh in” habit.
+
+### iPhone Shortcut: Apple Health → Personal Ops
+
+Create a personal automation that runs once daily after the scale normally syncs. Its
+Shortcut should:
+
+1. Find Health Samples where type is **Weight**, sort by Start Date newest-first, limit 1.
+2. Extract the sample's numeric value and Start Date; format the date as ISO 8601.
+3. Use **Get Contents of URL** with `POST https://<your-ingest-host>/metrics`.
+4. Add header `Authorization: Bearer <INGEST_TOKEN>` and a JSON request body:
+
+   ```json
+   {
+     "key": "weight",
+     "value": 91.2,
+     "unit": "kg",
+     "recorded_at": "2026-08-28T05:42:10+03:00"
+   }
+   ```
+
+Use Shortcut variables for `value` and `recorded_at`. Set the automation to **Run
+Immediately**. Re-sending the latest sample is harmless because key + sample timestamp are
+deduplicated.
+
 ## 2. Actions → VPS deploy key + GitHub secrets
 
 On your laptop:

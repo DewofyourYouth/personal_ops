@@ -1,6 +1,6 @@
 # Dashboard API — Spec
 
-Status: **proposed** (not built). Authored 2026-06-03.
+Status: **write endpoint built** (2026-08-28); public proxy and iPhone Shortcut remain to deploy.
 The FastAPI app planned for the VPS ("Public dashboard", `dashboard.dewofyouryouth.com`).
 This doc covers its **write endpoints**; dashboard read routes are sketched at the end.
 
@@ -49,6 +49,8 @@ a notification — so this path can't fail silently either.
 ```jsonc
 { "key": "steps",  "value": 11855, "unit": "" }
 { "key": "weight", "value": 94.3,  "unit": "kg" }
+{ "key": "weight", "value": 94.3,  "unit": "kg",
+  "recorded_at": "2026-08-28T05:42:10+03:00" }
 ```
 
 | Status | Body | Meaning |
@@ -58,7 +60,11 @@ a notification — so this path can't fail silently either.
 | 422 | (FastAPI validation) | bad/missing fields |
 | 500 | `{"detail":"db write failed","kept_in_jsonl":true}` | JSONL has it; sync recovers |
 
-Implementation: `logs.write_metric(key, value, unit)`.
+`recorded_at` should be the Apple Health sample timestamp. Repeating the same key and
+timestamp is idempotent, so a Shortcut may safely retry. A weight reading also marks the
+Habitify “Weigh in” habit complete when `HABITIFY_API_KEY` is configured.
+
+Implementation: `logs.write_metric(key, value, unit, when=recorded_at)`.
 
 ---
 
@@ -70,7 +76,7 @@ Implementation: `logs.write_metric(key, value, unit)`.
 
 ## Docker / config
 
-- New compose service `api`: same image base, `uvicorn api.main:app`,
+- New compose service `api` under the `ingest` profile: same image base, `uvicorn api.main:app`,
   `ports: ["127.0.0.1:8081:8081"]`, shares `./ops/log` volume, `restart: unless-stopped`.
 - New env vars: `INGEST_TOKEN` (required to enable; off when unset), `INGEST_PORT` (default 8081).
 
@@ -82,12 +88,11 @@ the only SQL layer, so a later swap is contained. See [VPS_MIGRATION.md](VPS_MIG
 
 ## Build order
 
-1. `api/main.py` — FastAPI app, `POST /metrics`, Bearer-token dependency, reusing `Logs`.
-   Add `fastapi` + `uvicorn` to `requirements.txt`.
-2. Compose `api` service (off unless `INGEST_TOKEN` set), localhost port.
-3. Verify locally with `curl` → 200 + a metric row in `ops.db`.
-4. Point a Shortcut at it (steps/weight); confirm end-to-end.
-5. On VPS: reverse proxy + TLS. Then add dashboard **read** routes to the same app.
+1. ✅ `api/main.py` — FastAPI app, authenticated/idempotent `POST /metrics`.
+2. ✅ Compose `api` service under the opt-in `ingest` profile, localhost port.
+3. Set `INGEST_TOKEN` and `COMPOSE_PROFILES=ingest` in the VPS `.env`; deploy.
+4. Put `127.0.0.1:8081` behind the existing HTTPS reverse proxy.
+5. Point an iPhone Shortcut at it and confirm a reading in `/weight`.
 
 ## Dashboard read routes (later)
 

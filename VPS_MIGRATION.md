@@ -70,9 +70,9 @@ Telegram. Build it as soon as the bot is up on the VPS — it stops the daily da
 
 Design is done in [DASHBOARD_API_SPEC.md](DASHBOARD_API_SPEC.md); see the **Dashboard / API**
 section below for the SQLite/concurrency decisions.
-- [ ] `api/main.py` — FastAPI `POST /metrics` (Bearer `INGEST_TOKEN`), reuses `logs.write_metric`
-- [ ] Add `fastapi` + `uvicorn` to `requirements.txt`
-- [ ] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, off unless `INGEST_TOKEN` set)
+- [x] `api/main.py` — FastAPI `POST /metrics` (Bearer `INGEST_TOKEN`), reuses `logs.write_metric`
+- [x] Add `fastapi` + `uvicorn` to `requirements.txt`
+- [x] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, opt-in `ingest` profile)
 - [ ] Reverse proxy + TLS so the phone can reach it
 - [ ] Repoint the Shortcut at `POST /metrics`; verify a reading lands without Telegram
 - [ ] Stop manually backfilling steps/weight
@@ -121,9 +121,9 @@ messages are the bot talking to itself and never seen by `getUpdates`). Token au
 (`INGEST_TOKEN`). Full design: [DASHBOARD_API_SPEC.md](DASHBOARD_API_SPEC.md).
 - `POST /metrics` — weight/steps via `logs.write_metric`.
 
-- [ ] `api/main.py` — FastAPI app with `POST /metrics`, token auth, reuses `Logs`
-- [ ] Add `fastapi` + `uvicorn` to `requirements.txt`
-- [ ] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, off unless `INGEST_TOKEN` set)
+- [x] `api/main.py` — FastAPI app with `POST /metrics`, token auth, reuses `Logs`
+- [x] Add `fastapi` + `uvicorn` to `requirements.txt`
+- [x] `api` service in `docker-compose.yml` (shares `./ops/log`, localhost port, opt-in `ingest` profile)
 - [ ] Point an iPhone Shortcut at it; verify a reading lands in `ops.db`
 - [ ] On VPS: reverse proxy + TLS at the dashboard domain
 
