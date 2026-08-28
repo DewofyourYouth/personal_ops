@@ -83,3 +83,67 @@ def test_sync_rejects_unknown_habit_without_posting():
 
     with pytest.raises(HabitifyError, match="no active habit"):
         HabitifyHabitSync(Client()).complete("Unknown habit", "2026-08-28")
+
+
+def test_completion_projection_handles_daily_and_weekly_goals():
+    class Client:
+        def list_habits(self):
+            return [
+                {"id": "daily", "name": "Tefillin", "type": "good", "isArchived": False},
+                {"id": "weekly", "name": "Core Training", "type": "good", "isArchived": False},
+            ]
+
+        def journal(self, target_date):
+            return [
+                {
+                    "id": "daily",
+                    "status": "completed",
+                    "progress": {"periodicity": "daily", "current": 1, "target": 1},
+                },
+                {
+                    "id": "weekly",
+                    "status": "inprogress",
+                    "progress": {"periodicity": "weekly", "current": 2, "target": 3},
+                },
+            ]
+
+        def statistics(self, habit_id, start, end):
+            assert habit_id == "weekly"
+            return {
+                "dailyProgress": [
+                    {"date": "2026-08-28", "totalLog": 1, "status": "inprogress"}
+                ]
+            }
+
+    assert HabitifyHabitSync(Client()).completions_for_date("2026-08-28") == {
+        "completed": [
+            {"id": "daily", "name": "Tefillin"},
+            {"id": "weekly", "name": "Core Training"},
+        ],
+        "resolved_ids": ["daily", "weekly"],
+    }
+
+
+def test_failed_weekly_read_is_left_unresolved():
+    class Client:
+        def list_habits(self):
+            return [
+                {"id": "weekly", "name": "Core Training", "type": "good", "isArchived": False}
+            ]
+
+        def journal(self, target_date):
+            return [
+                {
+                    "id": "weekly",
+                    "status": "inprogress",
+                    "progress": {"periodicity": "weekly", "current": 2, "target": 3},
+                }
+            ]
+
+        def statistics(self, habit_id, start, end):
+            raise HabitifyError(503, "temporary")
+
+    assert HabitifyHabitSync(Client()).completions_for_date("2026-08-28") == {
+        "completed": [],
+        "resolved_ids": [],
+    }

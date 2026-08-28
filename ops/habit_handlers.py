@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS habit_aliases (
 CREATE INDEX IF NOT EXISTS idx_habit_aliases_habit ON habit_aliases(habit_id);
 """
 
+_HABITIFY_COMPLETIONS_DDL = """
+CREATE TABLE IF NOT EXISTS habitify_completions (
+    habitify_id TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    habit       TEXT NOT NULL,
+    PRIMARY KEY (habitify_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_habitify_completions_date
+    ON habitify_completions(date);
+"""
+
 _NEGATIVE_HABITS_DDL = """
 CREATE TABLE IF NOT EXISTS negative_habits (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,6 +222,7 @@ class HabitStore:
         self.db.ensure_schema(_HABIT_NOTES_DDL)
         self.db.ensure_schema(_HABIT_IDENTITIES_DDL)
         self.db.ensure_schema(_HABIT_ALIASES_DDL)
+        self.db.ensure_schema(_HABITIFY_COMPLETIONS_DDL)
         self.db.ensure_schema(_NEGATIVE_HABITS_DDL)
         self.db.ensure_schema(_SLIP_LOGS_DDL)
         self.db.ensure_schema(_HABIT_SUGGESTIONS_DDL)
@@ -530,6 +542,36 @@ class HabitStore:
                     "UPDATE habits SET tracked = 0 WHERE id = ?", (habit["id"],)
                 )
         return {"created": created, "updated": updated, "active": active_count}
+
+    def sync_habitify_completions(
+        self,
+        target_date: date,
+        completions: list[dict[str, str]],
+        resolved_ids: list[str],
+    ) -> int:
+        """Replace one day's reconstructable Habitify completion projection."""
+        day = target_date.isoformat()
+        for habitify_id in resolved_ids:
+            self.db.execute(
+                "DELETE FROM habitify_completions WHERE date = ? AND habitify_id = ?",
+                (day, habitify_id),
+            )
+        for completion in completions:
+            self.db.execute(
+                "INSERT INTO habitify_completions (habitify_id, date, habit) "
+                "VALUES (?, ?, ?)",
+                (completion["id"], day, completion["name"]),
+            )
+        return len(completions)
+
+    def habitify_completion_entries(self, target_date: date) -> list[dict]:
+        return [
+            {"tag": "habit", "content": row["habit"], "date": row["date"]}
+            for row in self.db.query(
+                "SELECT date, habit FROM habitify_completions WHERE date = ?",
+                (target_date.isoformat(),),
+            )
+        ]
 
     def _sync_identity_cache(self, habit_id: int) -> None:
         """Rewrite the denormalised habits.identity cache from the join table."""
@@ -889,6 +931,7 @@ class HabitHandlers:
             )
         self.habitify_sync = habitify_sync
         self._habitify_projection_loaded_at = 0.0
+        self._habitify_completions_loaded_at = 0.0
         # Scheduled jobs this plugin contributes (the registry collects these).
         self.jobs = [
             {
@@ -922,19 +965,38 @@ class HabitHandlers:
         return getattr(self, "habitify_sync", None) is not None
 
     async def refresh_habits_from_habitify(
-        self, force: bool = False
+        self, force: bool = False, force_completions: bool = False
     ) -> dict[str, int] | None:
-        """Refresh Habitify-owned definitions into the local read projection."""
+        """Refresh Habitify definitions and today's completion projection."""
         sync = getattr(self, "habitify_sync", None)
         if sync is None:
             return None
         loaded_at = getattr(self, "_habitify_projection_loaded_at", 0.0)
-        if not force and time.monotonic() - loaded_at < 300:
-            return None
         try:
-            habits = await asyncio.to_thread(sync.definition_habits, force)
-            result = self.store.sync_from_habitify(habits)
-            self._habitify_projection_loaded_at = time.monotonic()
+            result = None
+            if force or time.monotonic() - loaded_at >= 300:
+                habits = await asyncio.to_thread(sync.definition_habits, force)
+                result = self.store.sync_from_habitify(habits)
+                self._habitify_projection_loaded_at = time.monotonic()
+
+            completions_loaded = getattr(
+                self, "_habitify_completions_loaded_at", 0.0
+            )
+            if (
+                force
+                or force_completions
+                or time.monotonic() - completions_loaded >= 30
+            ):
+                from location import current_tz
+
+                today = datetime.now(current_tz()).date()
+                snapshot = await asyncio.to_thread(
+                    sync.completions_for_date, today.isoformat()
+                )
+                self.store.sync_habitify_completions(
+                    today, snapshot["completed"], snapshot["resolved_ids"]
+                )
+                self._habitify_completions_loaded_at = time.monotonic()
             return result
         except HabitifyError:
             logger.exception("Habitify definition refresh failed; using cached projection")
@@ -1011,6 +1073,11 @@ class HabitHandlers:
                 return h
         return None
 
+    def _entries_for_date(self, target: date) -> list[dict]:
+        local = [dict(row) for row in self.logs.db.entries_for_date(target)]
+        projected = list(self.store.habitify_completion_entries(target))
+        return local + projected
+
     @staticmethod
     def _is_paused(h: dict, today: date) -> bool:
         return h["paused_until"] is not None and h["paused_until"] >= today
@@ -1038,7 +1105,7 @@ class HabitHandlers:
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
-            for e in self.logs.read_today()
+            for e in self._entries_for_date(today)
             if e.get("tag") == "habit"
         ]
 
@@ -1137,11 +1204,7 @@ class HabitHandlers:
         target = for_date or _date.today()
         target_weekday = target.weekday()
         sections = self.store.sections()
-        entries = (
-            self.logs.read_today()
-            if for_date is None
-            else [dict(r) for r in self.logs.db.entries_for_date(for_date)]
-        )
+        entries = self._entries_for_date(target)
         resolved = [
             e["content"].strip()
             for e in entries
@@ -1184,7 +1247,7 @@ class HabitHandlers:
         sections = self.store.sections()
         logged_today = [
             e["content"].strip()
-            for e in self.logs.read_today()
+            for e in self._entries_for_date(today)
             if e.get("tag") == "habit"
         ]
         all_visible = []
@@ -1241,6 +1304,7 @@ class HabitHandlers:
         (used by /habitcheck on demand)."""
         if not force and self.quiet_window.is_quiet_at():
             return
+        await self.refresh_habits_from_habitify(force_completions=True)
         text, keyboard = self._eod_message()
         if text is None:
             return
@@ -1260,6 +1324,7 @@ class HabitHandlers:
         during quiet windows (items that couldn't be logged aren't failures)."""
         if self.quiet_window.is_quiet_at():
             return
+        await self.refresh_habits_from_habitify(force_completions=True)
         pending = self._pending_today_habits()
         if not pending:
             return
@@ -1346,7 +1411,7 @@ class HabitHandlers:
         if update.effective_user.id != self.allowed_user:
             return
         assert update.message is not None
-        await self.refresh_habits_from_habitify()
+        await self.refresh_habits_from_habitify(force_completions=True)
         if not self.store.list_habits():
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
