@@ -1,15 +1,14 @@
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from location import current_tz
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-TZ = ZoneInfo("Asia/Jerusalem")
 
 
 class GCal:
@@ -24,7 +23,7 @@ class GCal:
         self.calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
     def get_today_events(self) -> list:
-        now = datetime.now(TZ)
+        now = datetime.now(current_tz())
         end = now.replace(hour=23, minute=59, second=59, microsecond=0)
         result = (
             self._service()
@@ -64,10 +63,11 @@ class GCal:
         description: str | None = None,
     ) -> dict:
         end_dt = start_dt + timedelta(minutes=duration_minutes)
+        tz_name = current_tz().key
         body = {
             "summary": summary,
-            "start": {"dateTime": start_dt.isoformat(), "timeZone": "Asia/Jerusalem"},
-            "end": {"dateTime": end_dt.isoformat(), "timeZone": "Asia/Jerusalem"},
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": tz_name},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": tz_name},
         }
         if description:
             body["description"] = description
@@ -86,7 +86,11 @@ class GCal:
             start = e["start"].get("dateTime", e["start"].get("date", ""))
             summary = e.get("summary", "(no title)")
             if "T" in start:
-                t = datetime.fromisoformat(start).astimezone(TZ).strftime("%H:%M")
+                t = (
+                    datetime.fromisoformat(start)
+                    .astimezone(current_tz())
+                    .strftime("%H:%M")
+                )
             else:
                 t = "All day"
             rows.append((t, summary))

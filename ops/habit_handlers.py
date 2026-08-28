@@ -396,9 +396,9 @@ class HabitStore:
 
     def add_note(self, habit_name: str, note: str) -> None:
         from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from location import current_tz
 
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         self.db.execute(
             "INSERT INTO habit_notes (ts, date, habit, note) VALUES (?, ?, ?, ?)",
             (
@@ -467,9 +467,9 @@ class HabitStore:
 
     def log_slip(self, habit: str, note: str = "") -> None:
         from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from location import current_tz
 
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         self.db.execute(
             "INSERT INTO slip_logs (ts, date, habit, note) VALUES (?, ?, ?, ?)",
             (
@@ -506,9 +506,9 @@ class HabitStore:
     ) -> int:
         import json
         from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from location import current_tz
 
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         self.db.execute(
             "INSERT INTO habit_suggestions (ts, habit, display, action, value) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -1037,9 +1037,9 @@ class HabitHandlers:
         if not pending:
             return
         from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from location import current_tz
 
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         for h in pending:
             self.logs.write("habit_missed", h["name"])
         names = ", ".join(self.context.habit_display_name(h["name"]) for h in pending)
@@ -1064,7 +1064,7 @@ class HabitHandlers:
 
     async def handle_eod(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from location import current_tz
 
         query = update.callback_query
         await safe_answer(query)
@@ -1073,9 +1073,9 @@ class HabitHandlers:
         # Morning-after grace window: if it's before noon and the EOD message was sent
         # on a prior calendar day, log the habit for that prior day so the streak isn't
         # lost just because the user checks in the next morning.
-        TZ = ZoneInfo("Asia/Jerusalem")
-        now_local = datetime.now(TZ)
-        msg_local = query.message.date.astimezone(TZ)
+        tz = current_tz()
+        now_local = datetime.now(tz)
+        msg_local = query.message.date.astimezone(tz)
         eod_date = (
             msg_local.date()
             if (now_local.date() > msg_local.date() and now_local.hour < 12)

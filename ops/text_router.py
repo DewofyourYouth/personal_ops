@@ -24,9 +24,16 @@ import re
 import tempfile
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
-from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import location
+import voice
+from food_registry import parse_composition
+from habit_handlers import exact_habit_match, match_habit
+from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
+from location import current_tz
+from media import send_sticker
+from tags import PREFIXES
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -35,20 +42,12 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-
-import voice
-from tags import PREFIXES
-from food_registry import parse_composition
-from habit_handlers import exact_habit_match, match_habit
-from llm import classify_entry, parse_queue_entry, transcribe_with_language_detection
-from media import send_sticker
 from tg_common import (
     encourage,
     inline_keyboard_markup,
     inline_keyboard_rows,
     safe_answer,
 )
-
 
 # Matches "feedback:", "feedback request", "question:", "I have a question", etc.
 _FEEDBACK_RE = re.compile(
@@ -214,6 +213,20 @@ _VAGUE_AGENDA_REFERENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Cheap pre-gate before paying for an LLM round-trip to interpret a free-text
+# location statement ("I'm going to be in Djerba for Shabbos", "I'm in Florida
+# now", "please update shabbat times for Djerba") — see parse_location_override
+# and _propose_location_override. False positives just cost one Haiku call
+# that comes back empty; false negatives fall through to normal classification.
+_LOCATION_HINT_RE = re.compile(
+    r"\bi'?m\s+(?:going\s+to\s+be\s+|gonna\s+be\s+)?in\b"
+    r"|\bi(?:'ll|\s+will)\s+be\s+in\b"
+    r"|\bheading\s+to\b|\bheaded\s+to\b|\bback\s+in\b"
+    r"|\bshabbat\s+times\s+for\b|\bshabbos\s+times\s+for\b"
+    r"|\bupdate\b.*\bshabbat\s+times\b|\bshabbat\s+location\b",
+    re.IGNORECASE,
+)
+
 
 def _agenda_extraction_is_suspect(original: str, item: str) -> bool:
     """True when `_extract_agenda_item`'s regex result probably isn't a real task.
@@ -329,7 +342,7 @@ def _normalize(text: str) -> str:
 def _parse_time(text: str) -> str | None:
     text = text.strip().lower()
     if text in ("now", "עכשיו"):
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         return f"{now.hour:02d}:{now.minute:02d}"
     m = re.search(r"(\d{1,2}):(\d{2})", text)
     if m:
@@ -349,7 +362,8 @@ def _parse_time(text: str) -> str | None:
 
 
 def _parse_queue_date(day_str: str):
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
+    from datetime import timedelta as _td
 
     today = _date.today()
     day_str = day_str.strip().lower()
@@ -705,6 +719,10 @@ class TextRouter:
         self._last_food_entry: dict = {}
         # chat_id -> {"alias", "values"} for a pending "save as default?" prompt.
         self._awaiting_food_default: dict = {}
+        # chat_id -> {"kind": "shabbat"|"travel", "resolved": LocationInfo} for a
+        # pending location-override confirmation (exact command or LLM guess) —
+        # nothing is applied until the user confirms it.
+        self._pending_location: dict = {}
 
     def register(self, app: Application) -> None:
         app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
@@ -726,6 +744,9 @@ class TextRouter:
         )
         app.add_handler(
             CallbackQueryHandler(self.handle_route_callback, pattern="^route:")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self.handle_location_callback, pattern="^loc:")
         )
 
     # --- Candle-lighting prompt state (shared with the morning_plan job) ---
@@ -970,6 +991,8 @@ class TextRouter:
     ):
         query = update.callback_query
         await safe_answer(query)
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
         chat_id = query.message.chat_id
 
         if query.data == "voice_ok":
@@ -1010,6 +1033,8 @@ class TextRouter:
         await query.answer()
         if query.from_user.id != self.allowed_user:
             return
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
         chat_id = update.effective_chat.id
         pending = self._awaiting_food.get(chat_id)
         if not pending:
@@ -1088,6 +1113,8 @@ class TextRouter:
         await safe_answer(query)
         if query.from_user.id != self.allowed_user:
             return
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
         chat_id = update.effective_chat.id
         proposal = self._awaiting_food_default.pop(chat_id, None)
         if not proposal:
@@ -1196,7 +1223,7 @@ class TextRouter:
         None (a bare "scratch that") -> the last food entry logged this session
         (in-memory, matches the acceptance test's "same session" framing — a bare
         retraction after a restart with nothing tracked correctly no-ops)."""
-        today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+        today = datetime.now(current_tz()).date()
         food_rows = [
             r for r in self.logs.db.entries_for_date(today) if r["tag"] == "food"
         ]
@@ -1239,7 +1266,7 @@ class TextRouter:
         )
 
     def _food_manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
-        today = datetime.now(ZoneInfo("Asia/Jerusalem")).date()
+        today = datetime.now(current_tz()).date()
         rows = self.logs.db.entries_for_date(today)
         food_rows = [r for r in rows if r["tag"] == "food"]
         if food_rows:
@@ -1429,7 +1456,7 @@ class TextRouter:
 
         # Stamp the entry at the current time-of-day on the target date — habits/logs only
         # use the day, and a plausible time keeps within-day ordering sane.
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now = datetime.now(current_tz())
         when = datetime.combine(when_date, now.timetz())
         try:
             self.logs.write(tag, content, when=when)
@@ -1563,7 +1590,7 @@ class TextRouter:
                         "Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am"
                     )
                     return
-                tz = ZoneInfo("Asia/Jerusalem")
+                tz = current_tz()
                 start_dt = datetime.fromisoformat(
                     f"{parsed['date']}T{parsed['start_time']}:00"
                 ).replace(tzinfo=tz)
@@ -1672,10 +1699,11 @@ class TextRouter:
                 await reply(f"📋 Added to backlog: {item_text}")
                 return
 
-        # shabbat / candle lighting — set quiet mode manually
+        # shabbat / candle lighting — set quiet mode manually. A raw time
+        # ("candle lighting 19:13") is unambiguous and applies immediately; a
+        # place to visit for Shabbat ("candle lighting in Tzfat") is geocoded
+        # and held for confirmation first (see _propose_location_override).
         if re.match(r"^(shabbat mode|candle lighting|shabbos mode)", lower):
-            # One-step: accept the time in the same message ("candle lighting 19:13").
-            # Otherwise fall back to the prompt.
             rest = re.sub(
                 r"^(shabbat mode|candle lighting|shabbos mode)[:\s]*",
                 "",
@@ -1687,9 +1715,34 @@ class TextRouter:
             if t:
                 self.shabbat.save_candle_lighting(t)
                 await reply(self.shabbat.candle_confirmation(t))
+            elif rest:
+                place = re.sub(r"^in\s+", "", rest, flags=re.IGNORECASE).strip()
+                await self._propose_location_override(
+                    update_chat_id, "shabbat", place, reply
+                )
             else:
                 self._awaiting_candles[update_chat_id] = True
                 await reply("🕯️ What time is candle lighting?")
+            return
+
+        # traveling to <place> — general travel override (changes the active
+        # timezone app-wide, not just Shabbat sun-time math), also held for
+        # confirmation first. "back home" clears it — safe to apply straight
+        # away, since reverting to the default is the safe direction.
+        travel_match = re.match(
+            r"^(?:traveling|travelling) to\s+(.+)$", text, re.IGNORECASE
+        )
+        if travel_match:
+            await self._propose_location_override(
+                update_chat_id, "travel", travel_match.group(1).strip(), reply
+            )
+            return
+        if re.match(
+            r"^(back home|done traveling|done travelling|stop traveling|stop travelling)$",
+            lower,
+        ):
+            location.clear_travel()
+            await reply(f"🏠 Back to {location.DEFAULT_NAME} ({location.DEFAULT_TZ}).")
             return
 
         # "add X to my agenda" / "X on the agenda" — an explicitly stated destination.
@@ -1846,6 +1899,23 @@ class TextRouter:
             except Exception as e:
                 await reply(f"Feedback failed: {e}")
             return
+
+        # Free-text location statement ("I'm going to be in Djerba for
+        # Shabbos", "I'm in Florida now") that didn't match one of the exact
+        # commands above — a best-effort LLM fallback, gated by a cheap regex
+        # so most messages never pay for the round-trip. On a hit, held for
+        # confirmation exactly like every other location change; on failure or
+        # a miss, falls straight through to normal classification below.
+        if _LOCATION_HINT_RE.search(lower):
+            try:
+                parsed = await self.planner.parse_location_override(text)
+            except Exception:
+                parsed = None
+            if parsed and parsed.get("place"):
+                await self._propose_location_override(
+                    update_chat_id, parsed["kind"], parsed["place"], reply
+                )
+                return
 
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
         try:
@@ -2125,6 +2195,8 @@ class TextRouter:
         await safe_answer(query)
         if query.from_user.id != self.allowed_user:
             return
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
         _, dest, entry_id = query.data.split(":")
         entry = self.logs.db.entry_by_id(int(entry_id))
         if entry is None:
@@ -2144,3 +2216,68 @@ class TextRouter:
             else:
                 rows.append(list(row))
         await query.edit_message_reply_markup(reply_markup=inline_keyboard_markup(rows))
+
+    # --- Location override (Shabbat-only or general travel) ---
+    #
+    # Every location change — whether typed as an exact command ("traveling to
+    # X", "candle lighting in X") or guessed from free text by the LLM fallback
+    # — goes through the same resolve-then-confirm flow. Nothing is ever
+    # applied on a guess alone: resolve() only geocodes (no side effects), and
+    # apply happens solely from handle_location_callback, after the user taps
+    # Confirm. This is deliberate — a wrong guess here doesn't just log a bad
+    # entry, it can silently shift quiet hours and reminder times for days.
+
+    async def _propose_location_override(
+        self, chat_id: int, kind: str, place: str, reply
+    ) -> None:
+        """Resolve place and, if found, hold it as a pending confirmation and ask
+        the user to approve it. Never applies anything itself."""
+        resolved = await asyncio.to_thread(location.resolve, place)
+        if not resolved:
+            await reply(f'Couldn\'t find "{place}" — try a different name.')
+            return
+        self._pending_location[chat_id] = {"kind": kind, "resolved": resolved}
+        keyboard = inline_keyboard_markup(
+            [
+                [
+                    InlineKeyboardButton("✅ Confirm", callback_data="loc:confirm"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="loc:cancel"),
+                ]
+            ]
+        )
+        name = html.escape(resolved.name)
+        if kind == "shabbat":
+            text = f"📍 Set Shabbat candle-lighting location to <b>{name}</b>?"
+        else:
+            text = f"🌍 Set your location to <b>{name}</b> ({resolved.timezone})?"
+        await reply(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_location_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """loc:confirm / loc:cancel — apply or discard a pending location change
+        proposed by _propose_location_override."""
+        query = update.callback_query
+        await safe_answer(query)
+        if query.from_user.id != self.allowed_user:
+            return
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
+        chat_id = query.message.chat_id
+        action = query.data.split(":", 1)[1]
+        pending = self._pending_location.pop(chat_id, None)
+        if not pending:
+            await query.edit_message_text("⚠️ No pending location change.")
+            return
+        if action == "cancel":
+            await query.edit_message_text("Cancelled — no change made.")
+            return
+        kind, resolved = pending["kind"], pending["resolved"]
+        if kind == "shabbat":
+            self.shabbat.apply_location_override(resolved)
+            computed = self.shabbat.load_candle_lighting()
+            msg = self.shabbat.candle_confirmation(computed.strftime("%H:%M"))
+        else:
+            location.apply(resolved)
+            msg = f"🌍 Location set to {resolved.name} ({resolved.timezone})."
+        await query.edit_message_text(msg)

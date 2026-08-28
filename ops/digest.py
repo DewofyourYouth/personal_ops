@@ -13,7 +13,6 @@ method holding the Bot isn't picklable).
 """
 
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -24,8 +23,7 @@ from context import Context
 from logs import Logs
 from planner import Planner
 from tg_common import markdown_to_html, send_long
-
-_TZ = ZoneInfo("Asia/Jerusalem")
+from location import current_tz
 
 
 class DigestHandlers:
@@ -58,7 +56,7 @@ class DigestHandlers:
 
     def _save(self, text: str, label: str = "digest") -> None:
         self._dir.mkdir(exist_ok=True)
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         template = (
             self._template.read_text()
             if self._template.exists()
@@ -72,7 +70,7 @@ class DigestHandlers:
 
     @staticmethod
     def _target_date() -> date:
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         # Before 6am counts as end of the previous day, not start of the new one
         if now.hour < 6:
             return date.today() - timedelta(days=1)

@@ -10,9 +10,10 @@ import asyncio
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from telegram import InlineKeyboardButton
+from telegram import InlineKeyboardButton, Message
 
 from text_router import TextRouter
 from tg_common import inline_keyboard_markup, inline_keyboard_rows
@@ -22,7 +23,10 @@ class _FakeQuery:
     def __init__(self, data, markup, user_id=1):
         self.data = data
         self.from_user = types.SimpleNamespace(id=user_id)
-        self.message = types.SimpleNamespace(reply_markup=markup)
+        # spec=Message so isinstance(query.message, Message) — the
+        # message-accessibility guard in handle_route_callback — passes.
+        self.message = MagicMock(spec=Message)
+        self.message.reply_markup = markup
         self.edited_markup = "unset"
 
     async def answer(self, text=""):

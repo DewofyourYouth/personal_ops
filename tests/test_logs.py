@@ -7,14 +7,15 @@ from zoneinfo import ZoneInfo
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from logs import TZ, Logs
+from location import current_tz
+from logs import Logs
 
 
 def _today() -> date:
     """Jerusalem-local today, matching how Logs buckets entries by day (see
     logs.py) — the bare system date drifts from that for ~3h/day whenever the
     host clock is UTC/behind Jerusalem and the two straddle midnight."""
-    return datetime.now(TZ).date()
+    return datetime.now(current_tz()).date()
 
 
 @pytest.fixture

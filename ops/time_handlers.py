@@ -24,7 +24,8 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 import voice
-from logs import TZ, Logs, _parse_time_entry
+from location import current_tz
+from logs import Logs, _parse_time_entry
 from tg_common import mono_table, send_long
 
 
@@ -289,7 +290,7 @@ class TimeHandlers:
             await update.message.reply_text("No timer running.")
             return
         started = datetime.fromisoformat(running["start_ts"])
-        elapsed = (datetime.now(TZ) - started).total_seconds() / 60
+        elapsed = (datetime.now(current_tz()) - started).total_seconds() / 60
         await update.message.reply_text(
             f"⏱ Running: {html.escape(running['description'])}"
             f"{_project_suffix(html.escape(running['project']))} — "

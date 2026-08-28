@@ -12,12 +12,11 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 from db import Database
+from location import current_tz
 
-TZ = ZoneInfo("Asia/Jerusalem")
 LOG_DIR = os.path.join(os.getcwd(), "ops/log")
 db = Database(os.path.join(LOG_DIR, "ops.db"))
 
@@ -38,7 +37,7 @@ with open(csv_path, newline="") as f:
         dt_str, weight_str = row[0].strip(), row[1].strip()
         try:
             dt = datetime.strptime(dt_str, "%Y-%m-%d %I:%M:%S %p")
-            dt = dt.replace(tzinfo=TZ)
+            dt = dt.replace(tzinfo=current_tz())
             ts = dt.isoformat(timespec="seconds")
             date_str = dt.date().isoformat()
             value = str(round(float(weight_str), 1))

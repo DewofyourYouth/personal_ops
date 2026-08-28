@@ -8,7 +8,6 @@ import html
 import logging
 import re
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import anthropic
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -21,10 +20,10 @@ from telegram.ext import (
 
 from logs import Logs
 from tg_common import safe_answer
+from location import current_tz
 
 logger = logging.getLogger(__name__)
 
-TZ = ZoneInfo("Asia/Jerusalem")
 
 # Voice notes opening with "grocery"/"groceries" route into the list. The rest of
 # the transcript is the spoken list (or, if empty, a request to see the list).
@@ -150,7 +149,7 @@ class GroceryStore:
         added_or_reopened: list[dict] = []
         existing = self.list(include_checked=True)
         by_key = {_clean_item(i["text"]).lower(): i for i in existing}
-        now = datetime.now(TZ).isoformat(timespec="seconds")
+        now = datetime.now(current_tz()).isoformat(timespec="seconds")
         next_pos = self.db.query(
             "SELECT COALESCE(MAX(position), 0) + 1 AS p FROM grocery_items"
         )[0]["p"]
@@ -200,7 +199,9 @@ class GroceryStore:
             return None
         item = self._row(rows[0])
         checked = 0 if item["checked"] else 1
-        checked_ts = datetime.now(TZ).isoformat(timespec="seconds") if checked else ""
+        checked_ts = (
+            datetime.now(current_tz()).isoformat(timespec="seconds") if checked else ""
+        )
         self.db.execute(
             "UPDATE grocery_items SET checked = ?, checked_ts = ? WHERE id = ?",
             (checked, checked_ts, item_id),

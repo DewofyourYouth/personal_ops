@@ -1,7 +1,6 @@
 import json
 import re
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import anthropic
@@ -12,6 +11,7 @@ from baseline_tracker import Baseline
 from insights import KINDS as INSIGHT_KINDS
 from insights import Insights
 from weight import Weight
+from location import current_tz
 
 
 def _day_type_for(d: date) -> str:
@@ -456,7 +456,7 @@ class Planner:
         d = target_date or date.today()
         tomorrow = d + timedelta(days=1)
         earliest = self.logs.earliest_log_date()
-        now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now_il = datetime.now(current_tz())
         user_content = f"Date: {d} ({day_type()}). Current time: {now_il.strftime('%H:%M')} Israel time.\n"
         user_content += f"Tomorrow: {tomorrow.strftime('%A')} {tomorrow} ({_day_type_for(tomorrow)}).\n"
         earliest_habit = self.logs.earliest_habit_date()
@@ -601,7 +601,7 @@ class Planner:
         penalising of things there's still time to do."""
         client = anthropic.AsyncAnthropic(max_retries=2)
         d = target_date or date.today()
-        now_il = datetime.now(ZoneInfo("Asia/Jerusalem"))
+        now_il = datetime.now(current_tz())
         user_content = f"Date: {d} ({day_type()}). Current time: {now_il.strftime('%H:%M')} Israel time.\n"
         agenda_text = self.logs.read_agenda_as_text(d)
         if agenda_text:
@@ -872,7 +872,7 @@ class Planner:
         synopsis = await self.weight_synopsis(summary)
         self.logs.db.cache_weight_synopsis(
             basis,
-            datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
+            datetime.now(current_tz()).isoformat(timespec="seconds"),
             synopsis,
         )
         return synopsis
@@ -1181,6 +1181,75 @@ class Planner:
         for block in response.content:
             if block.type == "tool_use":
                 return block.input
+        return None
+
+    async def parse_location_override(self, text: str) -> dict | None:
+        """Interpret a free-text location statement as a location-override
+        request, for messages that don't use the exact "candle lighting in X" /
+        "traveling to X" commands (e.g. "I'm going to be in Djerba for
+        Shabbos", "I'm in Florida now", "please update shabbat times for
+        Djerba"). Two kinds: "shabbat" — a temporary sun-time-only override for
+        the coming Shabbat, cued by Shabbat-specific framing ("for Shabbos",
+        "this Shabbat", "shabbat times for X"); "travel" — an ongoing change of
+        where the user actually is, cued by present/near-future first-person
+        location statements with no Shabbat framing. Returns {"kind", "place"},
+        or None if the text isn't a location-override statement at all — the
+        caller must still confirm with the user before applying anything;
+        this only proposes."""
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            tools=[
+                {
+                    "name": "set_location_override",
+                    "description": (
+                        "Detect whether a message is asking to change the "
+                        "location the bot should use for Shabbat sun-time math "
+                        "and/or the app's active timezone. Set "
+                        "is_location_override=false for anything else "
+                        "(including a place mentioned in passing, not as a "
+                        "location statement about the user).\n\n"
+                        "kind='shabbat': a temporary, Shabbat-specific "
+                        "override — the message frames it around Shabbat/"
+                        "Shabbos specifically, e.g. \"I'm going to be in "
+                        'Djerba for Shabbos", "please update shabbat times '
+                        'for Djerba", "candle lighting for Tzfat this week".\n\n'
+                        "kind='travel': an ongoing change of where the user "
+                        "actually is, with no Shabbat-specific framing, e.g. "
+                        '"I\'m in Florida now", "I\'ll be in Miami for the '
+                        'next two weeks", "just landed in London".'
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "is_location_override": {
+                                "type": "boolean",
+                                "description": "True only if this message is asking to change the Shabbat sun-time location and/or the app's active location/timezone.",
+                            },
+                            "kind": {
+                                "type": "string",
+                                "enum": ["shabbat", "travel"],
+                                "description": "Required if is_location_override is true. See above for how to tell them apart.",
+                            },
+                            "place": {
+                                "type": "string",
+                                "description": "Required if is_location_override is true. The place name to geocode, e.g. 'Djerba', 'Miami, FL'.",
+                            },
+                        },
+                        "required": ["is_location_override"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "set_location_override"},
+            messages=[{"role": "user", "content": text}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                result = block.input
+                if not result.get("is_location_override") or not result.get("place"):
+                    return None
+                return {"kind": result.get("kind", "travel"), "place": result["place"]}
         return None
 
     async def estimate_food(self, text: str, correction: str = "") -> dict | None:

@@ -6,7 +6,6 @@ import re
 import sys
 from datetime import datetime
 from types import SimpleNamespace
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -90,6 +89,9 @@ _bot = None
 _scheduler = None
 
 # --- Service instances ---
+import location
+
+location.init(LOG_DIR)
 logs = Logs(LOG_DIR)
 agenda_ = Agenda(LOG_DIR)
 queue_ = AgendaQueue(LOG_DIR)
@@ -109,6 +111,7 @@ from pathlib import Path as _Path
 from quiet_window import QuietWindow as _QuietWindow
 from staleness import CHECKIN_NUDGE_TEXT as _CHECKIN_NUDGE_TEXT
 from staleness import StalenessChecker as _StalenessChecker
+from location import current_tz
 
 _CHAGIM_PATH = _Path(__file__).parent / "chagim.json"
 _STALENESS_CONFIG_PATH = _Path(__file__).parent / "staleness_config.json"
@@ -288,14 +291,14 @@ async def morning_plan():
         return
     # The "plan" sticker now fires inside send_proposal (so manual /plan shows it too).
     await agenda_feature.send_proposal(ALLOWED_USER)
-    # Friday: ask for candle lighting time
-    if datetime.now(ZoneInfo("Asia/Jerusalem")).weekday() == 4:
-        if not shabbat_.load_candle_lighting():
-            await _bot.send_message(
-                chat_id=ALLOWED_USER,
-                text="🕯️ What time is candle lighting today?",
-            )
-            router.expect_candle_time(ALLOWED_USER)
+    # Friday: candle lighting is computed automatically (sunset in Beit Shemesh
+    # minus the offset) — just notify, unless the user set a manual override.
+    if datetime.now(current_tz()).weekday() == 4:
+        t = shabbat_.load_candle_lighting()
+        await _bot.send_message(
+            chat_id=ALLOWED_USER,
+            text=shabbat_.candle_confirmation(t.strftime("%H:%M")),
+        )
 
 
 async def remind_upcoming():
@@ -314,11 +317,7 @@ async def remind_upcoming():
         start = event["start"].get("dateTime", "")
         summary = event.get("summary", "(no title)")
         if start:
-            t = (
-                datetime.fromisoformat(start)
-                .astimezone(ZoneInfo("Asia/Jerusalem"))
-                .strftime("%H:%M")
-            )
+            t = datetime.fromisoformat(start).astimezone(current_tz()).strftime("%H:%M")
             msg = f"⏰ Reminder: <b>{html.escape(summary)}</b> at {t}"
         else:
             msg = f"⏰ Reminder: <b>{html.escape(summary)}</b> starting soon"
@@ -410,7 +409,7 @@ async def _staleness_check():
 # only nudges if no #checkin has landed since the previous slot's boundary, so
 # checking in early (proactively) suppresses the later scheduled nudge.
 async def _checkin_nudge(since_hour: int) -> None:
-    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    now = datetime.now(current_tz())
     since = now.replace(hour=since_hour, minute=0, second=0, microsecond=0)
     if staleness_.checkin_due(since):
         await _bot.send_message(chat_id=ALLOWED_USER, text=_CHECKIN_NUDGE_TEXT)
@@ -1000,6 +999,13 @@ async def _post_init(application):
                 "kwargs": {"hour": 20, "minute": 0},
             },
         ],
+        tz=location.current_tz(),
+    )
+    # Move every cron job onto the new tz whenever the active location changes
+    # (see scheduling.reschedule_cron_jobs — a plain re-registration, not a
+    # scheduler rebuild, since every job above is already replace_existing=True).
+    location.add_listener(
+        lambda: scheduling.reschedule_cron_jobs(_scheduler, location.current_tz())
     )
 
 
@@ -1076,7 +1082,7 @@ def main():
     # Central inbound-message router: owns process_text + the candle/reminder-time/
     # voice flows. It commits user-added agenda items through the agenda feature.
     global router
-    router = TextRouter(app.bot, services, quiet_window_, ALLOWED_USER)
+    router = TextRouter(app.bot, services, shabbat_, ALLOWED_USER)
     router.agenda_feature = agenda_feature
     router.reclassify = reclassify_feature
     # Hand the grocery plugin to the router so confirmed voice transcripts opening

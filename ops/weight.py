@@ -12,7 +12,7 @@ a personal tool and they are fixed historical facts. Change them here if they ev
 import html
 import json
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from location import current_tz
 
 WEGOVY_START_WEIGHT = 103.5  # kg, the documented weigh-in at the first injection
 WEGOVY_START_DATE = date(2025, 11, 11)
@@ -158,7 +158,7 @@ class Weight:
         if figures:
             self.db.cache_weight_figures(
                 basis,
-                datetime.now(ZoneInfo("Asia/Jerusalem")).isoformat(timespec="seconds"),
+                datetime.now(current_tz()).isoformat(timespec="seconds"),
                 json.dumps(figures),
             )
         return figures

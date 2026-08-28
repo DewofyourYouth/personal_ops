@@ -28,15 +28,14 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import numpy as np
 
 import classifier
+from location import current_tz
 
 logger = logging.getLogger(__name__)
 
-TZ = ZoneInfo("Asia/Jerusalem")
 
 # Labels the KNN can actually emit: the inference enum plus the rules/plugin
 # tags corrections realistically land on. "log" is the junk drawer — including
@@ -171,7 +170,7 @@ def run_retrain(db) -> dict:
             # (or the same events would be re-consumed forever).
             logger.exception("retrain: eval failed; recording run without metrics")
 
-    ts = datetime.now(TZ).isoformat(timespec="seconds")
+    ts = datetime.now(current_tz()).isoformat(timespec="seconds")
     db.record_retrain_run(ts, last_event_id, len(events), json.dumps(summary))
     # The live classifier rebuilds its reference set (which now includes the
     # corrected/confirmed texts via entries.tag) on next use.

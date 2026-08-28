@@ -9,3 +9,6 @@ python-telegram-bot[job-queue]==22.7
 sqlalchemy==2.0.50
 matplotlib>=3.9.0
 librosa>=0.11.0
+astral>=3.2
+geopy>=2.4
+tzfpy>=1.3

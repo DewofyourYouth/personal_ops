@@ -5,19 +5,17 @@ import re
 import html
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from db import Database
-
-TZ = ZoneInfo("Asia/Jerusalem")
+from location import current_tz
 
 
 def _today() -> date:
-    """The app's current business day (Jerusalem local), not the host's system
-    clock. Using the bare system date here would desync reads from writes
-    (which are always stamped in TZ) for ~3 hours a day whenever the host's
-    clock is UTC/behind Jerusalem and the two straddle midnight."""
-    return datetime.now(TZ).date()
+    """The app's current business day (local to the active location), not the
+    host's system clock. Using the bare system date here would desync reads
+    from writes (which are always stamped in the active tz) for hours a day
+    whenever the host's clock differs from it and the two straddle midnight."""
+    return datetime.now(current_tz()).date()
 
 
 # Mirrors the format written by text_router._food_log_content, e.g.
@@ -118,7 +116,7 @@ class Logs:
         # `when` backdates the entry (e.g. logging yesterday's habit today). It drives the
         # ts, the day bucket, and the JSONL file alike, so the DB date (ts[:10] on replay)
         # and the recovery log stay consistent with a normal same-day write.
-        now = when or datetime.now(TZ)
+        now = when or datetime.now(current_tz())
         ts = now.isoformat(timespec="seconds")
         date_str = (
             now.date().isoformat()
@@ -178,7 +176,7 @@ class Logs:
         Same durability order as write(): JSONL first, then SQLite. The line is
         tagged `label_event` so sync_jsonl_to_db never replays it into entries.
         """
-        now = datetime.now(TZ)
+        now = datetime.now(current_tz())
         record = {
             "ts": now.isoformat(timespec="seconds"),
             "tag": "label_event",
@@ -311,7 +309,7 @@ class Logs:
     # --- Reading ---
 
     def read_today(self) -> list[dict]:
-        rows = self.db.entries_for_date(datetime.now(TZ).date())
+        rows = self.db.entries_for_date(datetime.now(current_tz()).date())
         return [dict(r) for r in rows]
 
     def read_day_as_text(self, d: date) -> str:
@@ -351,7 +349,7 @@ class Logs:
 
     def read_recent(self, days: int = 3) -> str:
         sections = []
-        today = datetime.now(TZ).date()
+        today = datetime.now(current_tz()).date()
         for i in range(days, -1, -1):
             d = today - timedelta(days=i)
             lines = self._read_day(d)
@@ -361,7 +359,7 @@ class Logs:
 
     def format_today_for_telegram(self, max_chars: int = 3900) -> list[str]:
         """Format today's human log entries as safe Telegram HTML message chunks."""
-        today = datetime.now(TZ).date()
+        today = datetime.now(current_tz()).date()
         entries = self._read_day_entries(today)
         if not entries:
             return []
@@ -727,7 +725,7 @@ class Logs:
         macros = _parse_macros(entry["content"])
         if macros is None:
             return None
-        now = datetime.now(TZ)
+        now = datetime.now(current_tz())
         record = {
             "ts": now.isoformat(timespec="seconds"),
             "tag": "food_negation",

@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
-from logs import TZ, Logs, _parse_time_entry
+from location import current_tz
+from logs import Logs, _parse_time_entry
 from time_handlers import (
     REPORT_PERIOD_DAYS,
     TimeHandlers,
@@ -187,7 +188,7 @@ def test_tracker_start_replaces_existing_running_timer():
 def _now_minus(minutes: int):
     from datetime import datetime
 
-    return datetime.now(TZ) - timedelta(minutes=minutes)
+    return datetime.now(current_tz()) - timedelta(minutes=minutes)
 
 
 # --- Handler: live timer commands ---

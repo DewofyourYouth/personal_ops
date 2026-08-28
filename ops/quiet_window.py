@@ -11,16 +11,12 @@ a quiet window are excluded from habit-coverage stats, not counted as failures.
 import json
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-_TZ = ZoneInfo("Asia/Jerusalem")
+import location
 
 # Bot sends proactive prompts only between these clock times.
 _WAKING_START = time(8, 0)
 _WAKING_END = time(22, 0)
-
-# Shabbat nightfall approximated at 21:00 (update via Zmanim API eventually).
-_SHABBAT_NIGHTFALL_HOUR = 21
 
 
 class QuietWindow:
@@ -44,9 +40,10 @@ class QuietWindow:
         if not path.exists():
             return
         try:
+            tz = location.current_tz()
             for entry in json.loads(path.read_text()):
-                start = datetime.fromisoformat(entry["quiet_start"]).astimezone(_TZ)
-                end = datetime.fromisoformat(entry["quiet_end"]).astimezone(_TZ)
+                start = datetime.fromisoformat(entry["quiet_start"]).astimezone(tz)
+                end = datetime.fromisoformat(entry["quiet_end"]).astimezone(tz)
                 self._chag_windows.append((start, end))
         except Exception:
             pass  # malformed file → fall back to Shabbat-only mode
@@ -57,35 +54,35 @@ class QuietWindow:
     def is_quiet_at(self, dt: "datetime | None" = None) -> bool:
         """True if dt (default: now) is inside a quiet window (Shabbat or chag)."""
         if dt is None:
-            dt = datetime.now(_TZ)
+            dt = datetime.now(location.current_tz())
         else:
-            dt = dt.astimezone(_TZ)
+            dt = dt.astimezone(location.current_tz())
         return self._in_chag(dt) or self._is_shabbat_quiet(dt)
 
     def _is_shabbat_quiet(self, dt: datetime) -> bool:
         weekday = dt.weekday()
-        if weekday == 5:  # Saturday — quiet until nightfall
-            return dt.hour < _SHABBAT_NIGHTFALL_HOUR
+        if weekday == 5:  # Saturday — quiet until nightfall (sunset + offset)
+            return dt < self._shabbat.computed_nightfall(dt.date())
         if weekday == 4:  # Friday — quiet from 20 min before candle lighting
             candles = self._shabbat.load_candle_lighting()
             if candles:
-                quiet_dt = datetime.combine(dt.date(), candles, tzinfo=_TZ) - timedelta(
-                    minutes=20
-                )
+                quiet_dt = datetime.combine(
+                    dt.date(), candles, tzinfo=location.current_tz()
+                ) - timedelta(minutes=20)
                 return dt >= quiet_dt
         return False
 
     def in_waking_hours(self, dt: "datetime | None" = None) -> bool:
         """True if dt falls inside the 08:00–22:00 active window."""
         if dt is None:
-            dt = datetime.now(_TZ)
-        t = dt.astimezone(_TZ).time().replace(second=0, microsecond=0)
+            dt = datetime.now(location.current_tz())
+        t = dt.astimezone(location.current_tz()).time().replace(second=0, microsecond=0)
         return _WAKING_START <= t <= _WAKING_END
 
     def should_prompt(self, dt: "datetime | None" = None) -> bool:
         """True if the bot may send proactive prompts at dt (waking hours, not quiet)."""
         if dt is None:
-            dt = datetime.now(_TZ)
+            dt = datetime.now(location.current_tz())
         return self.in_waking_hours(dt) and not self.is_quiet_at(dt)
 
     # --- Backward-compat shims (drop once all callers migrate) ---

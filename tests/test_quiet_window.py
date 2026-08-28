@@ -21,9 +21,16 @@ def _dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(_TZ_STR))
 
 
-def _make_shabbat(candle_time=None):
+def _make_shabbat(candle_time=None, nightfall_time=None):
+    from datetime import time as _time
+    from zoneinfo import ZoneInfo
+
     shabbat = MagicMock()
     shabbat.load_candle_lighting.return_value = candle_time
+    nt = nightfall_time or _time(21, 0)  # matches the old hardcoded default
+    shabbat.computed_nightfall.side_effect = lambda d: datetime.combine(
+        d, nt, tzinfo=ZoneInfo(_TZ_STR)
+    )
     return shabbat
 
 
@@ -71,6 +78,15 @@ class TestShabbatQuiet:
         qw = QuietWindow(_make_shabbat())
         dt = _dt("2026-06-22T14:00:00+03:00")
         assert qw.is_quiet_at(dt) is False
+
+    def test_saturday_nightfall_uses_shabbat_computed_nightfall(self):
+        from datetime import time
+
+        # A later-than-default nightfall (e.g. long summer sunset + 72 min)
+        # should keep Saturday quiet past the old hardcoded 21:00 cutoff.
+        qw = QuietWindow(_make_shabbat(nightfall_time=time(21, 45)))
+        dt = _dt("2026-06-20T21:30:00+03:00")
+        assert qw.is_quiet_at(dt) is True
 
 
 class TestChagQuietWindow:

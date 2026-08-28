@@ -26,9 +26,8 @@ noon/evening) via `checkin_due()`, called from bot.py at 3 specific cron times.
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from location import current_tz
 
-_TZ = ZoneInfo("Asia/Jerusalem")
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS staleness_prompts (
@@ -87,7 +86,7 @@ class StalenessChecker:
         if not rows:
             return None
         try:
-            return datetime.fromisoformat(rows[0]["ts"]).astimezone(_TZ)
+            return datetime.fromisoformat(rows[0]["ts"]).astimezone(current_tz())
         except Exception:
             return None
 
@@ -99,7 +98,9 @@ class StalenessChecker:
         if not rows or not rows[0]["last_prompted_at"]:
             return None
         try:
-            return datetime.fromisoformat(rows[0]["last_prompted_at"]).astimezone(_TZ)
+            return datetime.fromisoformat(rows[0]["last_prompted_at"]).astimezone(
+                current_tz()
+            )
         except Exception:
             return None
 
@@ -114,7 +115,7 @@ class StalenessChecker:
         """Tracks past their staleness threshold right now. Empty if not in a prompt window."""
         if not self._qw.should_prompt():
             return []
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         stale = []
         for track, threshold_h in self._config.items():
             cutoff = now - timedelta(hours=threshold_h)
@@ -132,7 +133,7 @@ class StalenessChecker:
         tracks = self.stale_tracks()
         if not tracks:
             return
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         for track in tracks:
             self._record_prompted(track, now)
             msg = _NUDGES.get(

@@ -1,11 +1,10 @@
 import os
 import uuid
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
 
 from db import Database
+from location import current_tz
 
-TZ = ZoneInfo("Asia/Jerusalem")
 # Resolve relative to this file, not the process CWD: getcwd() silently pointed
 # at a different DB if the bot was launched from another directory.
 _LOG_DIR = os.path.join(os.path.dirname(__file__), "log")
@@ -46,7 +45,7 @@ class Reminders:
 
     def due_now(self) -> list:
         reminders = self.load()
-        now = datetime.now(TZ)
+        now = datetime.now(current_tz())
         today = now.date().isoformat()
         current_time = now.time().replace(second=0, microsecond=0)
         current_minutes = now.hour * 60 + now.minute

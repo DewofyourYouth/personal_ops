@@ -12,18 +12,28 @@ from zoneinfo import ZoneInfo
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-TZ = ZoneInfo("Asia/Jerusalem")
+from apscheduler.triggers.cron import CronTrigger
 
 
 def start(
-    log_dir: str, jobs: dict, *, plan_hour: int, plan_minute: int, extra_jobs: list = ()
+    log_dir: str,
+    jobs: dict,
+    *,
+    plan_hour: int,
+    plan_minute: int,
+    extra_jobs: list = (),
+    tz: ZoneInfo,
 ) -> AsyncIOScheduler:
     """Build the scheduler (SQLite job store so jobs survive restarts), register
     the recurring jobs, start it, and return the running instance.
 
     jobs: name → coroutine function for each core scheduled task.
-    extra_jobs: per-plugin specs ``{"id", "func", "trigger", "kwargs"}``.
+    extra_jobs: per-plugin specs ``{"id", "func", "trigger", "kwargs"}`` — some
+    are cron jobs too (habit checks, check-ins).
+    tz: the active location's timezone at startup (see location.py). Every
+    cron job registered here (core or plugin) picks up the scheduler's default
+    tz; if the active location later changes, call reschedule_cron_jobs() to
+    move them all to the new one.
     """
     scheduler = AsyncIOScheduler(
         jobstores={
@@ -33,7 +43,7 @@ def start(
             # in memory and re-register them on each boot.
             "memory": MemoryJobStore(),
         },
-        timezone=TZ,
+        timezone=tz,
     )
     scheduler.add_job(
         jobs["morning_plan"],
@@ -111,6 +121,25 @@ def start(
         )
     scheduler.start()
     return scheduler
+
+
+def reschedule_cron_jobs(scheduler: AsyncIOScheduler, tz: ZoneInfo) -> None:
+    """Move every cron-triggered job (core and plugin-contributed alike) onto
+    tz, keeping its existing schedule fields (hour, minute, day_of_week, ...).
+    Called when the active location changes (see location.add_listener in
+    bot.py) — a bare variable swap wouldn't move already-registered jobs,
+    since APScheduler bakes the timezone into each CronTrigger at add_job
+    time, but every job here is already registered with replace_existing=True,
+    so re-registering with a new tz is a plain, safe update, no teardown."""
+    for job in scheduler.get_jobs():
+        if not isinstance(job.trigger, CronTrigger):
+            continue  # interval jobs are tz-independent, nothing to move
+        field_values = {
+            f.name: ",".join(str(e) for e in f.expressions) for f in job.trigger.fields
+        }
+        scheduler.reschedule_job(
+            job.id, trigger=CronTrigger(timezone=tz, **field_values)
+        )
 
 
 def shutdown(scheduler: AsyncIOScheduler | None) -> None:

@@ -39,16 +39,14 @@ import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
-_TZ = ZoneInfo("Asia/Jerusalem")
+from location import current_tz
 
 
 def _today() -> date:
     """Jerusalem-local today, matching how logs.py buckets entries by day —
     using the bare system date would desync week boundaries from the data for
     ~3 hours a day whenever the host clock is UTC/behind Jerusalem."""
-    return datetime.now(_TZ).date()
+    return datetime.now(current_tz()).date()
 
 
 class Baseline:

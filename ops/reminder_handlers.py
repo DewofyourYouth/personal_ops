@@ -16,7 +16,6 @@ Bot isn't picklable).
 import html
 import re
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -25,8 +24,7 @@ from logs import Logs
 from reminders import Reminders
 from text_router import _parse_time
 from tg_common import safe_answer
-
-_TZ = ZoneInfo("Asia/Jerusalem")
+from location import current_tz
 
 
 def _label(r: dict) -> str:
@@ -46,9 +44,9 @@ def _label(r: dict) -> str:
 
 def _next_occurrence(reminder: dict) -> datetime:
     """Return the next datetime this reminder will fire, for sorting purposes."""
-    now = datetime.now(_TZ)
+    now = datetime.now(current_tz())
     today = now.date()
-    far_future = datetime(9999, 12, 31, tzinfo=_TZ)
+    far_future = datetime(9999, 12, 31, tzinfo=current_tz())
 
     def parse_hours_and_minutes(r: dict):
         return map(int, r.get("time", "23:59").split(":"))
@@ -58,11 +56,11 @@ def _next_occurrence(reminder: dict) -> datetime:
             case "once":
                 d = date.fromisoformat(reminder.get("date", "9999-12-31"))
                 h, m = parse_hours_and_minutes(reminder)
-                return datetime(d.year, d.month, d.day, h, m, tzinfo=_TZ)
+                return datetime(d.year, d.month, d.day, h, m, tzinfo=current_tz())
             case "daily":
                 h, m = parse_hours_and_minutes(reminder)
                 candidate = datetime(
-                    today.year, today.month, today.day, h, m, tzinfo=_TZ
+                    today.year, today.month, today.day, h, m, tzinfo=current_tz()
                 )
                 if candidate <= now:
                     candidate += timedelta(days=1)
@@ -73,12 +71,22 @@ def _next_occurrence(reminder: dict) -> datetime:
                 days_ahead = (target_day - now.weekday()) % 7 or 7
                 next_date = today + timedelta(days=days_ahead)
                 candidate = datetime(
-                    next_date.year, next_date.month, next_date.day, h, m, tzinfo=_TZ
+                    next_date.year,
+                    next_date.month,
+                    next_date.day,
+                    h,
+                    m,
+                    tzinfo=current_tz(),
                 )
                 if candidate <= now:
                     next_date += timedelta(days=7)
                     candidate = datetime(
-                        next_date.year, next_date.month, next_date.day, h, m, tzinfo=_TZ
+                        next_date.year,
+                        next_date.month,
+                        next_date.day,
+                        h,
+                        m,
+                        tzinfo=current_tz(),
                     )
                 return candidate
             case "interval":
@@ -87,7 +95,12 @@ def _next_occurrence(reminder: dict) -> datetime:
                     int, reminder.get("window_start", "08:00").split(":")
                 )
                 window_start = datetime(
-                    today.year, today.month, today.day, start_h, start_m, tzinfo=_TZ
+                    today.year,
+                    today.month,
+                    today.day,
+                    start_h,
+                    start_m,
+                    tzinfo=current_tz(),
                 )
                 current_minutes = now.hour * 60 + now.minute
                 start_minutes = start_h * 60 + start_m
@@ -97,7 +110,12 @@ def _next_occurrence(reminder: dict) -> datetime:
                 next_tick = start_minutes + (elapsed // interval + 1) * interval
                 next_h, next_m = divmod(next_tick, 60)
                 return datetime(
-                    today.year, today.month, today.day, next_h, next_m, tzinfo=_TZ
+                    today.year,
+                    today.month,
+                    today.day,
+                    next_h,
+                    next_m,
+                    tzinfo=current_tz(),
                 )
     except Exception:
         pass
@@ -251,8 +269,8 @@ class ReminderHandlers:
         except ValueError:
             return False
         if last.tzinfo is None:
-            last = last.replace(tzinfo=_TZ)
-        return datetime.now(_TZ) - last < timedelta(minutes=minutes)
+            last = last.replace(tzinfo=current_tz())
+        return datetime.now(current_tz()) - last < timedelta(minutes=minutes)
 
     async def run_due_check(self) -> None:
         if self.shabbat.quiet_now():

@@ -7,7 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from baseline_tracker import Baseline
-from logs import TZ, Logs
+from location import current_tz
+from logs import Logs
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def test_mood_energy_for_range_collects_numeric(logs):
     logs.write_metric("mood", 4)
     logs.write_metric("energy", 2)
     logs.write_metric("mood", 2)
-    today = datetime.now(TZ).date()
+    today = datetime.now(current_tz()).date()
     moods, energies = logs.mood_energy_for_range(today, today)
     assert sorted(moods) == [2, 4]
     assert energies == [2]
@@ -31,7 +32,7 @@ def test_mood_energy_normalizes_legacy_labels(logs):
     # Old data stored labels/emoji rather than 1-5 / 1-3 integers.
     logs.write_metric("mood", "great")  # -> 5
     logs.write_metric("energy", "drained")  # -> 1
-    today = datetime.now(TZ).date()
+    today = datetime.now(current_tz()).date()
     moods, energies = logs.mood_energy_for_range(today, today)
     assert moods == [5]
     assert energies == [1]

@@ -21,7 +21,6 @@ import asyncio
 import html
 import logging
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -33,8 +32,8 @@ from gcal import GCal
 from habit_handlers import HabitHandlers
 from planner import Planner, day_type
 from rich import send_rich_message
+from location import current_tz
 
-_TZ = ZoneInfo("Asia/Jerusalem")
 _log = logging.getLogger(__name__)
 
 
@@ -85,7 +84,7 @@ class StatusHandlers:
         return f"📅 <b>Upcoming today</b>\n{html.escape(events_text)}"
 
     def _snapshot_message(self, events_text: str) -> str:
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         header = f"📊 <b>Status</b> — {now.strftime('%A %b %d, %H:%M')} ({html.escape(day_type())})"
         sections = [
             header,
@@ -146,7 +145,7 @@ class StatusHandlers:
         return f"<p><b>📅 Upcoming today</b></p><table>{head}{body}</table>"
 
     def _rich_snapshot_html(self, event_rows: list[tuple[str, str]], note: str) -> str:
-        now = datetime.now(_TZ)
+        now = datetime.now(current_tz())
         header = (
             f"<p><b>📊 Status</b> — {html.escape(now.strftime('%A %b %d, %H:%M'))} "
             f"({html.escape(day_type())})</p>"

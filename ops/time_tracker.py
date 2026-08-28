@@ -12,7 +12,7 @@ raises, but the "a timer's already running" business rule and user messaging liv
 
 from datetime import datetime
 
-from logs import TZ
+from location import current_tz
 
 _RUNNING_DDL = """
 CREATE TABLE IF NOT EXISTS time_running (
@@ -37,7 +37,7 @@ class TimeTracker:
         self.db.execute(
             "INSERT OR REPLACE INTO time_running "
             "(chat_id, start_ts, description, project) VALUES (?, ?, ?, ?)",
-            (chat_id, datetime.now(TZ).isoformat(), description, project),
+            (chat_id, datetime.now(current_tz()).isoformat(), description, project),
         )
 
     def stop(self, chat_id: int) -> dict | None:
@@ -48,7 +48,7 @@ class TimeTracker:
             return None
         self.db.execute("DELETE FROM time_running WHERE chat_id = ?", (chat_id,))
         started = datetime.fromisoformat(row["start_ts"])
-        elapsed_minutes = (datetime.now(TZ) - started).total_seconds() / 60
+        elapsed_minutes = (datetime.now(current_tz()) - started).total_seconds() / 60
         return {
             "description": row["description"],
             "project": row["project"],
