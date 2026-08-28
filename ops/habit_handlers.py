@@ -15,7 +15,7 @@ import re
 from datetime import date, timedelta
 
 import anthropic
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import voice
@@ -28,20 +28,17 @@ from habit_tracker import (
 )
 from logs import Logs
 from media import send_sticker
+from pathlib import Path
+from quiet_window import QuietWindow
 from shabbat import Shabbat
 from tg_common import safe_answer
 
 
-def _make_quiet_window(shabbat):
-    """Build a QuietWindow from a Shabbat instance if quiet_window.py is available."""
-    try:
-        from pathlib import Path
-        from quiet_window import QuietWindow
-
-        chagim = Path(__file__).parent / "chagim.json"
-        return QuietWindow(shabbat, chagim_path=chagim)
-    except ImportError:
-        return shabbat
+def _make_quiet_window(shabbat: Shabbat) -> QuietWindow:
+    """Build a QuietWindow from a Shabbat instance, for callers (mainly tests)
+    that don't already have one to pass in."""
+    chagim = Path(__file__).parent / "chagim.json"
+    return QuietWindow(shabbat, chagim_path=chagim)
 
 
 def _match_key(s: str) -> str:
@@ -610,7 +607,9 @@ async def match_habit(content: str, db) -> str | None:
     for block in response.content:
         if block.type == "tool_use":
             choice = block.input.get("habit")
-            return None if choice in (None, "none") else choice
+            if choice in (None, "none") or not isinstance(choice, str):
+                return None
+            return choice
     return None
 
 
@@ -665,7 +664,9 @@ async def match_slip(content: str, db) -> str | None:
     for block in response.content:
         if block.type == "tool_use":
             choice = block.input.get("habit")
-            return None if choice in (None, "none") else choice
+            if choice in (None, "none") or not isinstance(choice, str):
+                return None
+            return choice
     return None
 
 
@@ -677,7 +678,7 @@ class HabitHandlers:
         context: Context,
         allowed_user: int,
         planner=None,
-        quiet_window=None,
+        quiet_window: QuietWindow | None = None,
     ) -> None:
         self.bot = bot
         self.logs = logs
@@ -938,13 +939,6 @@ class HabitHandlers:
             for h in self._pending_today_habits()
         ]
 
-    def _eod_message(
-        self, for_date=None
-    ) -> tuple[str | None, InlineKeyboardMarkup | None]:
-        """Prompt for habits due on for_date (default: today) that haven't been logged yet.
-        Returns (None, None) when nothing is pending."""
-        pending = self._pending_today_habits(for_date=for_date)
-
     def today_checklist(self) -> list[tuple[str, bool]]:
         """(display name, done) for every habit due today — done = a completed
         ('habit') log exists today. Feeds the /status rich-message checkbox list,
@@ -1050,8 +1044,12 @@ class HabitHandlers:
 
     async def cmd_habit_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Trigger the end-of-day habit check on demand."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         text, keyboard = self._eod_message()
         if text is None:
             await update.message.reply_text(
@@ -1066,8 +1064,14 @@ class HabitHandlers:
         from datetime import datetime
         from location import current_tz
 
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
+        assert query.data is not None  # every button we create sets callback_data
         action, name = query.data.split(":", 1)
 
         # Morning-after grace window: if it's before noon and the EOD message was sent
@@ -1100,8 +1104,12 @@ class HabitHandlers:
     # --- Handlers: checklist + logging ---
 
     async def cmd_habits(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         if not self.store.list_habits():
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
@@ -1112,8 +1120,13 @@ class HabitHandlers:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Registered as a CallbackQueryHandler — update.callback_query and
+        # update.effective_chat are always present for a callback-query update.
+        assert update.callback_query is not None
+        assert update.effective_chat is not None
         query = update.callback_query
         await safe_answer(query)
+        assert query.data is not None  # every button we create sets callback_data
         habit_name = query.data.split(":", 1)[1]
         self.logs.write("habit", habit_name)
         # Celebrate milestones on the checklist (not every tap — that'd be spam). 3 is the
@@ -1127,8 +1140,12 @@ class HabitHandlers:
     async def cmd_habit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/habitnote <habit>: <note> — attach a dated note to a habit.
         /habitnote <habit> — show that habit's recent notes. /habitnote — all recent."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
 
         if ":" in raw:  # add a note
@@ -1230,9 +1247,13 @@ class HabitHandlers:
 
     async def cmd_add_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addhabit <name> [days]  — e.g. /addhabit Stretch [mon,wed,fri]"""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
-        raw = " ".join(context.args).strip()
+        assert update.message is not None
+        raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
                 "Usage: <code>/addhabit Drink water [mon,wed,fri]</code>",
@@ -1253,8 +1274,12 @@ class HabitHandlers:
         /edithabit Stretch: section=Morning
         /edithabit Stretch   (no colon — shows current state)
         """
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
@@ -1379,8 +1404,12 @@ class HabitHandlers:
         e.g. /habitcue Daf Yomi: after Maariv, 21:00 at the beis
         With no args (or no colon) it lists each habit's current cue.
         """
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if ":" not in raw:
             lines = ["🔗 <b>Habit cues</b> (when/where/after)\n"]
@@ -1416,8 +1445,12 @@ class HabitHandlers:
         <code>/pausehabit <habit>: off</code> ends an active pause early (same as
         /resumehabit). With no args, lists any currently-paused habits.
         """
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             today = date.today()
@@ -1482,8 +1515,12 @@ class HabitHandlers:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """/resumehabit <habit> — end an active pause early."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
@@ -1512,8 +1549,12 @@ class HabitHandlers:
         """/identity — show habits grouped by the identities they vote for.
         /identity <habit>: <id1>, <id2> — add identities (a habit can vote for several);
         prefix one with '-' to remove it (e.g. 'Strength: -disciplined')."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if ":" in raw:
             name, rest = raw.split(":", 1)
@@ -1595,8 +1636,12 @@ class HabitHandlers:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """/habitstrategy — run a 4-Laws strategy session on chronically-missed habits."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         from habit_tracker import struggling_habits
 
         strugglers = struggling_habits(self.logs)
@@ -1621,8 +1666,12 @@ class HabitHandlers:
 
     async def cmd_add_slip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addslip <name> — define a negative habit to track (e.g. /addslip Late wake)."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
@@ -1657,16 +1706,24 @@ class HabitHandlers:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """/manageslips — delete negative habits from the tracking list."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         text, keyboard = self._manage_slips_message()
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_manage_slips(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
+        assert query.data is not None  # every button we create sets callback_data
         _, hid = query.data.split(":", 1)
         self.store.remove_negative_habit(int(hid))
         text, keyboard = self._manage_slips_message()
@@ -1674,8 +1731,12 @@ class HabitHandlers:
 
     async def cmd_slip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/slip <behavior> [: note] — log a slip; resolves to a tracked negative habit if defined."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             defined = self.store.list_negative_habits()
@@ -1713,8 +1774,12 @@ class HabitHandlers:
 
     async def cmd_slips(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/slips — summary counts by behavior. /slips <name> — detail for one."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         raw = " ".join(context.args).strip() if context.args else ""
 
         if raw:
@@ -1809,16 +1874,24 @@ class HabitHandlers:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """Manual trigger for the weekly habit suggestions (for testing / on-demand)."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         await update.message.reply_text("🔍 Checking for struggling habits…")
         await self.weekly_habit_suggestions()
 
     async def handle_suggestion(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
+        assert query.data is not None  # every button we create sets callback_data
         action_str, sid_str = query.data.split(":", 1)
         suggestion_id = int(sid_str)
         sugg = self.store.get_suggestion(suggestion_id)
@@ -1917,8 +1990,12 @@ class HabitHandlers:
         )
 
     async def cmd_manage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         if not self.store.list_habits(tracked_only=False):
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
@@ -1929,8 +2006,12 @@ class HabitHandlers:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_manage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
+        assert query.data is not None  # every button we create sets callback_data
         action, hid = query.data.split(":", 1)
         habit_id = int(hid)
         if action == "hb_del":

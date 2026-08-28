@@ -135,8 +135,9 @@ class Shabbat:
         candle_dt = s["sunset"] - timedelta(minutes=CANDLE_LIGHTING_OFFSET_MIN)
         return candle_dt.time().replace(second=0, microsecond=0)
 
-    def load_candle_lighting(self) -> time | None:
-        """Manual override for today if one was set, otherwise the computed time."""
+    def load_candle_lighting(self) -> time:
+        """Manual override for today if one was set, otherwise the computed time.
+        Always returns a time — computed_candle_lighting() never fails."""
         return self._manual_candle_lighting() or self.computed_candle_lighting()
 
     def computed_nightfall(self, d: date | None = None) -> datetime:
@@ -168,12 +169,10 @@ class Shabbat:
             return now < self.computed_nightfall(now.date())
         if weekday == 4:  # Friday — quiet from 20 min before candle lighting
             candles = self.load_candle_lighting()
-            if candles:
-                quiet_dt = datetime.combine(
-                    now.date(), candles, tzinfo=location.current_tz()
-                ) - timedelta(minutes=20)
-                if now >= quiet_dt:
-                    return True
+            quiet_dt = datetime.combine(
+                now.date(), candles, tzinfo=location.current_tz()
+            ) - timedelta(minutes=20)
+            return now >= quiet_dt
         return False
 
     def in_active_window(self) -> bool:

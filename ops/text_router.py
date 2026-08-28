@@ -18,6 +18,7 @@ circular import (this module never imports bot.py).
 import asyncio
 import difflib
 import html
+from typing import Any
 import logging
 import os
 import re
@@ -538,7 +539,7 @@ def _hypothesis_summary(result: dict) -> str:
     """Compact test-setup message for a logged hypothesis — a summary and the tracking
     that's now live, not a prose read. Escapes user/LLM text for HTML parse mode."""
 
-    def esc(s: str) -> str:
+    def esc(s: str | None) -> str:
         return html.escape(s or "")
 
     lines = [f"🔬 <b>{esc(result.get('restatement'))}</b>"]
@@ -690,20 +691,21 @@ class TextRouter:
         self.shabbat = shabbat
         self.allowed_user = allowed_user
         # Set by bot.py once both features exist — process_text commits user-added
-        # agenda items through the agenda feature.
-        self.agenda_feature = None
+        # agenda items through the agenda feature. Typed Any (not the concrete
+        # AgendaHandlers) to avoid importing bot.py's composition-root modules here.
+        self.agenda_feature: Any = None
         # Set by bot.py — the grocery plugin, so confirmed voice transcripts opening
         # with "grocery"/"groceries" route into the list instead of a plain log.
-        self.grocery = None
+        self.grocery: Any = None
         # Set by bot.py — the habit plugin, so "add X habit" / "remove habit X"
         # utterances route into the tracked-habits list instead of a plain log.
-        self.habit_feature = None
+        self.habit_feature: Any = None
         # Set by bot.py after plugins are built — used to collect plugin classification
         # tags for the LLM and to dispatch LLM-classified messages to plugin handlers.
         self.plugins: list = []
         # Set by bot.py — the reclassify feature, which owns the Edit/Reclassify
         # buttons attached to every classified message and the low-confidence picker.
-        self.reclassify = None
+        self.reclassify: Any = None
         # Conversation state owned here (single-user bot, in-memory is fine).
         self._awaiting_time: dict = {}  # chat_id -> partial reminder dict waiting for a time reply
         self._awaiting_candles: dict = {}  # chat_id -> True
@@ -759,6 +761,10 @@ class TextRouter:
     async def try_handle_voice_edit(self, update: Update) -> bool:
         """If the user is editing a voice transcript, capture their reply and
         re-show the confirm/edit buttons. Returns True if it consumed the message."""
+        # Only ever called from bot.py's handle_message, registered for
+        # filters.TEXT — a text message always has a chat and non-None text.
+        assert update.effective_chat is not None
+        assert update.message is not None and update.message.text is not None
         chat_id = update.effective_chat.id
         if (
             chat_id in self._awaiting_voice_edit
@@ -781,6 +787,10 @@ class TextRouter:
     async def try_handle_candle_reply(self, update: Update) -> bool:
         """If we asked for candle-lighting time, parse this reply. Returns True if
         it consumed the message."""
+        # Only ever called from bot.py's handle_message, registered for
+        # filters.TEXT — a text message always has a chat and non-None text.
+        assert update.effective_chat is not None
+        assert update.message is not None and update.message.text is not None
         chat_id = update.effective_chat.id
         if not self._awaiting_candles.pop(chat_id, False):
             return False
@@ -804,6 +814,10 @@ class TextRouter:
     async def try_handle_time_reply(self, update: Update) -> bool:
         """If a reminder is waiting on a time, finish creating it. Returns True if
         it consumed the message."""
+        # Only ever called from bot.py's handle_message, registered for
+        # filters.TEXT — a text message always has a chat and non-None text.
+        assert update.effective_chat is not None
+        assert update.message is not None and update.message.text is not None
         chat_id = update.effective_chat.id
         if chat_id not in self._awaiting_time:
             return False
@@ -833,8 +847,13 @@ class TextRouter:
     # --- Voice intake ---
 
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Registered for filters.VOICE — a voice message always has a sender,
+        # a chat, and a populated .voice field.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.effective_chat is not None
+        assert update.message is not None and update.message.voice is not None
 
         tg_file = await update.message.voice.get_file()
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -877,8 +896,12 @@ class TextRouter:
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest an uploaded HTML/text document: extract tasks + insights, add the
         tasks to today's agenda, log the insights, and report what was captured."""
+        # Registered for filters.Document.ALL — a document message always has
+        # a sender and a populated .document field.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         doc = update.message.document
         if not doc:
             return
@@ -944,8 +967,13 @@ class TextRouter:
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """A photo is treated as food: read the label / identify the dish via vision,
         then hand off to the same confirm/adjust UI the `food:` text path uses."""
+        # Registered for filters.PHOTO — a photo message always has a sender,
+        # a chat, and a populated .photo field.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.effective_chat is not None
+        assert update.message is not None
         photos = update.message.photo
         if not photos:
             return
@@ -989,6 +1017,9 @@ class TextRouter:
     async def handle_voice_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
         if not isinstance(query.message, Message):
@@ -1029,13 +1060,16 @@ class TextRouter:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Confirm or adjust a pending food estimate."""
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await query.answer()
         if query.from_user.id != self.allowed_user:
             return
         if not isinstance(query.message, Message):
             return  # button on a message Telegram can no longer give us (deleted/expired)
-        chat_id = update.effective_chat.id
+        chat_id = query.message.chat_id
         pending = self._awaiting_food.get(chat_id)
         if not pending:
             await query.edit_message_text("⚠️ No pending food entry.")
@@ -1109,13 +1143,16 @@ class TextRouter:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Confirm or decline the "save as default?" auto-promotion prompt."""
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
         if query.from_user.id != self.allowed_user:
             return
         if not isinstance(query.message, Message):
             return  # button on a message Telegram can no longer give us (deleted/expired)
-        chat_id = update.effective_chat.id
+        chat_id = query.message.chat_id
         proposal = self._awaiting_food_default.pop(chat_id, None)
         if not proposal:
             await query.edit_message_text("⚠️ No pending default to save.")
@@ -1158,6 +1195,10 @@ class TextRouter:
     async def try_handle_food_adjust(self, update: Update) -> bool:
         """If a food estimate is awaiting a portion correction, re-estimate from the
         user's reply. Returns True if it consumed the message."""
+        # Only ever called from bot.py's handle_message, registered for
+        # filters.TEXT — a text message always has a chat and non-None text.
+        assert update.effective_chat is not None
+        assert update.message is not None and update.message.text is not None
         chat_id = update.effective_chat.id
         pending = self._awaiting_food.get(chat_id)
         if not pending or not pending.get("adjusting"):
@@ -1299,8 +1340,12 @@ class TextRouter:
 
     async def cmd_undo_food(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/undofood — pick a food entry from today to retract (never deletes)."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         text, keyboard = self._food_manage_message()
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
@@ -1309,10 +1354,14 @@ class TextRouter:
     ) -> None:
         """Fully retract a food entry — appends a negation via the same path
         _apply_food_retraction uses; never deletes or mutates the original row."""
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await query.answer()
         if query.from_user.id != self.allowed_user:
             return
+        assert query.data is not None  # every button we create sets callback_data
         entry_id = int(query.data.split(":", 1)[1])
         self.logs.log_food_negation(entry_id, 1.0, note="undofood")
         text, keyboard = self._food_manage_message()
@@ -1414,8 +1463,12 @@ class TextRouter:
         """/backdate <date> <entry> — log an entry as of a past day (e.g. yesterday's
         Daf Yomi that never got logged). The remainder is parsed exactly like a normal
         message, but written with the resolved date so streaks and daily logs see it."""
+        # Registered as a CommandHandler — a command always arrives as a
+        # message, with a sender.
+        assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
+        assert update.message is not None
         reply = update.message.reply_text
         usage = (
             "Usage: <code>/backdate &lt;when&gt; &lt;entry&gt;</code>\n"
@@ -1759,6 +1812,7 @@ class TextRouter:
                         'e.g. "add finish the deck to my agenda"'
                     )
                     return
+                assert item is not None  # guaranteed by _resolve_agenda_item's contract
                 items = await self._agenda_items_from_text(item)
                 self.agenda_feature.commit_agenda(items, source="user")
                 await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
@@ -2191,12 +2245,16 @@ class TextRouter:
     ) -> None:
         """route:<agenda|backlog>:<entry_id> — send a logged entry to its destination,
         then lock the routing row in place (the Edit/Reclassify row stays live)."""
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
         if query.from_user.id != self.allowed_user:
             return
         if not isinstance(query.message, Message):
             return  # button on a message Telegram can no longer give us (deleted/expired)
+        assert query.data is not None  # every button we create sets callback_data
         _, dest, entry_id = query.data.split(":")
         entry = self.logs.db.entry_by_id(int(entry_id))
         if entry is None:
@@ -2257,6 +2315,9 @@ class TextRouter:
     ) -> None:
         """loc:confirm / loc:cancel — apply or discard a pending location change
         proposed by _propose_location_override."""
+        # Registered as a CallbackQueryHandler — update.callback_query is
+        # always present for a callback-query update.
+        assert update.callback_query is not None
         query = update.callback_query
         await safe_answer(query)
         if query.from_user.id != self.allowed_user:
@@ -2264,6 +2325,7 @@ class TextRouter:
         if not isinstance(query.message, Message):
             return  # button on a message Telegram can no longer give us (deleted/expired)
         chat_id = query.message.chat_id
+        assert query.data is not None  # every button we create sets callback_data
         action = query.data.split(":", 1)[1]
         pending = self._pending_location.pop(chat_id, None)
         if not pending:

@@ -22,10 +22,11 @@ it first.
 
 import json
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from astral import LocationInfo
+from astral.sun import sun
 from geopy.geocoders import Nominatim
 from tzfpy import get_tz
 
@@ -120,6 +121,16 @@ class Location:
     def current_tz(self) -> ZoneInfo:
         return ZoneInfo(self.current().timezone)
 
+    def computed_sunset(self, d: date | None = None) -> datetime:
+        """Sunset at the active (general travel) location, for the given date
+        (default: today). Deliberately independent of Shabbat's own location
+        override — this is for daily, non-Shabbat-specific sun-time reminders
+        (e.g. Mincha), so a Shabbat-only override for a different city doesn't
+        skew a Tuesday's sunset."""
+        loc = self.current()
+        s = sun(loc.observer, date=d or date.today(), tzinfo=self.current_tz())
+        return s["sunset"]
+
 
 # --- Process-wide singleton, so most callers can just `from location import
 # current_tz` without threading a Location instance through their constructor
@@ -141,6 +152,10 @@ def current() -> LocationInfo:
 
 def current_tz() -> ZoneInfo:
     return _instance.current_tz()
+
+
+def computed_sunset(d: date | None = None) -> datetime:
+    return _instance.computed_sunset(d)
 
 
 def apply(info: LocationInfo) -> None:

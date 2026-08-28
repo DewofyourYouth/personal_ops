@@ -4,9 +4,10 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,7 +41,14 @@ from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
 from status_handlers import StatusHandlers
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    Bot,
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    Update,
+)
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
@@ -83,10 +91,10 @@ PLAN_MINUTE = config.plan_minute
 LOG_DIR = str(config.data_dir)
 
 # Global bot reference — set in post_init once the Application starts
-_bot = None
+_bot: Bot | None = None
 
 # Running scheduler instance, created in _post_init via the scheduling layer.
-_scheduler = None
+_scheduler: AsyncIOScheduler | None = None
 
 # --- Service instances ---
 import location
@@ -197,8 +205,12 @@ def _save_reminded(eid: str):
 
 
 async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     try:
         events = await asyncio.to_thread(gcal_.get_today_events)
         text = gcal_.format_events(events)
@@ -209,10 +221,29 @@ async def cmd_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_candles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/candles — show the candle-lighting time on demand: a manual fallback
+    for the automatic Friday-morning notification, for when that job fails to
+    fire (as it silently did every week for months before the fix)."""
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    assert update.message is not None
+    t = shabbat_.load_candle_lighting()
+    await update.message.reply_text(shabbat_.candle_confirmation(t.strftime("%H:%M")))
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered for filters.TEXT — a text message always has a sender, a
+    # chat, and non-None text.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
 
+    assert update.effective_chat is not None
+    assert update.message is not None and update.message.text is not None
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
 
@@ -287,6 +318,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def morning_plan():
+    # A scheduled job — only ever runs after post_init has set _bot.
+    assert _bot is not None
     if shabbat_.quiet_now():
         return
     # The "plan" sticker now fires inside send_proposal (so manual /plan shows it too).
@@ -302,6 +335,8 @@ async def morning_plan():
 
 
 async def remind_upcoming():
+    # A scheduled job — only ever runs after post_init has set _bot.
+    assert _bot is not None
     if shabbat_.quiet_now() or not shabbat_.in_active_window():
         return
     try:
@@ -329,7 +364,42 @@ async def remind_upcoming():
         )
 
 
+MINCHA_REMINDER_OFFSET_MIN = 60  # remind this many minutes before sunset (Shekiya)
+
+
+async def mincha_reminder():
+    """Daily 'Shekiya in ~1h — start thinking about Mincha' nudge. Runs every
+    day (not just Friday/Shabbat), suppressed during quiet hours (Shabbat/chag)
+    same as other proactive nudges — if it's quiet you're not looking at your
+    phone anyway. Reuses the same per-day dedup file remind_upcoming() uses for
+    calendar events, with a synthetic "mincha" marker rather than an event id."""
+    # A scheduled job — only ever runs after post_init has set _bot.
+    assert _bot is not None
+    if shabbat_.quiet_now() or not shabbat_.in_active_window():
+        return
+    reminded = _load_reminded()
+    if "mincha" in reminded:
+        return
+    sunset = location.computed_sunset()
+    target = sunset - timedelta(minutes=MINCHA_REMINDER_OFFSET_MIN)
+    now = datetime.now(location.current_tz())
+    # A 30-min grace window after target, not just now >= target — so a bot
+    # restart hours later doesn't fire a stale "Shekiya in 1h" long after dark.
+    if target <= now <= target + timedelta(minutes=30):
+        _save_reminded("mincha")
+        await _bot.send_message(
+            chat_id=ALLOWED_USER,
+            text=(
+                f"🌇 Shekiya in ~{MINCHA_REMINDER_OFFSET_MIN} min "
+                f"({sunset.strftime('%H:%M')}) — start thinking about Mincha."
+            ),
+        )
+
+
 async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CallbackQueryHandler — update.callback_query is always
+    # present for a callback-query update.
+    assert update.callback_query is not None
     query = update.callback_query
     await safe_answer(query)
     is_checkin = query.data == "remind_dismiss_c"
@@ -338,6 +408,8 @@ async def handle_dismiss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest:
         pass
     if is_checkin:
+        if not isinstance(query.message, Message):
+            return  # button on a message Telegram can no longer give us (deleted/expired)
         # Don't log the dismissal itself — it used to write a "reminder dismissed" checkin
         # on every nudge, polluting checkin analytics and any classifier corpus with pure
         # noise. The real signal (mood/energy) is captured as metrics by the keyboard below.
@@ -361,16 +433,24 @@ def _help_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     await update.message.reply_text(
         HELP_INTRO, parse_mode="HTML", reply_markup=_help_menu_keyboard()
     )
 
 
 async def handle_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CallbackQueryHandler — update.callback_query is always
+    # present for a callback-query update.
+    assert update.callback_query is not None
     query = update.callback_query
     await safe_answer(query)
+    assert query.data is not None  # every button we create sets callback_data
     key = query.data.split(":", 1)[1]
     if key == "back":
         await query.edit_message_text(
@@ -409,6 +489,8 @@ async def _staleness_check():
 # only nudges if no #checkin has landed since the previous slot's boundary, so
 # checking in early (proactively) suppresses the later scheduled nudge.
 async def _checkin_nudge(since_hour: int) -> None:
+    # A scheduled job — only ever runs after post_init has set _bot.
+    assert _bot is not None
     now = datetime.now(current_tz())
     since = now.replace(hour=since_hour, minute=0, second=0, microsecond=0)
     if staleness_.checkin_due(since):
@@ -440,8 +522,12 @@ async def _send_pre(send, text: str) -> None:
 
 async def cmd_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/sleep <hours> — log last night's sleep (e.g. /sleep 7 or /sleep 6.5)."""
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     args = (update.message.text or "").split(maxsplit=1)
     m = re.search(r"\d+(?:\.\d+)?", args[1]) if len(args) > 1 else None
     if not m:
@@ -458,8 +544,12 @@ async def cmd_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/mine — quantitative log-mining report; /mine advise adds an LLM synthesis;
     /mine affect reports voice-note affect_features vs self_mood_rating instead."""
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     import mine_logs
 
     text_lower = (update.message.text or "").lower()
@@ -496,6 +586,12 @@ async def cmd_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def weekly_mine():
     """Weekly log-mining report + synthesis, sent Sundays. Guarded by Shabbat quiet."""
+    # A scheduled job — only ever runs after post_init has set _bot. Rebound
+    # to a local so the narrowing survives inside the lambda below (Pyright
+    # won't carry a narrowed global into a closure, since it could in theory
+    # be reassigned before the closure runs).
+    bot = _bot
+    assert bot is not None
     if shabbat_.quiet_now():
         return
     try:
@@ -503,11 +599,11 @@ async def weekly_mine():
 
         report_text = await asyncio.to_thread(mine_logs.report_for, _mine_db_path())
         await _send_pre(
-            lambda t, **kw: _bot.send_message(chat_id=ALLOWED_USER, text=t, **kw),
+            lambda t, **kw: bot.send_message(chat_id=ALLOWED_USER, text=t, **kw),
             report_text,
         )
         advice = await mine_logs.advise_for(_mine_db_path())
-        msg = await _bot.send_message(
+        msg = await bot.send_message(
             chat_id=ALLOWED_USER,
             text=f"⛏ <b>Weekly log-mining</b>\n\n{markdown_to_html(advice)}",
             parse_mode="HTML",
@@ -521,6 +617,8 @@ async def weekly_retrain():
     """Weekly active-learning pass: fold the week's reclassify/confirm events
     into the KNN classifier's reference set and report the before/after eval
     delta. Guarded by Shabbat quiet; failures are logged, never silent."""
+    # A scheduled job — only ever runs after post_init has set _bot.
+    assert _bot is not None
     if shabbat_.quiet_now():
         return
     try:
@@ -538,8 +636,12 @@ async def weekly_retrain():
 
 
 async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     data = logs.load_metrics(days=14)
     if not data:
         await update.message.reply_text(
@@ -591,8 +693,12 @@ def _scrub_private(text: str) -> str:
 
 
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     text = weight_.format_for_telegram()
     try:
         synopsis = await planner_.weight_synopsis_cached()
@@ -619,8 +725,12 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/voice on|off — toggle auto-reading substantial replies aloud. With no
     argument, reports the current setting. The 🔊 button on any substantial
     reply works regardless of this setting."""
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     arg = " ".join(context.args).strip().lower() if context.args else ""
     if arg not in ("on", "off"):
         state = "on" if voice.is_auto_enabled() else "off"
@@ -636,11 +746,17 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice_speak(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Callback for the 🔊 Listen button attached to substantial replies."""
+    # Registered as a CallbackQueryHandler — update.callback_query and
+    # update.effective_user are always present for a callback-query update.
+    assert update.callback_query is not None
+    assert update.effective_user is not None
     query = update.callback_query
     if update.effective_user.id != ALLOWED_USER:
         await safe_answer(query)
         return
     await safe_answer(query, "🔊 Synthesizing…")
+    if not isinstance(query.message, Message):
+        return  # button on a message Telegram can no longer give us (deleted/expired)
     msg = query.message
     text = msg.text or msg.caption or ""
     await voice.speak(
@@ -649,8 +765,12 @@ async def handle_voice_speak(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     messages = logs.format_today_for_telegram()
     if not messages:
         await update.message.reply_text("No log entries today.")
@@ -660,8 +780,12 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_directives(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     # Read the new `directive` tag plus any legacy `values` rows (not yet backfilled),
     # merged chronologically so the evolution still reads top-to-bottom.
     rows = logs.db.entries_by_tag("directive") + logs.db.entries_by_tag("values")
@@ -693,8 +817,14 @@ async def cmd_directives(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_mood_energy_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
+    # Registered as a CallbackQueryHandler — update.callback_query is always
+    # present for a callback-query update.
+    assert update.callback_query is not None
     query = update.callback_query
     await safe_answer(query)
+    if not isinstance(query.message, Message):
+        return  # button on a message Telegram can no longer give us (deleted/expired)
+    assert query.data is not None  # every button we create sets callback_data
     parts = query.data.split(":")  # me_mood:😊:good  or  me_energy:⚡:high
     kind, _, value = parts[0][3:], parts[1], parts[2]  # strip "me_"; ignore emoji
     _mood_scores = {"great": 5, "good": 4, "okay": 3, "low": 2, "bad": 1}
@@ -731,8 +861,12 @@ async def handle_mood_energy_callback(
 
 
 async def cmd_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     pending = queue_.pending()
     if not pending:
         await update.message.reply_text("No items queued.")
@@ -764,8 +898,12 @@ def _backlog_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
 
 
 async def cmd_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     items = backlog_.load()
     if not items:
         await update.message.reply_text(
@@ -791,8 +929,14 @@ async def cmd_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_backlog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CallbackQueryHandler — update.callback_query is always
+    # present for a callback-query update.
+    assert update.callback_query is not None
     query = update.callback_query
     await safe_answer(query)
+    if not isinstance(query.message, Message):
+        return  # button on a message Telegram can no longer give us (deleted/expired)
+    assert query.data is not None  # every button we create sets callback_data
     action, item_id = query.data.split(":", 1)
 
     async def render_remaining(message: str | None = None) -> None:
@@ -845,8 +989,12 @@ async def handle_backlog_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CommandHandler — a command always arrives as a message,
+    # with a sender.
+    assert update.effective_user is not None
     if update.effective_user.id != ALLOWED_USER:
         return
+    assert update.message is not None
     rows = [
         [
             InlineKeyboardButton(
@@ -863,8 +1011,14 @@ async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Registered as a CallbackQueryHandler — update.callback_query is always
+    # present for a callback-query update.
+    assert update.callback_query is not None
     query = update.callback_query
     await safe_answer(query)
+    if not isinstance(query.message, Message):
+        return  # button on a message Telegram can no longer give us (deleted/expired)
+    assert query.data is not None  # every button we create sets callback_data
     data = query.data
 
     if data.startswith("ctx_view:"):
@@ -981,6 +1135,12 @@ async def _post_init(application):
                 "kwargs": {"minutes": 30},
             },
             {
+                "id": "mincha_reminder",
+                "func": mincha_reminder,
+                "trigger": "interval",
+                "kwargs": {"minutes": 10},
+            },
+            {
                 "id": "checkin_morning",
                 "func": _checkin_morning,
                 "trigger": "cron",
@@ -1004,8 +1164,13 @@ async def _post_init(application):
     # Move every cron job onto the new tz whenever the active location changes
     # (see scheduling.reschedule_cron_jobs — a plain re-registration, not a
     # scheduler rebuild, since every job above is already replace_existing=True).
+    # Rebound to a local so the narrowing survives inside the lambda (Pyright
+    # won't carry a narrowed global into a closure); _scheduler was just set
+    # above and lives for the rest of the process, so this is the same object.
+    scheduler = _scheduler
+    assert scheduler is not None
     location.add_listener(
-        lambda: scheduling.reschedule_cron_jobs(_scheduler, location.current_tz())
+        lambda: scheduling.reschedule_cron_jobs(scheduler, location.current_tz())
     )
 
 
