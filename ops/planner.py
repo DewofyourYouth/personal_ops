@@ -4,14 +4,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import anthropic
-
-from context import Context
-from logs import Logs
 from baseline_tracker import Baseline
+from context import Context
 from insights import KINDS as INSIGHT_KINDS
 from insights import Insights
-from weight import Weight
 from location import current_tz
+from logs import Logs
+from weight import Weight
 
 
 def _day_type_for(d: date) -> str:
@@ -1216,7 +1215,7 @@ class Planner:
                         'lighting time set, please set it", "what time are '
                         'candles tonight".\n\n'
                         "'reminder': asking to be reminded of something later, "
-                        "e.g. \"don't let me forget to call the dentist "
+                        'e.g. "don\'t let me forget to call the dentist '
                         'tomorrow", "make sure I take my medication at 8".\n\n'
                         "'calendar_event': asking to add a meeting/appointment "
                         'to the calendar, e.g. "I have a dentist appointment '
