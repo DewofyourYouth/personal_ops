@@ -19,12 +19,8 @@ from agenda_handlers import AgendaHandlers
 from agenda_queue import AgendaQueue
 from backlog import Backlog
 from baseline_tracker import Baseline
-from bot_constants import (  # noqa: F401
-    BOT_COMMANDS,
-    HELP_INTRO,
-    HELP_SECTIONS,
-    HELP_TEXT,
-)
+from bot_constants import (BOT_COMMANDS, HELP_INTRO,  # noqa: F401
+                           HELP_SECTIONS, HELP_TEXT)
 from config import Config
 from context import Context
 from digest import DigestHandlers
@@ -41,37 +37,15 @@ from reminder_handlers import ReminderHandlers
 from reminders import Reminders
 from shabbat import Shabbat
 from status_handlers import StatusHandlers
-from telegram import (
-    Bot,
-    BotCommand,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    Update,
-)
+from telegram import (Bot, BotCommand, InlineKeyboardButton,
+                      InlineKeyboardMarkup, Message, Update)
 from telegram.error import BadRequest, NetworkError
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-from text_router import (
-    ENERGY_OPTIONS,
-    MOOD_OPTIONS,
-    TextRouter,
-    _mood_energy_keyboard,
-    _parse_queue_date,
-)
-from tg_common import (
-    inline_keyboard_markup,
-    inline_keyboard_rows,
-    markdown_to_html,
-    mono_table,
-    safe_answer,
-)
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          ContextTypes, MessageHandler, filters)
+from text_router import (ENERGY_OPTIONS, MOOD_OPTIONS, TextRouter,
+                         _mood_energy_keyboard, _parse_queue_date)
+from tg_common import (inline_keyboard_markup, inline_keyboard_rows,
+                       markdown_to_html, mono_table, safe_answer)
 from time_tracker import TimeTracker
 from weight import Weight
 
@@ -116,10 +90,11 @@ weight_ = Weight(logs.db)
 shabbat_ = Shabbat(LOG_DIR)
 
 from pathlib import Path as _Path
+
+from location import current_tz
 from quiet_window import QuietWindow as _QuietWindow
 from staleness import CHECKIN_NUDGE_TEXT as _CHECKIN_NUDGE_TEXT
 from staleness import StalenessChecker as _StalenessChecker
-from location import current_tz
 
 _CHAGIM_PATH = _Path(__file__).parent / "chagim.json"
 _STALENESS_CONFIG_PATH = _Path(__file__).parent / "staleness_config.json"
@@ -1309,6 +1284,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(handle_voice_speak, pattern=f"^{voice.CALLBACK_DATA}$")
     )
+    app.add_handler(CommandHandler("candles", cmd_candles))
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler({"backlog", "b"}, cmd_backlog))
     app.add_handler(
