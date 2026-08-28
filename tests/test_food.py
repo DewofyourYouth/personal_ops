@@ -501,6 +501,7 @@ def _make_router(logs: Logs) -> TextRouter:
         backlog=MagicMock(),
         reminders=MagicMock(),
         gcal=MagicMock(),
+        weekly_goals=MagicMock(),
         planner=MagicMock(),
         hypotheses=MagicMock(),
         food_registry=FoodRegistry(logs.db),

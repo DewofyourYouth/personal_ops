@@ -243,6 +243,15 @@ _INTENT_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "candle_lighting": ("candle", "shabbat", "shabbos"),
     "reminder": ("remind", "forget"),
     "calendar_event": ("meeting", "appointment", "event", "calendar"),
+    # Not bare "this week" — that phrase is common in ordinary checkins
+    # ("this week has been rough") and would blow up the escalation rate.
+    "weekly_focus": (
+        "focus on",
+        "focus for the week",
+        "goal for the week",
+        "goal this week",
+        "priority this week",
+    ),
 }
 
 
@@ -709,6 +718,7 @@ class TextRouter:
         self.backlog = services.backlog
         self.reminders = services.reminders
         self.gcal = services.gcal
+        self.weekly_goals = services.weekly_goals
         self.planner = services.planner
         self.hypotheses = services.hypotheses
         self.food_registry = services.food_registry
@@ -1687,6 +1697,16 @@ class TextRouter:
                 await reply(f"📋 Added to backlog: {item_text}")
                 return
 
+        # focus: — explicit weekly-focus goal, shapes the daily agenda proposal
+        # while active. Conversational phrasing ("this week I want to focus
+        # on...") is handled separately by the intent-dispatch step below.
+        if re.match(r"^focus[:\s]", lower):
+            item_text = re.sub(r"^focus[:\s]\s*", "", text, flags=re.IGNORECASE).strip()
+            if item_text:
+                self.weekly_goals.add(item_text)
+                await reply(f"🎯 This week's focus: {item_text}")
+                return
+
         # shabbat / candle lighting — set quiet mode manually. A raw time
         # ("candle lighting 19:13") is unambiguous and applies immediately; a
         # place to visit for Shabbat ("candle lighting in Tzfat") is geocoded
@@ -2284,6 +2304,24 @@ class TextRouter:
         self._awaiting_candles[update_chat_id] = True
         await reply("🕯️ What time is candle lighting?")
 
+    async def _dispatch_weekly_focus(self, text: str, reply) -> None:
+        """Extract the goal from a conversational weekly-focus statement and
+        store it. Asks for clarification rather than guessing if
+        parse_weekly_focus can't identify a concrete goal — same honest-failure
+        shape as _resolve_agenda_item."""
+        try:
+            parsed = await self.planner.parse_weekly_focus(text)
+        except Exception:
+            parsed = None
+        goal = None
+        if parsed and not parsed.get("clarification_needed") and parsed.get("goal"):
+            goal = parsed["goal"]
+        if goal is None:
+            await reply("Not sure what to focus on — could you name the specific goal?")
+            return
+        self.weekly_goals.add(goal)
+        await reply(f"🎯 This week's focus: {goal}")
+
     async def _try_dispatch_known_intent(
         self, text: str, lower: str, update_chat_id, reply
     ) -> bool:
@@ -2309,6 +2347,8 @@ class TextRouter:
             await self._dispatch_reminder(text, update_chat_id, reply)
         elif action == "calendar_event":
             await self._dispatch_calendar_event(text, reply)
+        elif action == "weekly_focus":
+            await self._dispatch_weekly_focus(text, reply)
         else:
             return False
         if getattr(self, "logs", None) is not None:

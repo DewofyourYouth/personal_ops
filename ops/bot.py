@@ -23,7 +23,6 @@ from bot_constants import (
     BOT_COMMANDS,
     HELP_INTRO,  # noqa: F401
     HELP_SECTIONS,
-    HELP_TEXT,
 )
 from config import Config
 from context import Context
@@ -73,6 +72,7 @@ from tg_common import (
     safe_answer,
 )
 from time_tracker import TimeTracker
+from weekly_goals import WeeklyGoals, WeeklyGoalsHandlers
 from weight import Weight
 
 # Single per-instance config object: identity, storage path, and tunables come
@@ -114,6 +114,7 @@ planner_ = Planner(MODEL, logs, context_)
 baseline_ = Baseline(LOG_DIR)
 weight_ = Weight(logs.db)
 shabbat_ = Shabbat(LOG_DIR)
+weekly_goals_ = WeeklyGoals(LOG_DIR)
 
 from pathlib import Path as _Path
 
@@ -135,6 +136,7 @@ agenda_feature: "AgendaHandlers" = None  # type: ignore[assignment]
 router: "TextRouter" = None  # type: ignore[assignment]
 digest_feature: "DigestHandlers" = None  # type: ignore[assignment]
 reminders_feature: "ReminderHandlers" = None  # type: ignore[assignment]
+weekly_goals_feature: "WeeklyGoalsHandlers" = None  # type: ignore[assignment]
 hypothesis_feature: "HypothesisHandlers" = None  # type: ignore[assignment]
 reclassify_feature: "ReclassifyHandlers" = None  # type: ignore[assignment]
 status_feature: "StatusHandlers" = None  # type: ignore[assignment]
@@ -632,6 +634,19 @@ async def weekly_retrain():
         logging.getLogger(__name__).exception("Weekly classifier retrain failed")
 
 
+async def weekly_goal_review():
+    """Sunday clearing session for weekly focus goals: one message per active
+    goal with Delete/Roll Over buttons. Guarded by Shabbat quiet, same as the
+    other Sunday jobs; sends nothing if there's nothing active."""
+    assert _bot is not None
+    if shabbat_.quiet_now():
+        return
+    try:
+        await weekly_goals_feature.send_weekly_review()
+    except Exception:
+        logging.getLogger(__name__).exception("Weekly focus goal review failed")
+
+
 async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Registered as a CommandHandler — a command always arrives as a message,
     # with a sender.
@@ -1126,6 +1141,7 @@ async def _post_init(application):
             "weekly_digest": weekly_digest,
             "weekly_mine": weekly_mine,
             "weekly_retrain": weekly_retrain,
+            "weekly_goal_review": weekly_goal_review,
         },
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
@@ -1222,6 +1238,7 @@ def main():
         backlog=backlog_,
         baseline=baseline_,
         reminders=reminders,
+        weekly_goals=weekly_goals_,
         hypotheses=hypotheses_,
         food_registry=food_registry_,
         time_tracker=time_tracker_,
@@ -1273,6 +1290,12 @@ def main():
         app.bot, reminders, logs, quiet_window_, ALLOWED_USER
     )
     reminders_feature.register(app)
+
+    # Weekly focus goals (Delete/Roll Over buttons on the Sunday clearing
+    # session, wrapped by the module-level weekly_goal_review for the job store).
+    global weekly_goals_feature
+    weekly_goals_feature = WeeklyGoalsHandlers(app.bot, weekly_goals_, ALLOWED_USER)
+    weekly_goals_feature.register(app)
 
     # Hypothesis feature (/hypotheses list + resolve buttons + the daily follow-up
     # job, wrapped by the module-level check_hypotheses for the job store).

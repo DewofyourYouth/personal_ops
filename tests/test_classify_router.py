@@ -453,6 +453,22 @@ def test_intent_gate_does_not_match_plain_log_text():
     assert not _intent_gate_matches("finished the deck today, feels great")
 
 
+def test_intent_gate_matches_weekly_focus_phrases():
+    assert _intent_gate_matches(
+        "this week i want to focus on finishing the haki debugging"
+    )
+    assert _intent_gate_matches("my goal for the week is to catch up on applications")
+    assert _intent_gate_matches("priority this week is arabic")
+
+
+def test_intent_gate_does_not_fire_on_bare_this_week():
+    """Regression guard for the false-positive risk flagged in the plan: a
+    bare "this week" mention (very common in ordinary checkins) must not
+    alone trigger the gate — only tighter goal-setting phrases should."""
+    assert not _intent_gate_matches("this week has been rough")
+    assert not _intent_gate_matches("i've been tired this week")
+
+
 class _Replies:
     def __init__(self):
         self.messages = []
@@ -461,13 +477,16 @@ class _Replies:
         self.messages.append(text)
 
 
-def _router_full(planner=None, shabbat=None, reminders=None, gcal=None, logs=None):
+def _router_full(
+    planner=None, shabbat=None, reminders=None, gcal=None, logs=None, weekly_goals=None
+):
     r = TextRouter.__new__(TextRouter)
     r.planner = planner
     r.shabbat = shabbat
     r.reminders = reminders
     r.gcal = gcal
     r.logs = logs
+    r.weekly_goals = weekly_goals
     r._awaiting_candles = {}
     r._awaiting_time = {}
     return r
@@ -641,3 +660,74 @@ def test_try_dispatch_known_intent_falls_through_when_llm_says_none():
     assert not dispatched
     assert replies.messages == []
     assert logs.events == []
+
+
+# --- Weekly focus goals ---
+
+
+def test_dispatch_weekly_focus_extracts_and_adds_goal():
+    async def parse(text):
+        return {"goal": "finish the Haki debugging"}
+
+    added = []
+    weekly_goals = types.SimpleNamespace(add=lambda text: added.append(text))
+    r = _router_full(
+        planner=types.SimpleNamespace(parse_weekly_focus=parse),
+        weekly_goals=weekly_goals,
+    )
+    replies = _Replies()
+    asyncio.run(
+        r._dispatch_weekly_focus(
+            "this week i want to focus on finishing the haki debugging", replies
+        )
+    )
+    assert added == ["finish the Haki debugging"]
+    assert any("This week's focus" in m for m in replies.messages)
+
+
+def test_dispatch_weekly_focus_asks_for_clarification_when_vague():
+    async def parse(text):
+        return {"clarification_needed": True}
+
+    def add(text):
+        raise AssertionError("must not add a goal when clarification is needed")
+
+    r = _router_full(
+        planner=types.SimpleNamespace(parse_weekly_focus=parse),
+        weekly_goals=types.SimpleNamespace(add=add),
+    )
+    replies = _Replies()
+    asyncio.run(
+        r._dispatch_weekly_focus("this week I guess I'll focus on stuff", replies)
+    )
+    assert any("Not sure what to focus on" in m for m in replies.messages)
+
+
+def test_try_dispatch_known_intent_routes_to_weekly_focus():
+    async def detect(text):
+        return "weekly_focus"
+
+    async def parse(text):
+        return {"goal": "finish the Haki debugging"}
+
+    added = []
+    logs = _FakeLogs()
+    r = _router_full(
+        planner=types.SimpleNamespace(
+            detect_action_intent=detect, parse_weekly_focus=parse
+        ),
+        weekly_goals=types.SimpleNamespace(add=lambda text: added.append(text)),
+        logs=logs,
+    )
+    replies = _Replies()
+    text = "this week i want to focus on finishing the haki debugging"
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(text, text.lower(), 1, replies)
+    )
+    assert dispatched
+    assert added == ["finish the Haki debugging"]
+    assert len(logs.events) == 1
+    _, event_type, _, to_label, kw = logs.events[0]
+    assert event_type == "dispatched"
+    assert to_label == "weekly_focus"
+    assert kw["call_site"] == "intent_router"

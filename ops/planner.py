@@ -10,6 +10,7 @@ from insights import KINDS as INSIGHT_KINDS
 from insights import Insights
 from location import current_tz
 from logs import Logs
+from weekly_goals import WeeklyGoals
 from weight import Weight
 
 
@@ -37,15 +38,25 @@ class Planner:
         self.baseline = Baseline(logs.log_dir)
         self.insights = Insights(logs.log_dir)
         self.weight = Weight(logs.db)
+        self.weekly_goals = WeeklyGoals(logs.log_dir)
 
     def _context_block(self) -> str:
-        """The `## User context` system block: context files plus the Habitify
-        schedule rendered from the synchronized DB projection (no habits.md)."""
+        """The `## User context` system block: context files, the Habitify
+        schedule rendered from the synchronized DB projection (no habits.md),
+        and this week's active focus goals (distinct from the static
+        long-term goals.md — see ops/context/agenda-rules.md for how heavily
+        these should weigh in a proposal)."""
         from habit_tracker import format_habits_for_prompt
 
         ctx = self.context.load_all()
         habits = format_habits_for_prompt(self.logs.db)
-        return f"## User context\n\n{ctx}" + (f"\n\n{habits}" if habits else "")
+        weekly_focus = self.weekly_goals.format_for_prompt()
+        block = f"## User context\n\n{ctx}"
+        if habits:
+            block += f"\n\n{habits}"
+        if weekly_focus:
+            block += f"\n\n{weekly_focus}"
+        return block
 
     async def propose(
         self, calendar_events: str = "", existing_summary: str = ""
@@ -1182,6 +1193,57 @@ class Planner:
                 return block.input
         return None
 
+    async def parse_weekly_focus(self, text: str) -> dict | None:
+        """Extract the goal itself from a conversational weekly-focus statement
+        ("this week I want to focus on finishing the Haki debugging"), the
+        same detect-then-extract split as parse_agenda_item — detect_action_intent
+        already decided this IS a weekly-focus statement; this call only strips
+        the framing down to the goal text. Returns `{"goal": str}`, or
+        `{"clarification_needed": True}` when no single concrete goal can be
+        identified."""
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            tools=[
+                {
+                    "name": "extract_weekly_focus",
+                    "description": (
+                        "Extract the concrete goal text from a message stating "
+                        "what the user wants to focus on for the week (or some "
+                        'other stated timeframe), e.g. "this week I want to '
+                        'focus on finishing the Haki debugging" -> "finishing '
+                        'the Haki debugging". Strip the framing ("this week I '
+                        'want to focus on...", "my goal for the week is...") '
+                        "and keep just the goal itself. If the message doesn't "
+                        "actually name a concrete goal, set "
+                        "clarification_needed=true and omit goal, rather than "
+                        "guessing."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {
+                                "type": "string",
+                                "description": "The concrete goal text. Omit if clarification_needed is true.",
+                            },
+                            "clarification_needed": {
+                                "type": "boolean",
+                                "description": "True if no single concrete goal can be identified.",
+                            },
+                        },
+                        "required": ["clarification_needed"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "extract_weekly_focus"},
+            messages=[{"role": "user", "content": text}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                return block.input
+        return None
+
     async def detect_action_intent(self, text: str) -> str | None:
         """Which of a small, known set of actions (if any) a message is asking
         for, when phrased indirectly/conversationally rather than as the exact
@@ -1194,8 +1256,8 @@ class Planner:
         Callers should gate this behind a cheap keyword pre-filter (see
         text_router.py's intent-dispatch step) — most messages should never
         reach this call at all. Returns one of "candle_lighting", "reminder",
-        "calendar_event", or None if the message doesn't clearly ask for any
-        of them."""
+        "calendar_event", "weekly_focus", or None if the message doesn't
+        clearly ask for any of them."""
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -1220,6 +1282,13 @@ class Planner:
                         "'calendar_event': asking to add a meeting/appointment "
                         'to the calendar, e.g. "I have a dentist appointment '
                         'Thursday at 2, put it on my calendar".\n\n'
+                        "'weekly_focus': stating a goal or priority for the "
+                        "week (or another stated timeframe) that should shape "
+                        'what gets proposed each day, e.g. "this week I want '
+                        'to focus on finishing the Haki debugging", "my goal '
+                        'for the week is to catch up on job applications". '
+                        "Not a one-off task to add to today's agenda — a "
+                        "broader theme for the whole period.\n\n"
                         "'none': anything else, including a message that just "
                         "mentions a meeting/reminder/candle lighting in "
                         "passing without asking the bot to do something about "
@@ -1234,6 +1303,7 @@ class Planner:
                                     "candle_lighting",
                                     "reminder",
                                     "calendar_event",
+                                    "weekly_focus",
                                     "none",
                                 ],
                             },

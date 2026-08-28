@@ -110,6 +110,15 @@ def start(
         id="weekly_retrain",
         replace_existing=True,
     )
+    scheduler.add_job(
+        jobs["weekly_goal_review"],
+        "cron",
+        day_of_week="sun",
+        hour=9,
+        minute=15,
+        id="weekly_goal_review",
+        replace_existing=True,
+    )
     for spec in extra_jobs:
         scheduler.add_job(
             spec["func"],

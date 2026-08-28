@@ -21,6 +21,7 @@ def _make_router():
         backlog=MagicMock(),
         reminders=MagicMock(),
         gcal=MagicMock(),
+        weekly_goals=MagicMock(),
         planner=MagicMock(),
         hypotheses=MagicMock(),
         food_registry=MagicMock(),
