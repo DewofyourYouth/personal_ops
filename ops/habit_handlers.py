@@ -189,6 +189,14 @@ def _csv_to_days(csv: str) -> list[int] | None:
     return vals or None
 
 
+def _to_habitify_days(days: list[int] | None) -> list[int]:
+    """Local Monday=0 weekday ints -> Habitify Sunday=0. None/empty means every
+    day locally, which Habitify represents as all seven days explicitly."""
+    if not days:
+        return list(range(7))
+    return sorted({(d + 1) % 7 for d in days})
+
+
 def _parse_paused_until(s: str) -> date | None:
     return date.fromisoformat(s) if s else None
 
@@ -314,14 +322,27 @@ class HabitStore:
     # --- Writes (CRUD) ---
 
     def add(
-        self, name: str, section: str = "Habits", days: list[int] | None = None
+        self,
+        name: str,
+        section: str = "Habits",
+        days: list[int] | None = None,
+        habitify_id: str = "",
     ) -> None:
         nxt = self.db.query("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM habits")[
             0
         ]["p"]
         self.db.execute(
-            "INSERT INTO habits (section, name, days, tracked, position) VALUES (?, ?, ?, 1, ?)",
-            (section, name.strip(), _days_to_csv(days), nxt),
+            "INSERT INTO habits "
+            "(section, name, days, tracked, position, habitify_id, habitify_managed) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?)",
+            (
+                section,
+                name.strip(),
+                _days_to_csv(days),
+                nxt,
+                habitify_id,
+                1 if habitify_id else 0,
+            ),
         )
 
     def remove(self, habit_id: int) -> None:
@@ -544,6 +565,8 @@ class HabitStore:
             updated += 1
 
         for habit in self.list_habits(tracked_only=False):
+            if not habit["habitify_id"]:
+                continue  # never synced to Habitify — not this reconciliation's concern
             if (
                 habit["id"] not in seen_local_ids
                 and habit["habitify_id"] not in seen_ids
@@ -1559,9 +1582,17 @@ class HabitHandlers:
 
     # --- Handlers: CRUD ---
 
-    def add_habit_from_text(self, raw: str) -> str:
+    async def add_habit_from_text(self, raw: str) -> str:
         """Parse '<name> [mon,wed,fri]' and create a new tracked habit. Shared by
-        /addhabit and the natural-language 'add X habit' router intercept."""
+        /addhabit and the natural-language 'add X habit' router intercept.
+
+        If Habitify is configured, the habit is created there first and the
+        local row is created already carrying its habitify_id — a habit
+        created here must never be local-only, since sync_from_habitify's
+        reconciliation only leaves alone habits it knows are Habitify's; a
+        local-only row would otherwise get silently untracked on the next
+        sync. Raises HabitifyError if the Habitify create call fails, rather
+        than falling back to a local-only row that would hit exactly that trap."""
         days = None
         tag_m = re.search(r"\[([^\]]+)\]$", raw)
         if tag_m:
@@ -1571,7 +1602,20 @@ class HabitHandlers:
                 if d.strip() in Context._DAY_NAMES
             ] or None
             raw = raw[: tag_m.start()].strip()
-        self.store.add(raw, days=days)
+
+        habitify_id = ""
+        sync = getattr(self, "habitify_sync", None)
+        if sync is not None:
+            payload = {
+                "name": raw,
+                "type": "good",
+                "occurrence": {"type": "weekDays", "days": _to_habitify_days(days)},
+                "goal": {"periodicity": "daily", "value": 1, "unit": "rep"},
+            }
+            created = await asyncio.to_thread(sync.client.create_habit, payload)
+            habitify_id = str(created["id"])
+
+        self.store.add(raw, days=days, habitify_id=habitify_id)
         return raw
 
     async def remove_habit_by_text(self, name: str) -> str | None:
@@ -1584,19 +1628,16 @@ class HabitHandlers:
         return self.store.remove_by_name(resolved)
 
     async def cmd_add_habit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/addhabit <name> [days]  — e.g. /addhabit Stretch [mon,wed,fri]"""
+        """/addhabit <name> [days]  — e.g. /addhabit Stretch [mon,wed,fri]. Creates
+        in Habitify too when configured (see add_habit_from_text) — Personal Ops
+        stays a valid creation surface even with Habitify as the tracking source;
+        only edits to an already Habitify-managed habit are redirected there."""
         # Registered as a CommandHandler — a command always arrives as a
         # message, with a sender.
         assert update.effective_user is not None
         if update.effective_user.id != self.allowed_user:
             return
         assert update.message is not None
-        if self.habitify_is_source:
-            await update.message.reply_text(
-                "Habitify is the source of truth. Add the habit there; Personal Ops "
-                "will recognize it automatically within five minutes."
-            )
-            return
         raw = " ".join(context.args).strip() if context.args else ""
         if not raw:
             await update.message.reply_text(
@@ -1604,7 +1645,14 @@ class HabitHandlers:
                 parse_mode="HTML",
             )
             return
-        added = self.add_habit_from_text(raw)
+        try:
+            added = await self.add_habit_from_text(raw)
+        except HabitifyError as exc:
+            await update.message.reply_text(
+                f"⚠️ Couldn't create it in Habitify ({exc}). Not added locally "
+                "either, so it doesn't end up untracked next sync — try again?"
+            )
+            return
         await update.message.reply_text(
             f"➕ Added habit: <b>{html.escape(added)}</b>", parse_mode="HTML"
         )

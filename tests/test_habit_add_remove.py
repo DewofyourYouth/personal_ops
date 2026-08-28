@@ -72,19 +72,22 @@ def test_remove_by_name_only_deletes_the_matched_habit(tmp_path):
 # --- HabitHandlers.add_habit_from_text ---
 
 
-def test_add_habit_from_text_creates_a_tracked_daily_habit(tmp_path):
+@pytest.mark.asyncio
+async def test_add_habit_from_text_creates_a_tracked_daily_habit(tmp_path):
     h = _handlers(tmp_path)
-    added = h.add_habit_from_text("Cold shower")
+    added = await h.add_habit_from_text("Cold shower")
     assert added == "Cold shower"
     habit = h.store.list_habits(tracked_only=False)[0]
     assert habit["name"] == "Cold shower"
     assert habit["tracked"] is True
     assert habit["days"] is None  # no [days] tag => every day
+    assert habit["habitify_id"] == ""  # no habitify_sync configured in _handlers()
 
 
-def test_add_habit_from_text_parses_trailing_day_tag(tmp_path):
+@pytest.mark.asyncio
+async def test_add_habit_from_text_parses_trailing_day_tag(tmp_path):
     h = _handlers(tmp_path)
-    added = h.add_habit_from_text("Stretch [mon,wed,fri]")
+    added = await h.add_habit_from_text("Stretch [mon,wed,fri]")
     assert added == "Stretch"
     habit = h.store.list_habits(tracked_only=False)[0]
     assert habit["name"] == "Stretch"

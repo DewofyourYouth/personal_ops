@@ -1838,13 +1838,15 @@ class TextRouter:
             if add_m:
                 name = add_m.group(1).strip(" .,:;-")
                 if name:
-                    if getattr(self.habit_feature, "habitify_is_source", False):
+                    try:
+                        added = await self.habit_feature.add_habit_from_text(name)
+                    except HabitifyError as exc:
                         await reply(
-                            "Habitify owns the habit list. Add it there and Personal Ops "
-                            "will recognize it automatically within five minutes."
+                            f"⚠️ Couldn't create it in Habitify ({exc}). Not added "
+                            "locally either, so it doesn't end up untracked next "
+                            "sync — try again?"
                         )
                         return
-                    added = self.habit_feature.add_habit_from_text(name)
                     await reply(
                         f"➕ Added habit: <b>{html.escape(added)}</b>",
                         parse_mode="HTML",
