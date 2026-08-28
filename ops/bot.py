@@ -1075,6 +1075,12 @@ async def _post_init(application):
             )
     except Exception:
         logging.getLogger(__name__).exception("JSONL→DB sync on startup failed")
+    # Habitify owns habit definitions. Refresh the local read projection before the
+    # bot announces readiness so matching/checklists include newly added or renamed habits.
+    for plugin in plugins:
+        refresh = getattr(plugin, "refresh_habits_from_habitify", None)
+        if refresh is not None:
+            await refresh(force=True)
     # Tell the user we just (re)started, so a redeploy can't silently eat a
     # message sent during the restart window — they know to resend.
     try:

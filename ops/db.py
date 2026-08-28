@@ -413,6 +413,17 @@ class Database:
         )
         self._conn().commit()
 
+    def metric_exists(self, ts: str, key: str) -> bool:
+        """Whether this exact source reading was already ingested."""
+        return (
+            self._conn()
+            .execute(
+                "SELECT 1 FROM metrics WHERE ts = ? AND key = ? LIMIT 1", (ts, key)
+            )
+            .fetchone()
+            is not None
+        )
+
     def entries_for_date(self, d: date) -> list[sqlite3.Row]:
         return (
             self._conn()

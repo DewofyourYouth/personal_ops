@@ -4,8 +4,8 @@
 #   make test    run the test suite inside Docker
 #   make push    rebuild and replace the running container with the new image + code
 #
-# `make test` mounts the repo into the built image because the Dockerfile only copies
-# `ops/` (not `tests/` or the dev-only deps); pytest + pytest-asyncio are installed at
+# `make test` mounts the repo into the built image because the Dockerfile copies the
+# runtime `ops/` and `api/` packages (not `tests/` or dev-only deps); test packages are installed at
 # run time into the throwaway container, so the image stays runtime-only.
 
 COMPOSE := docker compose

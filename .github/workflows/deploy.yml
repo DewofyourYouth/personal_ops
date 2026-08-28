@@ -53,5 +53,12 @@ jobs:
             if [ "$status" != "running" ]; then
               echo "bot is $status after deploy"; docker compose logs --tail=80 bot; exit 1
             fi
-            echo "Deployed. Bot is running."
+            api_cid="$(docker compose ps -q api)"
+            if [ -n "$api_cid" ]; then
+              api_status="$(docker inspect -f "{{.State.Status}}" "$api_cid")"
+              if [ "$api_status" != "running" ]; then
+                echo "api is $api_status after deploy"; docker compose logs --tail=80 api; exit 1
+              fi
+            fi
+            echo "Deployed. Enabled services are running."
           '

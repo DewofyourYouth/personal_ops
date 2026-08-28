@@ -50,9 +50,9 @@ HELP_SECTIONS = {
         "🔥 Habits & Routines",
         """/habits — checklist with streaks 🔥, chain 🟩⬜, ⚠️ flags
 /habitcheck — on-demand end-of-day habit check (also runs nightly)
-/addhabit — add a new habit (e.g. <code>/addhabit Stretch [mon,wed,fri]</code>)
-/edithabit — edit name, days, or section (e.g. <code>/edithabit Stretch: days=mon,wed,fri</code>)
-/managehabits — toggle tracking or delete habits
+/addhabit — habit definitions are managed in Habitify
+/edithabit — inspect a habit; make definition edits in Habitify
+/managehabits — habit management lives in Habitify
 /habitcue — set a habit's cue (e.g. <code>/habitcue Daf Yomi: after Maariv, 21:00</code>)
 /pausehabit — put a habit on hold, no nag/no streak break (e.g. <code>/pausehabit 5:30 wake: 14d</code>, <code>2w</code>, or <code>until 2026-08-16</code>; no args lists paused habits)
 /resumehabit — end an active pause early (e.g. <code>/resumehabit 5:30 wake</code>)
@@ -145,9 +145,9 @@ BOT_COMMANDS = [
     # Habits & routines
     ("habits", "Daily habits checklist"),
     ("habitcheck", "On-demand end-of-day habit check"),
-    ("addhabit", "Add a new habit"),
-    ("edithabit", "Edit an existing habit"),
-    ("managehabits", "Delete or toggle habits"),
+    ("addhabit", "Manage new habits in Habitify"),
+    ("edithabit", "Inspect a Habitify habit"),
+    ("managehabits", "Manage habits in Habitify"),
     ("habitcue", "Set an implementation intention / habit-stack anchor"),
     ("pausehabit", "Put a habit on hold for a while"),
     ("resumehabit", "End an active habit pause early"),

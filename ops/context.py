@@ -7,8 +7,8 @@ CONTEXT_DIR = (
     if "OPS_CONTEXT_DIR" in os.environ
     else Path(__file__).parent / "context"
 )
-# habits.md is intentionally absent: the habits table is the single source of truth,
-# and the planner gets the schedule via habit_tracker.format_habits_for_prompt(db).
+# habits.md is intentionally absent: Habitify is authoritative, the habits table is its
+# local projection, and the planner renders it via habit_tracker.format_habits_for_prompt.
 CONTEXT_FILES = [
     "goals.md",
     "priorities.md",

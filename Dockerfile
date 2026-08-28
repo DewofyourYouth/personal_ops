@@ -11,6 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ops/ ./ops/
+COPY api/ ./api/
 
 # Log dir and scheduler db persist via volume mount — create the dir so it exists at startup
 RUN mkdir -p /app/ops/log
