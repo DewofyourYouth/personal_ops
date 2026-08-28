@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 
 from context import Context
 from habit_handlers import HabitStore, exact_habit_match, match_habit
+from habit_tracker import load_habit_logs
 from logs import Logs
 
 
@@ -133,3 +134,42 @@ async def test_free_text_uses_constrained_llm_against_habitify_projection(tmp_pa
 
     enum = client.messages.create.call_args.kwargs["tools"][0]["input_schema"]
     assert enum["properties"]["habit"]["enum"] == ["Workout", "none"]
+
+
+def test_completion_projection_is_visible_to_streaks_and_reversible(tmp_path):
+    logs, store = _store(tmp_path)
+    store.sync_from_habitify([_remote("tefillin-id", "Tefillin")])
+    from datetime import date
+
+    target = date.today()
+    store.sync_habitify_completions(
+        target,
+        [{"id": "tefillin-id", "name": "Tefillin"}],
+        ["tefillin-id"],
+    )
+    assert load_habit_logs(logs)[target.isoformat()] == ["tefillin"]
+    assert store.habitify_completion_entries(target) == [
+        {"tag": "habit", "content": "Tefillin", "date": target.isoformat()}
+    ]
+
+    # Undoing in Habitify removes the projection on the next refresh.
+    store.sync_habitify_completions(target, [], ["tefillin-id"])
+    assert target.isoformat() not in load_habit_logs(logs)
+    assert store.habitify_completion_entries(target) == []
+
+
+def test_unresolved_habitify_status_keeps_last_known_projection(tmp_path):
+    _, store = _store(tmp_path)
+    from datetime import date
+
+    target = date.today()
+    store.sync_habitify_completions(
+        target,
+        [{"id": "core-id", "name": "Core Training"}],
+        ["core-id"],
+    )
+    store.sync_habitify_completions(target, [], [])
+
+    assert store.habitify_completion_entries(target) == [
+        {"tag": "habit", "content": "Core Training", "date": target.isoformat()}
+    ]

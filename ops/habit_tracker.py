@@ -87,6 +87,22 @@ def load_habit_logs(logs: Logs, days: int = 400) -> dict[str, list[str]]:
     for r in logs.db.entries_for_range(start, date.today()):
         if r["tag"] == "habit":
             by_day.setdefault(r["date"], []).append(r["content"].strip().lower())
+    tables = {
+        row["name"]
+        for row in logs.db.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    if "habitify_completions" in tables:
+        for row in logs.db.query(
+            "SELECT date, habit FROM habitify_completions "
+            "WHERE date >= ? AND date <= ?",
+            (start.isoformat(), date.today().isoformat()),
+        ):
+            values = by_day.setdefault(row["date"], [])
+            habit = row["habit"].strip().lower()
+            if habit not in values:
+                values.append(habit)
     return by_day
 
 
