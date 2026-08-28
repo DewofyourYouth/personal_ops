@@ -229,6 +229,29 @@ _LOCATION_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Known-action registry for the general intent-dispatch step (see
+# TextRouter._try_dispatch_known_intent): messages phrased indirectly rather
+# than as one of the exact commands above ("if you don't have candle lighting
+# time set, please set it" instead of "candle lighting HH:MM") never match any
+# rules-first trigger and just get logged inertly. Each entry's keywords are a
+# cheap pre-gate — same "false positives cost one Haiku call, false negatives
+# fall through" tradeoff as _LOCATION_HINT_RE — so Planner.detect_action_intent
+# (the actual LLM classification) only runs on messages that could plausibly
+# be one of these. Deliberately narrow (see the intent-dispatch plan): habit/
+# backlog/food/agenda-add etc. already have adequate NL coverage elsewhere.
+_INTENT_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "candle_lighting": ("candle", "shabbat", "shabbos"),
+    "reminder": ("remind", "forget"),
+    "calendar_event": ("meeting", "appointment", "event", "calendar"),
+}
+
+
+def _intent_gate_matches(lower: str) -> bool:
+    return any(
+        any(kw in lower for kw in keywords)
+        for keywords in _INTENT_ACTION_KEYWORDS.values()
+    )
+
 
 def _agenda_extraction_is_suspect(original: str, item: str) -> bool:
     """True when `_extract_agenda_item`'s regex result probably isn't a real task.
@@ -1643,31 +1666,7 @@ class TextRouter:
             event_text = next(g for g in _event_pattern.groups() if g is not None)
             # use original text with preserved case, same offset as matched group
             event_text = text[lower.index(event_text) :].strip()
-            await reply("📅 Parsing event…")
-            try:
-                parsed = await self.planner.parse_event(event_text)
-                if not parsed:
-                    await reply(
-                        "Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am"
-                    )
-                    return
-                tz = current_tz()
-                start_dt = datetime.fromisoformat(
-                    f"{parsed['date']}T{parsed['start_time']}:00"
-                ).replace(tzinfo=tz)
-                event = await asyncio.to_thread(
-                    self.gcal.create_event,
-                    parsed["summary"],
-                    start_dt,
-                    parsed.get("duration_minutes", 60),
-                    parsed.get("description"),
-                )
-                link = event.get("htmlLink", "")
-                await reply(
-                    f"✅ Created: <b>{html.escape(parsed['summary'])}</b> on {parsed['date']} at {parsed['start_time']}\n{link}",
-                )
-            except Exception as e:
-                await reply(f"Failed to create event: {e}")
+            await self._dispatch_calendar_event(event_text, reply)
             return
 
         # remind: / remind me — create a recurring reminder
@@ -1675,79 +1674,7 @@ class TextRouter:
             reminder_text = re.sub(
                 r"^remind(:|(\s+me\b))\s*", "", text, flags=re.IGNORECASE
             ).strip()
-            await reply("⏰ Parsing reminder…")
-            try:
-                parsed = await self.planner.parse_reminder(reminder_text)
-                if not parsed:
-                    await reply(
-                        "Couldn't parse the reminder. Try: remind: eat lunch at 13:00 or remind: drink water every 60 minutes"
-                    )
-                    return
-                from datetime import date as _date
-
-                extra = {k: v for k, v in parsed.items() if k not in ("text", "type")}
-                if parsed["type"] == "once" and "date" not in extra:
-                    extra["date"] = _date.today().isoformat()
-                if parsed["type"] == "weekly" and "day_of_week" in parsed:
-                    day_map = {
-                        "monday": 0,
-                        "tuesday": 1,
-                        "wednesday": 2,
-                        "thursday": 3,
-                        "friday": 4,
-                        "saturday": 5,
-                        "sunday": 6,
-                    }
-                    extra["day"] = day_map.get(parsed["day_of_week"].lower(), 4)
-                if (
-                    parsed["type"] in ("once", "daily", "weekly")
-                    and "time" not in extra
-                ):
-                    # ask for the time rather than defaulting
-                    self._awaiting_time[update_chat_id] = {
-                        "text": parsed["text"],
-                        "type": parsed["type"],
-                        **extra,
-                    }
-                    d = extra.get("date", _date.today().isoformat())
-                    when = "today" if d == _date.today().isoformat() else d
-                    await reply(f"What time on {when} should I remind you?")
-                    return
-                entry = self.reminders.add(
-                    text=parsed["text"], reminder_type=parsed["type"], **extra
-                )
-                if entry["type"] == "once":
-                    d = entry.get("date", _date.today().isoformat())
-                    when = "today" if d == _date.today().isoformat() else d
-                    await reply(
-                        f'⏰ Reminder set: "{entry["text"]}" on {when} at {entry["time"]}'
-                    )
-                elif entry["type"] == "daily":
-                    await reply(
-                        f'⏰ Reminder set: "{entry["text"]}" every day at {entry["time"]}'
-                    )
-                elif entry["type"] == "weekly":
-                    days = [
-                        "Monday",
-                        "Tuesday",
-                        "Wednesday",
-                        "Thursday",
-                        "Friday",
-                        "Saturday",
-                        "Sunday",
-                    ]
-                    day_name = days[entry.get("day", 4)]
-                    await reply(
-                        f'⏰ Reminder set: "{entry["text"]}" every {day_name} at {entry["time"]}'
-                    )
-                else:
-                    ws = entry.get("window_start", "08:00")
-                    we = entry.get("window_end", "22:00")
-                    await reply(
-                        f'⏰ Reminder set: "{entry["text"]}" every {entry["interval_minutes"]} min ({ws}–{we})'
-                    )
-            except Exception as e:
-                await reply(f"Failed to set reminder: {e}")
+            await self._dispatch_reminder(reminder_text, update_chat_id, reply)
             return
 
         # backlog: / someday: — add to backlog
@@ -1993,6 +1920,15 @@ class TextRouter:
                 )
                 return
 
+        # Indirectly-phrased request for one of a small set of known actions
+        # ("if you don't have candle lighting time set, please set it" instead
+        # of "candle lighting HH:MM") that didn't match any exact command
+        # above — same cheap-gate-then-LLM shape as the location check just
+        # above. On a hit, dispatches through the same code the explicit
+        # command uses; on a miss, falls straight through to classification.
+        if await self._try_dispatch_known_intent(text, lower, update_chat_id, reply):
+            return
+
         # standard log entry — match prefix keyword regardless of trailing punctuation/case
         try:
             tag, content, confidence = await self._classify_entry_with_llm(text)
@@ -2221,6 +2157,175 @@ class TextRouter:
                 )
             ]
         return None
+
+    async def _dispatch_calendar_event(self, event_text: str, reply) -> None:
+        """Parse `event_text` and create the calendar event. Shared by the
+        explicit event:/add event: trigger and _try_dispatch_known_intent so
+        conversational phrasing ("I have a dentist appointment Thursday at 2,
+        put it on my calendar") goes through the exact same code as the
+        explicit command."""
+        await reply("📅 Parsing event…")
+        try:
+            parsed = await self.planner.parse_event(event_text)
+            if not parsed:
+                await reply(
+                    "Couldn't parse the event. Try: new calendar event: dentist tomorrow at 10am"
+                )
+                return
+            tz = current_tz()
+            start_dt = datetime.fromisoformat(
+                f"{parsed['date']}T{parsed['start_time']}:00"
+            ).replace(tzinfo=tz)
+            event = await asyncio.to_thread(
+                self.gcal.create_event,
+                parsed["summary"],
+                start_dt,
+                parsed.get("duration_minutes", 60),
+                parsed.get("description"),
+            )
+            link = event.get("htmlLink", "")
+            await reply(
+                f"✅ Created: <b>{html.escape(parsed['summary'])}</b> on {parsed['date']} at {parsed['start_time']}\n{link}",
+            )
+        except Exception as e:
+            await reply(f"Failed to create event: {e}")
+
+    async def _dispatch_reminder(
+        self, reminder_text: str, update_chat_id, reply
+    ) -> None:
+        """Parse `reminder_text` and create the reminder, or ask for a missing
+        time. Shared by the explicit remind:/remind me trigger and
+        _try_dispatch_known_intent so conversational phrasing ("don't let me
+        forget to call the dentist tomorrow") goes through the exact same code
+        as the explicit command."""
+        await reply("⏰ Parsing reminder…")
+        try:
+            parsed = await self.planner.parse_reminder(reminder_text)
+            if not parsed:
+                await reply(
+                    "Couldn't parse the reminder. Try: remind: eat lunch at 13:00 or remind: drink water every 60 minutes"
+                )
+                return
+            from datetime import date as _date
+
+            extra = {k: v for k, v in parsed.items() if k not in ("text", "type")}
+            if parsed["type"] == "once" and "date" not in extra:
+                extra["date"] = _date.today().isoformat()
+            if parsed["type"] == "weekly" and "day_of_week" in parsed:
+                day_map = {
+                    "monday": 0,
+                    "tuesday": 1,
+                    "wednesday": 2,
+                    "thursday": 3,
+                    "friday": 4,
+                    "saturday": 5,
+                    "sunday": 6,
+                }
+                extra["day"] = day_map.get(parsed["day_of_week"].lower(), 4)
+            if parsed["type"] in ("once", "daily", "weekly") and "time" not in extra:
+                # ask for the time rather than defaulting
+                self._awaiting_time[update_chat_id] = {
+                    "text": parsed["text"],
+                    "type": parsed["type"],
+                    **extra,
+                }
+                d = extra.get("date", _date.today().isoformat())
+                when = "today" if d == _date.today().isoformat() else d
+                await reply(f"What time on {when} should I remind you?")
+                return
+            entry = self.reminders.add(
+                text=parsed["text"], reminder_type=parsed["type"], **extra
+            )
+            if entry["type"] == "once":
+                d = entry.get("date", _date.today().isoformat())
+                when = "today" if d == _date.today().isoformat() else d
+                await reply(
+                    f'⏰ Reminder set: "{entry["text"]}" on {when} at {entry["time"]}'
+                )
+            elif entry["type"] == "daily":
+                await reply(
+                    f'⏰ Reminder set: "{entry["text"]}" every day at {entry["time"]}'
+                )
+            elif entry["type"] == "weekly":
+                days = [
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                    "Sunday",
+                ]
+                day_name = days[entry.get("day", 4)]
+                await reply(
+                    f'⏰ Reminder set: "{entry["text"]}" every {day_name} at {entry["time"]}'
+                )
+            else:
+                ws = entry.get("window_start", "08:00")
+                we = entry.get("window_end", "22:00")
+                await reply(
+                    f'⏰ Reminder set: "{entry["text"]}" every {entry["interval_minutes"]} min ({ws}–{we})'
+                )
+        except Exception as e:
+            await reply(f"Failed to set reminder: {e}")
+
+    async def _dispatch_candle_lighting(self, update_chat_id, reply) -> None:
+        """Check whether today's candle lighting is already set, and if not,
+        kick off the exact same prompt the explicit "candle lighting" command
+        uses when given no time. Indirect phrasing ("if you don't have candle
+        lighting time set, please set it") essentially never carries an
+        explicit time itself, so — unlike the explicit-command 3-way branch
+        (time / place / neither) — this only ever needs the "neither" case,
+        plus the already-set check the literal conditional asks for."""
+        if self.shabbat.has_manual_candle_lighting():
+            t = self.shabbat.load_candle_lighting().strftime("%H:%M")
+            await reply(f"🕯️ Candle lighting is already set for {t} today.")
+            return
+        self._awaiting_candles[update_chat_id] = True
+        await reply("🕯️ What time is candle lighting?")
+
+    async def _try_dispatch_known_intent(
+        self, text: str, lower: str, update_chat_id, reply
+    ) -> bool:
+        """Last rules-first step before falling through to tag classification:
+        for a message that matched none of the exact commands above but
+        mentions a keyword from _INTENT_ACTION_KEYWORDS, ask the LLM whether
+        it's indirectly asking for one of a small set of already-supported
+        actions (see the intent-dispatch plan) and dispatch to the same code
+        the explicit command would have used. Returns True if it dispatched
+        (caller should return immediately), False to fall through as normal.
+        """
+        if not _intent_gate_matches(lower):
+            return False
+        try:
+            action = await self.planner.detect_action_intent(text)
+        except Exception:
+            action = None
+        if action is None:
+            return False
+        if action == "candle_lighting":
+            await self._dispatch_candle_lighting(update_chat_id, reply)
+        elif action == "reminder":
+            await self._dispatch_reminder(text, update_chat_id, reply)
+        elif action == "calendar_event":
+            await self._dispatch_calendar_event(text, reply)
+        else:
+            return False
+        if getattr(self, "logs", None) is not None:
+            try:
+                self.logs.log_label_event(
+                    0,
+                    "dispatched",
+                    text,
+                    action,
+                    source="auto_intent",
+                    call_site="intent_router",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to log intent_router dispatch event"
+                )
+        return True
 
     async def _resolve_agenda_item(
         self, text: str, item: str

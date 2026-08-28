@@ -28,6 +28,23 @@ Required env vars (stored in `.env`, gitignored):
 - `OPS_BOT_TOKEN` — Telegram bot token
 - `OPS_CHAT_ID` — Telegram user ID that the bot will accept messages from
 
+## Linting
+
+This repo uses `ruff` (config in `ruff.toml`). After editing any `.py` file, run
+`venv/bin/ruff check --fix <file>` and `venv/bin/ruff format <file>` on it and fix whatever
+remains before considering the change done.
+
+When a type checker (pyright/Pylance) flags a value as possibly `None`/wrongly-typed, don't
+default to slapping `assert x is not None` on it to silence the checker. First work out whether
+that's actually true:
+- If it's a genuine runtime invariant (e.g. `cursor.lastrowid` right after an `INSERT` on an
+  autoincrement table), an assert documenting *why* it can't happen is fine.
+- If `None`/the mismatch is a real, reachable case, the fix is either to keep the type honestly
+  `Optional`/etc. and make callers handle it, or to raise a clear, specific exception at the
+  point things actually go wrong — not to assert past it. An assert used this way just hides a
+  design gap (something that should error loudly, or that legitimately can be `None` and needs
+  handling) behind a generic, strippable `AssertionError`.
+
 ## Running the bot
 
 Run from the project root (the log path is derived from `os.getcwd()`):

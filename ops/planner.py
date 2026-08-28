@@ -1183,6 +1183,75 @@ class Planner:
                 return block.input
         return None
 
+    async def detect_action_intent(self, text: str) -> str | None:
+        """Which of a small, known set of actions (if any) a message is asking
+        for, when phrased indirectly/conversationally rather than as the exact
+        command each already has (e.g. "if you don't have candle lighting set,
+        please set it" instead of "candle lighting HH:MM"). This call answers
+        only the routing question — extraction of the actual details is left
+        to each action's existing parser (parse_reminder, parse_event, etc.),
+        the same way tag classification is separate from estimate_food.
+
+        Callers should gate this behind a cheap keyword pre-filter (see
+        text_router.py's intent-dispatch step) — most messages should never
+        reach this call at all. Returns one of "candle_lighting", "reminder",
+        "calendar_event", or None if the message doesn't clearly ask for any
+        of them."""
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50,
+            tools=[
+                {
+                    "name": "detect_intent",
+                    "description": (
+                        "Classify whether a message is asking the bot to take "
+                        "one of a few specific, already-supported actions, even "
+                        "when phrased indirectly rather than as an exact "
+                        "command. Only pick an action if the message is clearly "
+                        "asking for it — default to 'none' for anything that's "
+                        "just a log entry, reflection, or ambiguous mention.\n\n"
+                        "'candle_lighting': asking to check or set today's "
+                        "candle-lighting time, e.g. \"if you don't have candle "
+                        'lighting time set, please set it", "what time are '
+                        'candles tonight".\n\n'
+                        "'reminder': asking to be reminded of something later, "
+                        "e.g. \"don't let me forget to call the dentist "
+                        'tomorrow", "make sure I take my medication at 8".\n\n'
+                        "'calendar_event': asking to add a meeting/appointment "
+                        'to the calendar, e.g. "I have a dentist appointment '
+                        'Thursday at 2, put it on my calendar".\n\n'
+                        "'none': anything else, including a message that just "
+                        "mentions a meeting/reminder/candle lighting in "
+                        "passing without asking the bot to do something about "
+                        "it right now."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "candle_lighting",
+                                    "reminder",
+                                    "calendar_event",
+                                    "none",
+                                ],
+                            },
+                        },
+                        "required": ["action"],
+                    },
+                }
+            ],
+            tool_choice={"type": "tool", "name": "detect_intent"},
+            messages=[{"role": "user", "content": text}],
+        )
+        for block in response.content:
+            if block.type == "tool_use":
+                action = block.input.get("action")
+                return str(action) if action and action != "none" else None
+        return None
+
     async def parse_location_override(self, text: str) -> dict | None:
         """Interpret a free-text location statement as a location-override
         request, for messages that don't use the exact "candle lighting in X" /

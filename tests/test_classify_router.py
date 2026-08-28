@@ -28,6 +28,7 @@ from text_router import (
     _AGENDA_DEST_RE,
     _agenda_extraction_is_suspect,
     _extract_agenda_item,
+    _intent_gate_matches,
     _is_nutrition_breakdown,
     _parse_metric_body,
     _food_negative_signal,
@@ -434,3 +435,209 @@ def test_retract_partial_form_extracts_fraction_word_and_item():
 
 def test_retract_partial_form_requires_only_ate_or_had_prefix():
     assert _RETRACT_PARTIAL_RE.match("I finished a third of my book") is None
+
+
+# --- General intent-dispatch step (indirectly-phrased known actions) ---
+
+
+def test_intent_gate_matches_relevant_keywords():
+    assert _intent_gate_matches(
+        "today is friday, so if you don't have candle lighting time set, please set it"
+    )
+    assert _intent_gate_matches("don't let me forget to call the dentist")
+    assert _intent_gate_matches("I have a meeting thursday at 2, add it")
+
+
+def test_intent_gate_does_not_match_plain_log_text():
+    assert not _intent_gate_matches("i notice i feel calmer on days i walk before shul")
+    assert not _intent_gate_matches("finished the deck today, feels great")
+
+
+class _Replies:
+    def __init__(self):
+        self.messages = []
+
+    async def __call__(self, text, **kw):
+        self.messages.append(text)
+
+
+def _router_full(planner=None, shabbat=None, reminders=None, gcal=None, logs=None):
+    r = TextRouter.__new__(TextRouter)
+    r.planner = planner
+    r.shabbat = shabbat
+    r.reminders = reminders
+    r.gcal = gcal
+    r.logs = logs
+    r._awaiting_candles = {}
+    r._awaiting_time = {}
+    return r
+
+
+def test_dispatch_candle_lighting_confirms_when_already_set():
+    import datetime as dt
+
+    shabbat = types.SimpleNamespace(
+        has_manual_candle_lighting=lambda: True,
+        load_candle_lighting=lambda: dt.time(19, 5),
+    )
+    r = _router_full(shabbat=shabbat)
+    replies = _Replies()
+    asyncio.run(r._dispatch_candle_lighting(1, replies))
+    assert replies.messages == ["🕯️ Candle lighting is already set for 19:05 today."]
+    assert 1 not in r._awaiting_candles
+
+
+def test_dispatch_candle_lighting_prompts_when_unset():
+    shabbat = types.SimpleNamespace(has_manual_candle_lighting=lambda: False)
+    r = _router_full(shabbat=shabbat)
+    replies = _Replies()
+    asyncio.run(r._dispatch_candle_lighting(1, replies))
+    assert r._awaiting_candles[1] is True
+    assert replies.messages == ["🕯️ What time is candle lighting?"]
+
+
+def test_try_dispatch_known_intent_routes_to_candle_lighting():
+    async def detect(text):
+        return "candle_lighting"
+
+    shabbat = types.SimpleNamespace(has_manual_candle_lighting=lambda: False)
+    logs = _FakeLogs()
+    r = _router_full(
+        planner=types.SimpleNamespace(detect_action_intent=detect),
+        shabbat=shabbat,
+        logs=logs,
+    )
+    replies = _Replies()
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(
+            "if you don't have candle lighting time set, please set it",
+            "if you don't have candle lighting time set, please set it",
+            1,
+            replies,
+        )
+    )
+    assert dispatched
+    assert r._awaiting_candles[1] is True
+    assert len(logs.events) == 1
+    ref_entry_id, event_type, from_label, to_label, kw = logs.events[0]
+    assert event_type == "dispatched"
+    assert to_label == "candle_lighting"
+    assert kw["call_site"] == "intent_router"
+    assert kw["source"] == "auto_intent"
+
+
+def test_try_dispatch_known_intent_routes_to_reminder():
+    async def detect(text):
+        return "reminder"
+
+    async def parse_reminder(text):
+        return {
+            "text": "call the dentist",
+            "type": "once",
+            "time": "15:00",
+            "date": "2026-08-28",
+        }
+
+    added = []
+
+    def add(**kw):
+        added.append(kw)
+        return {
+            "type": "once",
+            "date": "2026-08-28",
+            "time": "15:00",
+            "text": kw["text"],
+        }
+
+    r = _router_full(
+        planner=types.SimpleNamespace(
+            detect_action_intent=detect, parse_reminder=parse_reminder
+        ),
+        reminders=types.SimpleNamespace(add=add),
+    )
+    replies = _Replies()
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(
+            "don't let me forget to call the dentist tomorrow",
+            "don't let me forget to call the dentist tomorrow",
+            1,
+            replies,
+        )
+    )
+    assert dispatched
+    assert len(added) == 1
+    assert any("Reminder set" in m for m in replies.messages)
+
+
+def test_try_dispatch_known_intent_routes_to_calendar_event():
+    async def detect(text):
+        return "calendar_event"
+
+    async def parse_event(text):
+        return {
+            "summary": "Dentist",
+            "date": "2026-08-28",
+            "start_time": "10:00",
+            "duration_minutes": 60,
+        }
+
+    def create_event(summary, start_dt, duration, description):
+        return {"htmlLink": "https://calendar.example/evt"}
+
+    r = _router_full(
+        planner=types.SimpleNamespace(
+            detect_action_intent=detect, parse_event=parse_event
+        ),
+        gcal=types.SimpleNamespace(create_event=create_event),
+    )
+    replies = _Replies()
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(
+            "I have a dentist appointment thursday at 2, put it on my calendar",
+            "i have a dentist appointment thursday at 2, put it on my calendar",
+            1,
+            replies,
+        )
+    )
+    assert dispatched
+    assert any("Created" in m for m in replies.messages)
+
+
+def test_try_dispatch_known_intent_skips_llm_when_gate_misses():
+    async def detect(text):
+        raise AssertionError("must not call the LLM when no keyword matched")
+
+    r = _router_full(planner=types.SimpleNamespace(detect_action_intent=detect))
+    replies = _Replies()
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(
+            "finished the deck today, feels great",
+            "finished the deck today, feels great",
+            1,
+            replies,
+        )
+    )
+    assert not dispatched
+    assert replies.messages == []
+
+
+def test_try_dispatch_known_intent_falls_through_when_llm_says_none():
+    async def detect(text):
+        return None
+
+    logs = _FakeLogs()
+    r = _router_full(
+        planner=types.SimpleNamespace(detect_action_intent=detect), logs=logs
+    )
+    replies = _Replies()
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(
+            "there's a meeting in the show I'm watching",
+            "there's a meeting in the show i'm watching",
+            1,
+            replies,
+        )
+    )
+    assert not dispatched
+    assert replies.messages == []
+    assert logs.events == []

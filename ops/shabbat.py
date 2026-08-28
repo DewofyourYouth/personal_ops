@@ -69,6 +69,13 @@ class Shabbat:
         except Exception:
             return None
 
+    def has_manual_candle_lighting(self) -> bool:
+        """Whether today's candle lighting was explicitly set, as opposed to
+        relying on the computed sunset-based default — the answer to "do I
+        have candle lighting time set" for callers that shouldn't reach into
+        the private manual/computed distinction themselves."""
+        return self._manual_candle_lighting() is not None
+
     # --- Location override (visiting somewhere for Shabbat) ---
 
     def _location_override_path(self) -> str:

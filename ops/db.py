@@ -279,6 +279,9 @@ class Database:
             ),
         )
         self._conn().commit()
+        assert (
+            cur.lastrowid is not None
+        )  # guaranteed after an INSERT on an autoincrement table
         return cur.lastrowid
 
     def food_negations_for_entry_ids(self, entry_ids: list[int]) -> list[sqlite3.Row]:
@@ -325,6 +328,9 @@ class Database:
             (ts, date_str, tag, content, extra_json),
         )
         self._conn().commit()
+        assert (
+            cur.lastrowid is not None
+        )  # guaranteed after an INSERT on an autoincrement table
         return cur.lastrowid
 
     def entry_by_id(self, entry_id: int) -> sqlite3.Row | None:
@@ -363,6 +369,9 @@ class Database:
             (ts, ref_entry_id, event_type, from_label, to_label, source, call_site),
         )
         self._conn().commit()
+        assert (
+            cur.lastrowid is not None
+        )  # guaranteed after an INSERT on an autoincrement table
         return cur.lastrowid
 
     def label_events_after(
