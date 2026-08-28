@@ -1215,7 +1215,7 @@ class Planner:
                         'lighting time set, please set it", "what time are '
                         'candles tonight".\n\n'
                         "'reminder': asking to be reminded of something later, "
-                        'e.g. "don\'t let me forget to call the dentist '
+                        "e.g. \"don't let me forget to call the dentist "
                         'tomorrow", "make sure I take my medication at 8".\n\n'
                         "'calendar_event': asking to add a meeting/appointment "
                         'to the calendar, e.g. "I have a dentist appointment '
