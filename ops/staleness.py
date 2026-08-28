@@ -19,8 +19,8 @@ A track is "stale" when:
 
 "checkin" is NOT one of these rolling-threshold tracks — a rolling "N hours since
 last checkin" nag drifts (its own nudge resets the clock) and can fire more than
-the 3x/day the user actually wants. It instead gets fixed daily slots (morning/
-noon/evening) via `checkin_due()`, called from bot.py at 3 specific cron times.
+the 2x/day the user actually wants. It instead gets fixed daily slots (midday/
+evening) via `checkin_due()`, called from bot.py at 2 specific cron times.
 """
 
 import json

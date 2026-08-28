@@ -485,8 +485,8 @@ async def _staleness_check():
     await staleness_.check_and_prompt(_bot, ALLOWED_USER)
 
 
-# Checkin nudges: exactly 3/day (morning/noon/evening), not a rolling "N hours
-# since last checkin" nag — that drifts and can fire more than 3x/day. Each slot
+# Checkin nudges: exactly 2/day (midday/evening), not a rolling "N hours
+# since last checkin" nag — that drifts and can fire more than 2x/day. Each slot
 # only nudges if no #checkin has landed since the previous slot's boundary, so
 # checking in early (proactively) suppresses the later scheduled nudge.
 async def _checkin_nudge(since_hour: int) -> None:
@@ -498,12 +498,8 @@ async def _checkin_nudge(since_hour: int) -> None:
         await _bot.send_message(chat_id=ALLOWED_USER, text=_CHECKIN_NUDGE_TEXT)
 
 
-async def _checkin_morning():  # slot: [00:00, 10:00)
+async def _checkin_noon():  # slot: [00:00, 14:00)
     await _checkin_nudge(0)
-
-
-async def _checkin_noon():  # slot: [10:00, 14:00)
-    await _checkin_nudge(10)
 
 
 async def _checkin_evening():  # slot: [14:00, 20:00)
@@ -1146,12 +1142,6 @@ async def _post_init(application):
                 "func": mincha_reminder,
                 "trigger": "interval",
                 "kwargs": {"minutes": 10},
-            },
-            {
-                "id": "checkin_morning",
-                "func": _checkin_morning,
-                "trigger": "cron",
-                "kwargs": {"hour": 10, "minute": 0},
             },
             {
                 "id": "checkin_noon",
