@@ -117,19 +117,23 @@ def load_days(c) -> dict[str, dict]:
     )
     for key, val, d in c.execute("SELECT key, value, date FROM metrics"):
         rec = days[d]
+        # `is not None` (not truthiness) throughout: a legitimate 0 reading
+        # (0 steps, 0 hours slept) must not be conflated with `_num` failing
+        # to parse the value, or real zero-days silently vanish from the
+        # correlations this module computes.
         if key == "mood":
             n = MOOD_EMOJI.get(val, _num(val))
-            if n:
+            if n is not None:
                 rec["mood"].append(n)
         elif key == "energy":
             n = ENERGY_EMOJI.get(val, _num(val))
-            if n:
+            if n is not None:
                 rec["energy"].append(n)
-        elif key == "steps" and (n := _num(val)):
+        elif key == "steps" and (n := _num(val)) is not None:
             rec["steps"] = max(rec["steps"] or 0, n)
-        elif key == "weight" and (n := _num(val)):
+        elif key == "weight" and (n := _num(val)) is not None:
             rec["weight"] = n
-        elif key == "sleep" and (n := _num(val)):
+        elif key == "sleep" and (n := _num(val)) is not None:
             rec["sleep"] = n
     for d, kcal in c.execute("SELECT date, kcal FROM food_summary"):
         days[d]["kcal"] = kcal

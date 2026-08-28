@@ -2328,29 +2328,48 @@ class HabitHandlers:
             )
             return
         try:
+            # `matched`/`h` come back None when the habit named in the suggestion
+            # no longer resolves (renamed/archived/removed since the suggestion
+            # was generated) — a real, reachable lookup miss, not an invariant.
+            # `success` gates the status update below so a miss leaves the
+            # suggestion pending (retryable) instead of being silently marked
+            # "accepted" for a change that never actually happened.
+            success = True
             if action == "set_cue":
                 cue = val.get("cue", "")
                 matched = self.store.set_cue_by_name(habit, cue)
-                result = (
-                    f"✅ Cue set for <b>{html.escape(matched or habit)}</b>: "
-                    f"<i>{html.escape(cue)}</i>"
-                )
+                if matched is None:
+                    success = False
+                    result = f"Habit not found: {html.escape(habit)}"
+                else:
+                    result = (
+                        f"✅ Cue set for <b>{html.escape(matched)}</b>: "
+                        f"<i>{html.escape(cue)}</i>"
+                    )
             elif action == "set_days":
                 days = val.get("days")
                 matched = self.store.set_days_by_name(habit, days)
-                days_str = (
-                    ", ".join(_INT_TO_ABBR[d] for d in sorted(days))
-                    if days
-                    else "daily"
-                )
-                result = f"✅ Schedule updated for <b>{html.escape(matched or habit)}</b>: {days_str}"
+                if matched is None:
+                    success = False
+                    result = f"Habit not found: {html.escape(habit)}"
+                else:
+                    days_str = (
+                        ", ".join(_INT_TO_ABBR[d] for d in sorted(days))
+                        if days
+                        else "daily"
+                    )
+                    result = f"✅ Schedule updated for <b>{html.escape(matched)}</b>: {days_str}"
             elif action == "rename":
                 new_name = val.get("name", "")
                 matched = self.store.rename(habit, new_name)
-                result = (
-                    f"✅ Renamed <b>{html.escape(matched or habit)}</b> → "
-                    f"<b>{html.escape(new_name)}</b>"
-                )
+                if matched is None:
+                    success = False
+                    result = f"Habit not found: {html.escape(habit)}"
+                else:
+                    result = (
+                        f"✅ Renamed <b>{html.escape(matched)}</b> → "
+                        f"<b>{html.escape(new_name)}</b>"
+                    )
             elif action == "archive":
                 h = self.store._habit_by_name(habit)
                 if h:
@@ -2360,11 +2379,14 @@ class HabitHandlers:
                         "checks but history is kept."
                     )
                 else:
+                    success = False
                     result = f"Habit not found: {html.escape(habit)}"
             else:
+                success = False
                 result = "Unknown action type."
 
-            self.store.update_suggestion_status(suggestion_id, "accepted")
+            if success:
+                self.store.update_suggestion_status(suggestion_id, "accepted")
             await query.edit_message_text(
                 f"{html.escape(sugg['display'])}\n\n{result}",
                 parse_mode="HTML",
