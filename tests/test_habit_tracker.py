@@ -191,6 +191,32 @@ def test_habit_notes(tmp_path):
     assert len(store.recent_notes(days=7)) == 3
 
 
+def test_import_habitify_note_is_idempotent_on_note_id(tmp_path):
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_P(__file__).parent.parent / "ops"))
+    from context import Context
+    from habit_handlers import HabitStore
+
+    logs = Logs(str(tmp_path))
+    store = HabitStore(logs.db, Context(tmp_path))
+
+    first = store.import_habitify_note(
+        "Strength training", "note-1", "shoulder felt off", "2026-08-28T09:00:00Z"
+    )
+    second = store.import_habitify_note(
+        "Strength training", "note-1", "shoulder felt off", "2026-08-28T09:00:00Z"
+    )
+
+    assert first is True
+    assert second is False  # same habitify_note_id — re-scanned, not re-imported
+    notes = store.notes_for("Strength training")
+    assert len(notes) == 1
+    assert notes[0]["note"] == "shoulder felt off"
+    assert notes[0]["date"] == "2026-08-28"
+
+
 def test_bonus_day_done_counts_toward_streak(tmp_path):
     """Doing a habit on a non-due day counts as a bonus day in the streak."""
     # Regression: doing a habit on a non-due day (Shabbat) should *extend* the streak,

@@ -7,8 +7,10 @@ checklist + CRUD, and semantic free-text matching.
 Habitify is the source of truth for habit definitions when its API key is configured.
 The `habits` table is then a synchronized read projection plus storage for Personal
 Ops-only coaching metadata. The planner gets the projected schedule via
-`habit_tracker.format_habits_for_prompt(db)`. Notes are added from Telegram
-(`/habitnote`) into the `habit_notes` table, not edited in Obsidian files.
+`habit_tracker.format_habits_for_prompt(db)`. Notes land in the same `habit_notes`
+table (not edited in Obsidian files) from two sources: Telegram (`/habitnote`), and
+a periodic pull of Habitify's own per-habit notes feature (`sync_habitify_notes`) —
+the small note/photo icon in the Habitify app when checking off a habit.
 """
 
 import asyncio
@@ -104,14 +106,23 @@ _ADDED_COLUMNS = {
 
 _HABIT_NOTES_DDL = """
 CREATE TABLE IF NOT EXISTS habit_notes (
-    id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts    TEXT NOT NULL,
-    date  TEXT NOT NULL,
-    habit TEXT NOT NULL,   -- canonical habit name the note is about
-    note  TEXT NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    date              TEXT NOT NULL,
+    habit             TEXT NOT NULL,   -- canonical habit name the note is about
+    note              TEXT NOT NULL,
+    habitify_note_id  TEXT NOT NULL DEFAULT ''  -- set when imported from Habitify
 );
 CREATE INDEX IF NOT EXISTS idx_habit_notes_habit ON habit_notes(habit);
 """
+
+# Habitify's note_type enum for the per-habit notes endpoint.
+_HABITIFY_NOTE_TYPE_IMAGE = 2
+
+# How far back each poll looks for new Habitify notes. Wider than the poll
+# interval on purpose: re-scanning is idempotent (habitify_note_id dedups),
+# so this window is what makes a missed poll or a backdated note self-heal.
+_HABITIFY_NOTES_LOOKBACK_DAYS = 3
 
 # Identity is many-to-many: a habit can vote for several identities, and an identity is
 # reinforced by several habits. This join table is the source of truth; the dormant
@@ -228,6 +239,7 @@ class HabitStore:
         self.context = context
         self.db.ensure_schema(_HABITS_DDL)
         self.db.ensure_schema(_HABIT_NOTES_DDL)
+        self._migrate_habit_notes_columns()
         self.db.ensure_schema(_HABIT_IDENTITIES_DDL)
         self.db.ensure_schema(_HABIT_ALIASES_DDL)
         self.db.ensure_schema(_HABITIFY_COMPLETIONS_DDL)
@@ -249,6 +261,20 @@ class HabitStore:
                 self.db.execute(
                     f"ALTER TABLE habits ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
                 )
+
+    def _migrate_habit_notes_columns(self) -> None:
+        """Backfill the Habitify-import dedup column onto pre-existing habit_notes
+        tables, then (re)create the partial unique index it needs."""
+        cols = {r["name"] for r in self.db.query("PRAGMA table_info(habit_notes)")}
+        if "habitify_note_id" not in cols:
+            self.db.execute(
+                "ALTER TABLE habit_notes ADD COLUMN habitify_note_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        self.db.ensure_schema(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_habit_notes_habitify_id "
+            "ON habit_notes(habitify_note_id) WHERE habitify_note_id != '';"
+        )
 
     def _migrate_identities_to_join(self) -> None:
         """One-time backfill of the single-identity column into the M2M join table.
@@ -663,6 +689,38 @@ class HabitStore:
             ),
         )
 
+    def import_habitify_note(
+        self, habit_name: str, habitify_note_id: str, content: str, created_date: str
+    ) -> bool:
+        """Insert a note pulled from Habitify's per-habit notes endpoint, unless its
+        habitify_note_id was already imported. Returns True iff a row was written."""
+        from datetime import datetime
+        from location import current_tz
+
+        if self.db.query(
+            "SELECT 1 FROM habit_notes WHERE habitify_note_id = ?",
+            (habitify_note_id,),
+        ):
+            return False
+        try:
+            ts = datetime.fromisoformat(created_date.replace("Z", "+00:00")).astimezone(
+                current_tz()
+            )
+        except ValueError:
+            ts = datetime.now(current_tz())
+        self.db.execute(
+            "INSERT INTO habit_notes (ts, date, habit, note, habitify_note_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                ts.isoformat(timespec="seconds"),
+                ts.date().isoformat(),
+                habit_name,
+                content.strip(),
+                habitify_note_id,
+            ),
+        )
+        return True
+
     def notes_for(self, habit_name: str, limit: int = 10) -> list[dict]:
         rows = self.db.query(
             "SELECT date, note FROM habit_notes WHERE LOWER(habit) = LOWER(?) "
@@ -993,6 +1051,12 @@ class HabitHandlers:
                 "trigger": "cron",
                 "kwargs": {"day_of_week": "sun", "hour": 9, "minute": 0},
             },
+            {
+                "id": "habitify_notes_sync",
+                "func": self.sync_habitify_notes,
+                "trigger": "interval",
+                "kwargs": {"minutes": 15},
+            },
         ]
 
     @property
@@ -1036,6 +1100,52 @@ class HabitHandlers:
                 "Habitify definition refresh failed; using cached projection"
             )
             return None
+
+    async def sync_habitify_notes(self) -> int:
+        """Pull new per-habit notes from Habitify's own notes endpoint into
+        habit_notes, the table `/habitnote` already writes to.
+
+        One request per Habitify-managed habit — there's no bulk journal-style
+        endpoint for notes. Import is idempotent (see HabitStore.import_habitify_note),
+        so re-scanning the lookback window on every poll is cheap and self-healing
+        rather than needing a high-water mark. Returns the count of newly-imported
+        notes.
+        """
+        sync = getattr(self, "habitify_sync", None)
+        if sync is None:
+            return 0
+        from datetime import timedelta as _td
+        from location import current_tz
+
+        today = datetime.now(current_tz()).date()
+        start = (today - _td(days=_HABITIFY_NOTES_LOOKBACK_DAYS)).isoformat()
+        imported = 0
+        for habit in self.store.list_habits(tracked_only=False):
+            habitify_id = habit["habitify_id"]
+            if not habitify_id:
+                continue
+            try:
+                rows = await asyncio.to_thread(sync.client.notes, habitify_id, start)
+            except HabitifyError:
+                logger.exception("Habitify notes fetch failed for %s", habit["name"])
+                continue
+            display = self.context.habit_display_name(habit["name"])
+            for row in rows:
+                note_id = str(row.get("id") or "")
+                if not note_id:
+                    continue
+                content = (row.get("content") or "").strip()
+                if row.get("note_type") == _HABITIFY_NOTE_TYPE_IMAGE:
+                    image_url = row.get("image_url") or ""
+                    content = f"📷 {content}" if content else "📷 photo note"
+                    if image_url:
+                        content += f" ({image_url})"
+                if not content:
+                    continue
+                created = row.get("created_date") or today.isoformat()
+                if self.store.import_habitify_note(display, note_id, content, created):
+                    imported += 1
+        return imported
 
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))

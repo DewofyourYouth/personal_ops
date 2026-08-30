@@ -3,6 +3,18 @@
 Notable changes to the personal_ops bot, most recent first. Personal infrastructure — this
 tracks what actually shipped, not a public release process.
 
+## 2026-08-30
+
+### Added
+
+- **Import Habitify's own per-habit notes.** Habitify lets you attach a text or photo note when
+  checking off a habit in the app; Personal Ops now polls each Habitify-managed habit every 15
+  minutes (`HabitifyClient.notes`, `HabitHandlers.sync_habitify_notes`) and imports new ones into
+  `habit_notes` — the same table `/habitnote` writes to, so they show up in `/habitnote` history
+  and the weekly habit-strategy prompt alongside notes added from Telegram. Import is idempotent
+  on Habitify's note id, so re-scanning the lookback window on every poll can't double-import.
+  (`ops/habitify.py`, `ops/habit_handlers.py`)
+
 ## 2026-08-28
 
 ### Added
