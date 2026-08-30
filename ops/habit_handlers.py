@@ -9,8 +9,9 @@ The `habits` table is then a synchronized read projection plus storage for Perso
 Ops-only coaching metadata. The planner gets the projected schedule via
 `habit_tracker.format_habits_for_prompt(db)`. Notes land in the same `habit_notes`
 table (not edited in Obsidian files) from two sources: Telegram (`/habitnote`), and
-a periodic pull of Habitify's own per-habit notes feature (`sync_habitify_notes`) —
-the small note/photo icon in the Habitify app when checking off a habit.
+a pull of Habitify's own per-habit notes feature (`sync_habitify_notes`) — the
+small note/photo icon in the Habitify app when checking off a habit — run right
+before `/habits` and the nightly check render rather than on its own schedule.
 """
 
 import asyncio
@@ -1051,22 +1052,6 @@ class HabitHandlers:
                 "trigger": "cron",
                 "kwargs": {"day_of_week": "sun", "hour": 9, "minute": 0},
             },
-            {
-                "id": "habitify_notes_sync",
-                "func": self.sync_habitify_notes,
-                "trigger": "cron",
-                # Once a day, off-peak: one HTTP call per Habitify-managed habit, no
-                # bulk endpoint exists for notes. Shipped first at a 15-minute interval
-                # and that starved the *separate*, more important completions sync
-                # (habitify_definition_sync, every 5 min) enough that completions
-                # marked done in Habitify stopped showing as done here — both share
-                # the same Habitify API key/account, and refresh_habits_from_habitify
-                # swallows any HabitifyError from that job silently, so a shared quota
-                # or transient outage on the notes calls reads as "nothing changed."
-                # Daily cuts this job's call volume ~96x; the 3-day lookback in
-                # import_habitify_note gives ample room to self-heal a missed day.
-                "kwargs": {"hour": 3, "minute": 30},
-            },
         ]
 
     @property
@@ -1115,11 +1100,21 @@ class HabitHandlers:
         """Pull new per-habit notes from Habitify's own notes endpoint into
         habit_notes, the table `/habitnote` already writes to.
 
-        One request per Habitify-managed habit — there's no bulk journal-style
-        endpoint for notes. Import is idempotent (see HabitStore.import_habitify_note),
-        so re-scanning the lookback window on every poll is cheap and self-healing
-        rather than needing a high-water mark. Returns the count of newly-imported
-        notes.
+        Called opportunistically from cmd_habits and daily_habit_check, right
+        before each renders — not on its own schedule. One request per
+        Habitify-managed habit (no bulk endpoint exists for notes) shipped
+        first as its own 15-minute background job; that added enough extra
+        Habitify API traffic on the same account as the every-5-minute
+        completions sync (refresh_habits_from_habitify, which silently
+        swallows any HabitifyError) that completions marked done in Habitify
+        stopped showing as done here. Tying this to the two moments a human
+        is actually about to look at habit state caps it at a couple of calls
+        a day instead of a standing background poll.
+
+        Import is idempotent (see HabitStore.import_habitify_note), so
+        re-scanning the lookback window on every call is cheap and
+        self-healing rather than needing a high-water mark. Returns the count
+        of newly-imported notes.
         """
         sync = getattr(self, "habitify_sync", None)
         if sync is None:
@@ -1469,6 +1464,7 @@ class HabitHandlers:
         if not force and self.quiet_window.is_quiet_at():
             return
         await self.refresh_habits_from_habitify(force_completions=True)
+        await self.sync_habitify_notes()
         text, keyboard = self._eod_message()
         if text is None:
             return
@@ -1576,6 +1572,7 @@ class HabitHandlers:
             return
         assert update.message is not None
         await self.refresh_habits_from_habitify(force_completions=True)
+        await self.sync_habitify_notes()
         if not self.store.list_habits():
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",

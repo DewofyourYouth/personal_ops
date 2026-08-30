@@ -8,23 +8,24 @@ tracks what actually shipped, not a public release process.
 ### Added
 
 - **Import Habitify's own per-habit notes.** Habitify lets you attach a text or photo note when
-  checking off a habit in the app; Personal Ops now polls each Habitify-managed habit once daily
-  (`HabitifyClient.notes`, `HabitHandlers.sync_habitify_notes`) and imports new ones into
-  `habit_notes` — the same table `/habitnote` writes to, so they show up in `/habitnote` history
-  and the weekly habit-strategy prompt alongside notes added from Telegram. Import is idempotent
-  on Habitify's note id, so re-scanning the lookback window on every poll can't double-import.
-  (`ops/habitify.py`, `ops/habit_handlers.py`)
+  checking off a habit in the app; Personal Ops now imports new ones into `habit_notes`
+  (`HabitifyClient.notes`, `HabitHandlers.sync_habitify_notes`) — the same table `/habitnote`
+  writes to, so they show up in `/habitnote` history and the weekly habit-strategy prompt
+  alongside notes added from Telegram. Import is idempotent on Habitify's note id, so re-scanning
+  the lookback window can't double-import. (`ops/habitify.py`, `ops/habit_handlers.py`)
 
 ### Fixed
 
-- **Notes sync was starving the Habitify completions sync.** The notes job above first shipped
-  polling every 15 minutes — one HTTP call per Habitify-managed habit, no bulk endpoint exists —
-  on the same Habitify API key as the every-5-minute completions sync
-  (`refresh_habits_from_habitify`). That sync silently swallows any `HabitifyError`, so contention
-  or an error on the notes calls read as "nothing changed": habits checked off in Habitify stopped
-  showing as done here. Cut the notes job to once daily (~96x less call volume) and hardened it so
-  a malformed response for one habit can no longer abort the run for every habit after it.
-  (`ops/habit_handlers.py`)
+- **Notes sync was starving the Habitify completions sync.** The notes import above first
+  shipped as its own 15-minute background job — one HTTP call per Habitify-managed habit, no
+  bulk endpoint exists — on the same Habitify API key as the every-5-minute completions sync
+  (`refresh_habits_from_habitify`). That sync silently swallows any `HabitifyError`, so
+  contention or an error on the notes calls read as "nothing changed": habits checked off in
+  Habitify stopped showing as done here. Dropped the standing job entirely — `sync_habitify_notes`
+  now runs opportunistically from `cmd_habits` and `daily_habit_check`, right before each renders,
+  so it fires only when a human is about to look at habit state instead of on a timer. Also
+  hardened it so a malformed response for one habit can no longer abort the run for every habit
+  after it. (`ops/habit_handlers.py`)
 
 ## 2026-08-28
 
