@@ -27,6 +27,25 @@ tracks what actually shipped, not a public release process.
   hardened it so a malformed response for one habit can no longer abort the run for every habit
   after it. (`ops/habit_handlers.py`)
 
+### Added
+
+- **Habitify's explicit "failed" tap now records a miss immediately.** Previously an explicit
+  fail in Habitify looked identical to "not logged yet" until the 22:45 auto-miss grace-cutoff
+  inferred a miss from absence. `completions_for_date` now also surfaces daily habits Habitify
+  reports as `status: failed`, and `refresh_habits_from_habitify` writes a `habit_missed` entry
+  for any of them still unresolved locally — same-refresh as the completions pull, so it lands
+  as soon as `/habits` or the nightly check runs. (`ops/habitify.py`, `ops/habit_handlers.py`)
+
+### Fixed
+
+- **`_pending_today_habits` used the wrong "today" near midnight.** Its default fell back to a
+  naive `date.today()` while `logs.write()` buckets entries by `current_tz()`'s local day — for
+  the few hours where the local zone has already crossed into a new day but the server's (UTC)
+  clock hasn't, this read the previous day's (empty) entries and treated already-resolved habits
+  as still pending. Found while adding the failed-tap sync above; affects the nightly check,
+  `/status`, and auto-miss too. Now uses `current_tz()`-aware "today" like the rest of the
+  Habitify sync path. (`ops/habit_handlers.py`)
+
 ## 2026-08-28
 
 ### Added

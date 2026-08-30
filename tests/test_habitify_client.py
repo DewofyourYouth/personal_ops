@@ -181,6 +181,7 @@ def test_completion_projection_handles_daily_and_weekly_goals():
             {"id": "daily", "name": "Tefillin"},
             {"id": "weekly", "name": "Core Training"},
         ],
+        "failed": [],
         "resolved_ids": ["daily", "weekly"],
     }
 
@@ -211,5 +212,29 @@ def test_failed_weekly_read_is_left_unresolved():
 
     assert HabitifyHabitSync(Client()).completions_for_date("2026-08-28") == {
         "completed": [],
+        "failed": [],
         "resolved_ids": [],
+    }
+
+
+def test_completion_projection_surfaces_explicit_daily_failures():
+    class Client:
+        def list_habits(self):
+            return [
+                {"id": "daily", "name": "Tefillin", "type": "good", "isArchived": False}
+            ]
+
+        def journal(self, target_date):
+            return [
+                {
+                    "id": "daily",
+                    "status": "failed",
+                    "progress": {"periodicity": "daily", "current": 0, "target": 1},
+                }
+            ]
+
+    assert HabitifyHabitSync(Client()).completions_for_date("2026-08-28") == {
+        "completed": [],
+        "failed": [{"id": "daily", "name": "Tefillin"}],
+        "resolved_ids": ["daily"],
     }

@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from context import Context
 from habit_handlers import HabitHandlers, HabitStore
 from habitify import HabitifyError
+from location import current_tz
 from logs import Logs
 
 
@@ -20,6 +22,12 @@ def _handlers_with_store(tmp_path) -> HabitHandlers:
     h.context = Context(tmp_path)
     h.store = HabitStore(h.logs.db, h.context)
     return h
+
+
+def _today() -> date:
+    # logs.write() buckets by local (Jerusalem, by default) day, not the system
+    # clock's date — matters right at the UTC/local day boundary.
+    return datetime.now(current_tz()).date()
 
 
 @pytest.mark.asyncio
@@ -348,3 +356,63 @@ async def test_daily_habit_check_syncs_habitify_notes_before_rendering(tmp_path)
         await h.daily_habit_check()
 
     h.sync_habitify_notes.assert_called_once()
+
+
+# --- _record_habitify_failures: an explicit Habitify "failed" tap becomes a
+# habit_missed entry immediately, instead of waiting for the 22:45 auto-miss job to
+# infer the same miss from absence. ---
+
+
+def test_record_habitify_failures_marks_unresolved_habit_missed(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+
+    h._record_habitify_failures([{"id": "tefillin-id", "name": "Tefillin"}])
+
+    entries = h.logs.db.entries_for_date(_today())
+    assert any(
+        e["tag"] == "habit_missed" and e["content"] == "Tefillin" for e in entries
+    )
+
+
+def test_record_habitify_failures_skips_an_already_resolved_habit(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+    h.logs.write("habit", "Tefillin")  # already resolved (done) today some other way
+
+    h._record_habitify_failures([{"id": "tefillin-id", "name": "Tefillin"}])
+
+    entries = h.logs.db.entries_for_date(_today())
+    assert not any(e["tag"] == "habit_missed" for e in entries)
+
+
+def test_record_habitify_failures_ignores_an_unknown_habitify_id(tmp_path):
+    h = _handlers_with_store(tmp_path)
+
+    h._record_habitify_failures([{"id": "no-such-habit", "name": "Ghost"}])
+
+    assert h.logs.db.entries_for_date(_today()) == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_habits_from_habitify_records_explicit_failures(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+    # Skip the separate definitions resync (untested here, and its own untrack
+    # reconciliation would fight this test over "Tefillin" if it ran against an
+    # empty remote-habits stub) so only the completions/failures path is exercised.
+    h._habitify_projection_loaded_at = time.monotonic()
+    sync = MagicMock()
+    sync.completions_for_date.return_value = {
+        "completed": [],
+        "failed": [{"id": "tefillin-id", "name": "Tefillin"}],
+        "resolved_ids": ["tefillin-id"],
+    }
+    h.habitify_sync = sync
+
+    await h.refresh_habits_from_habitify(force_completions=True)
+
+    entries = h.logs.db.entries_for_date(_today())
+    assert any(
+        e["tag"] == "habit_missed" and e["content"] == "Tefillin" for e in entries
+    )
