@@ -167,6 +167,28 @@ class HabitifyClient:
         result = self._request("GET", "/habits/journal", query={"date": target_date})
         return (result or {}).get("data", [])
 
+    def notes(
+        self, habit_id: str, start: str | None = None, end: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Free-text/photo notes the app lets you attach to a habit's daily log.
+
+        `note_type` on each row is 1 (text) or 2 (image); image rows carry
+        `image_url` instead of meaningful `content`.
+        """
+        query: dict[str, Any] = {}
+        if start:
+            query["from"] = start
+        if end:
+            query["to"] = end
+        result = self._request(
+            "GET",
+            f"/habits/{urllib.parse.quote(habit_id)}/notes",
+            query=query or None,
+        )
+        if isinstance(result, dict):
+            return result.get("data", [])
+        return result or []
+
     def complete(self, habit_id: str, target_date: str) -> None:
         self._request(
             "POST",

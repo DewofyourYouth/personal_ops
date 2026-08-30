@@ -1,9 +1,60 @@
+import json
 import urllib.error
 
 import pytest
 
 from ops import habitify
 from ops.habitify import HabitifyClient, HabitifyError, HabitifyHabitSync
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_notes_requests_the_per_habit_endpoint_with_date_range(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _FakeResponse(
+            json.dumps({"data": [{"id": "n1", "content": "hi"}]}).encode()
+        )
+
+    monkeypatch.setattr(habitify.urllib.request, "urlopen", fake_urlopen)
+    client = HabitifyClient("test-key")
+
+    result = client.notes("habit-1", start="2026-08-01", end="2026-08-30")
+
+    assert result == [{"id": "n1", "content": "hi"}]
+    assert captured["url"].startswith(
+        "https://api.habitify.me/v2/habits/habit-1/notes?"
+    )
+    assert "from=2026-08-01" in captured["url"]
+    assert "to=2026-08-30" in captured["url"]
+
+
+def test_notes_omits_query_string_without_a_date_range(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _FakeResponse(json.dumps({"data": []}).encode())
+
+    monkeypatch.setattr(habitify.urllib.request, "urlopen", fake_urlopen)
+    client = HabitifyClient("test-key")
+
+    assert client.notes("habit-1") == []
+    assert captured["url"] == "https://api.habitify.me/v2/habits/habit-1/notes"
 
 
 def test_create_post_is_not_retried_after_ambiguous_network_failure(monkeypatch):

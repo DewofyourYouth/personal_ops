@@ -158,3 +158,120 @@ def test_sync_from_habitify_untracks_a_habit_removed_remotely(tmp_path):
 
     habit = store.list_habits(tracked_only=False)[0]
     assert habit["tracked"] is False
+
+
+# --- sync_habitify_notes: pulling Habitify's own per-habit notes into habit_notes ---
+
+
+@pytest.mark.asyncio
+async def test_sync_habitify_notes_imports_text_notes_for_habitify_habits(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Strength training", habitify_id="strength-id")
+    h.store.add("Purely local habit")  # no habitify_id — must not be queried
+    sync = MagicMock()
+    sync.client.notes.side_effect = lambda habit_id, start: (
+        [
+            {
+                "id": "n1",
+                "content": "shoulder felt off",
+                "note_type": 1,
+                "created_date": "2026-08-28T09:00:00Z",
+            }
+        ]
+        if habit_id == "strength-id"
+        else (_ for _ in ()).throw(AssertionError("queried a non-Habitify habit"))
+    )
+    h.habitify_sync = sync
+
+    imported = await h.sync_habitify_notes()
+
+    assert imported == 1
+    notes = h.store.notes_for("Strength training")
+    assert len(notes) == 1
+    assert notes[0]["note"] == "shoulder felt off"
+    sync.client.notes.assert_called_once()
+    assert sync.client.notes.call_args.args[0] == "strength-id"
+
+
+@pytest.mark.asyncio
+async def test_sync_habitify_notes_is_idempotent_across_polls(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Strength training", habitify_id="strength-id")
+    sync = MagicMock()
+    sync.client.notes.return_value = [
+        {
+            "id": "n1",
+            "content": "shoulder felt off",
+            "note_type": 1,
+            "created_date": "2026-08-28T09:00:00Z",
+        }
+    ]
+    h.habitify_sync = sync
+
+    first = await h.sync_habitify_notes()
+    second = await h.sync_habitify_notes()
+
+    assert first == 1
+    assert second == 0  # same note_id, re-polled — not re-imported
+    assert len(h.store.notes_for("Strength training")) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_habitify_notes_renders_image_notes_as_text(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Strength training", habitify_id="strength-id")
+    sync = MagicMock()
+    sync.client.notes.return_value = [
+        {
+            "id": "n2",
+            "content": "",
+            "note_type": 2,
+            "image_url": "https://example.com/photo.jpg",
+            "created_date": "2026-08-28T09:00:00Z",
+        }
+    ]
+    h.habitify_sync = sync
+
+    imported = await h.sync_habitify_notes()
+
+    assert imported == 1
+    note = h.store.notes_for("Strength training")[0]["note"]
+    assert "photo note" in note
+    assert "https://example.com/photo.jpg" in note
+
+
+@pytest.mark.asyncio
+async def test_sync_habitify_notes_skips_a_failing_habit_without_aborting(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Broken", habitify_id="broken-id")
+    h.store.add("Fine", habitify_id="fine-id")
+    sync = MagicMock()
+
+    def fake_notes(habit_id, start=None):
+        if habit_id == "broken-id":
+            raise HabitifyError(503, "unavailable")
+        return [
+            {
+                "id": "n3",
+                "content": "all good",
+                "note_type": 1,
+                "created_date": "2026-08-28T09:00:00Z",
+            }
+        ]
+
+    sync.client.notes.side_effect = fake_notes
+    h.habitify_sync = sync
+
+    imported = await h.sync_habitify_notes()
+
+    assert imported == 1
+    assert h.store.notes_for("Fine")[0]["note"] == "all good"
+
+
+@pytest.mark.asyncio
+async def test_sync_habitify_notes_returns_zero_without_habitify_configured(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Strength training", habitify_id="strength-id")
+    h.habitify_sync = None
+
+    assert await h.sync_habitify_notes() == 0
