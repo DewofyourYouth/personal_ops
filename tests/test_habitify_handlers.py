@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -269,9 +269,82 @@ async def test_sync_habitify_notes_skips_a_failing_habit_without_aborting(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_sync_habitify_notes_survives_a_malformed_response_for_one_habit(
+    tmp_path,
+):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Broken", habitify_id="broken-id")
+    h.store.add("Fine", habitify_id="fine-id")
+    sync = MagicMock()
+
+    def fake_notes(habit_id, start=None):
+        if habit_id == "broken-id":
+            return ["not-a-note-object"]  # shape Habitify never documented returning
+        return [
+            {
+                "id": "n4",
+                "content": "all good",
+                "note_type": 1,
+                "created_date": "2026-08-28T09:00:00Z",
+            }
+        ]
+
+    sync.client.notes.side_effect = fake_notes
+    h.habitify_sync = sync
+
+    imported = await h.sync_habitify_notes()
+
+    assert imported == 1
+    assert h.store.notes_for("Fine")[0]["note"] == "all good"
+    assert h.store.notes_for("Broken") == []
+
+
+@pytest.mark.asyncio
 async def test_sync_habitify_notes_returns_zero_without_habitify_configured(tmp_path):
     h = _handlers_with_store(tmp_path)
     h.store.add("Strength training", habitify_id="strength-id")
     h.habitify_sync = None
 
     assert await h.sync_habitify_notes() == 0
+
+
+# --- sync_habitify_notes runs opportunistically, tied to the two moments a human is
+# about to see habit state, rather than on its own background schedule (a standing
+# 15-minute poll starved the separate, more important completions sync — see
+# CHANGELOG). ---
+
+
+@pytest.mark.asyncio
+async def test_cmd_habits_syncs_habitify_notes_before_rendering(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.allowed_user = 12345
+    h.quiet_window = MagicMock()
+    h.quiet_window.is_quiet_at.return_value = False
+    h.habitify_sync = None
+    h.sync_habitify_notes = AsyncMock(return_value=0)
+    h.store.add("Drink water")
+
+    update = MagicMock()
+    update.effective_user.id = 12345
+    update.message.reply_text = AsyncMock()
+
+    await h.cmd_habits(update, MagicMock())
+
+    h.sync_habitify_notes.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_daily_habit_check_syncs_habitify_notes_before_rendering(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.allowed_user = 12345
+    h.bot = AsyncMock()
+    h.quiet_window = MagicMock()
+    h.quiet_window.is_quiet_at.return_value = False
+    h.habitify_sync = None
+    h.sync_habitify_notes = AsyncMock(return_value=0)
+    h.store.add("Drink water")
+
+    with patch("habit_handlers.send_sticker", new=AsyncMock()):
+        await h.daily_habit_check()
+
+    h.sync_habitify_notes.assert_called_once()
