@@ -269,6 +269,37 @@ async def test_sync_habitify_notes_skips_a_failing_habit_without_aborting(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_sync_habitify_notes_survives_a_malformed_response_for_one_habit(
+    tmp_path,
+):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Broken", habitify_id="broken-id")
+    h.store.add("Fine", habitify_id="fine-id")
+    sync = MagicMock()
+
+    def fake_notes(habit_id, start=None):
+        if habit_id == "broken-id":
+            return ["not-a-note-object"]  # shape Habitify never documented returning
+        return [
+            {
+                "id": "n4",
+                "content": "all good",
+                "note_type": 1,
+                "created_date": "2026-08-28T09:00:00Z",
+            }
+        ]
+
+    sync.client.notes.side_effect = fake_notes
+    h.habitify_sync = sync
+
+    imported = await h.sync_habitify_notes()
+
+    assert imported == 1
+    assert h.store.notes_for("Fine")[0]["note"] == "all good"
+    assert h.store.notes_for("Broken") == []
+
+
+@pytest.mark.asyncio
 async def test_sync_habitify_notes_returns_zero_without_habitify_configured(tmp_path):
     h = _handlers_with_store(tmp_path)
     h.store.add("Strength training", habitify_id="strength-id")

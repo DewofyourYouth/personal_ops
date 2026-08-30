@@ -1054,8 +1054,18 @@ class HabitHandlers:
             {
                 "id": "habitify_notes_sync",
                 "func": self.sync_habitify_notes,
-                "trigger": "interval",
-                "kwargs": {"minutes": 15},
+                "trigger": "cron",
+                # Once a day, off-peak: one HTTP call per Habitify-managed habit, no
+                # bulk endpoint exists for notes. Shipped first at a 15-minute interval
+                # and that starved the *separate*, more important completions sync
+                # (habitify_definition_sync, every 5 min) enough that completions
+                # marked done in Habitify stopped showing as done here — both share
+                # the same Habitify API key/account, and refresh_habits_from_habitify
+                # swallows any HabitifyError from that job silently, so a shared quota
+                # or transient outage on the notes calls reads as "nothing changed."
+                # Daily cuts this job's call volume ~96x; the 3-day lookback in
+                # import_habitify_note gives ample room to self-heal a missed day.
+                "kwargs": {"hour": 3, "minute": 30},
             },
         ]
 
@@ -1126,25 +1136,34 @@ class HabitHandlers:
                 continue
             try:
                 rows = await asyncio.to_thread(sync.client.notes, habitify_id, start)
+                display = self.context.habit_display_name(habit["name"])
+                for row in rows:
+                    note_id = str(row.get("id") or "")
+                    if not note_id:
+                        continue
+                    content = (row.get("content") or "").strip()
+                    if row.get("note_type") == _HABITIFY_NOTE_TYPE_IMAGE:
+                        image_url = row.get("image_url") or ""
+                        content = f"📷 {content}" if content else "📷 photo note"
+                        if image_url:
+                            content += f" ({image_url})"
+                    if not content:
+                        continue
+                    created = row.get("created_date") or today.isoformat()
+                    if self.store.import_habitify_note(
+                        display, note_id, content, created
+                    ):
+                        imported += 1
             except HabitifyError:
                 logger.exception("Habitify notes fetch failed for %s", habit["name"])
                 continue
-            display = self.context.habit_display_name(habit["name"])
-            for row in rows:
-                note_id = str(row.get("id") or "")
-                if not note_id:
-                    continue
-                content = (row.get("content") or "").strip()
-                if row.get("note_type") == _HABITIFY_NOTE_TYPE_IMAGE:
-                    image_url = row.get("image_url") or ""
-                    content = f"📷 {content}" if content else "📷 photo note"
-                    if image_url:
-                        content += f" ({image_url})"
-                if not content:
-                    continue
-                created = row.get("created_date") or today.isoformat()
-                if self.store.import_habitify_note(display, note_id, content, created):
-                    imported += 1
+            except Exception:
+                # A malformed/unexpected response for one habit must not abort the
+                # whole run — every other Habitify-managed habit still gets its turn.
+                logger.exception(
+                    "Habitify notes sync choked on %s's response", habit["name"]
+                )
+                continue
         return imported
 
     def register(self, app: Application) -> None:
