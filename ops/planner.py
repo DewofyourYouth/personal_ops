@@ -652,10 +652,13 @@ class Planner:
         client = anthropic.AsyncAnthropic(max_retries=4)
         state = anchor_flow_state(self.logs)
 
-        # Include the user's actual logged data (metrics with trends, recent stats) so
-        # feedback on "is my weight plan on track?" can use real numbers, not just the
-        # stated system from the context files.
+        # Include the user's actual logged data — both what they wrote (today's raw
+        # entries, so "react to what I just said" has something to react to) and the
+        # derived aggregates (metric trends, food, stats) for longer-range context.
         data_block = ""
+        today_text = self.logs.read_day_as_text(date.today())
+        if today_text and today_text != "No log entries.":
+            data_block += f"Today's log entries (verbatim):\n{today_text}\n\n"
         metrics_text = self.logs.format_metrics_for_prompt(days=30)
         if metrics_text:
             data_block += f"{metrics_text}\n\n"
