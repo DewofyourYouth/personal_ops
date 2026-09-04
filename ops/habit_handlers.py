@@ -125,6 +125,12 @@ _HABITIFY_NOTE_TYPE_IMAGE = 2
 # so this window is what makes a missed poll or a backdated note self-heal.
 _HABITIFY_NOTES_LOOKBACK_DAYS = 3
 
+# How far back the completions backfill re-checks. The standing sync only ever
+# looks at today, so marking a PAST day done in Habitify (backfilling a day you
+# forgot to log) never reached here on its own — this is what catches it. Wider
+# than the notes window since a backfill can surface days after the fact.
+_HABITIFY_COMPLETIONS_BACKFILL_DAYS = 7
+
 # Identity is many-to-many: a habit can vote for several identities, and an identity is
 # reinforced by several habits. This join table is the source of truth; the dormant
 # habits.identity column is kept in sync as a denormalised comma-joined cache so existing
@@ -1161,6 +1167,44 @@ class HabitHandlers:
                 continue
         return imported
 
+    async def sync_habitify_completions_backfill(self) -> int:
+        """Re-check the last _HABITIFY_COMPLETIONS_BACKFILL_DAYS days of Habitify
+        completions, so a day marked done AFTER THE FACT in Habitify (backfilling
+        a day you forgot to log) shows up here too.
+
+        refresh_habits_from_habitify's standing sync only ever projects TODAY —
+        a backfilled past day never crosses into the local `habitify_completions`
+        table on its own. Called from the same two moments as sync_habitify_notes
+        (right before a human is about to look at habit state), not on its own
+        schedule, for the same reason that sync moved off a standing poll: a
+        multi-day window on every tick would multiply Habitify API traffic on top
+        of the existing every-5-minute today-only sync. sync_habitify_completions
+        replaces each day's projection outright, so re-scanning the window on
+        every call is idempotent and self-healing rather than needing a
+        high-water mark. Returns the number of day-projections updated.
+        """
+        sync = getattr(self, "habitify_sync", None)
+        if sync is None:
+            return 0
+        from location import current_tz
+
+        today = datetime.now(current_tz()).date()
+        updated = 0
+        for i in range(1, _HABITIFY_COMPLETIONS_BACKFILL_DAYS + 1):
+            d = today - timedelta(days=i)
+            try:
+                snapshot = await asyncio.to_thread(
+                    sync.completions_for_date, d.isoformat()
+                )
+            except HabitifyError:
+                logger.exception("Habitify completions backfill failed for %s", d)
+                continue
+            self.store.sync_habitify_completions(
+                d, snapshot["completed"], snapshot["resolved_ids"]
+            )
+            updated += 1
+        return updated
+
     def register(self, app: Application) -> None:
         app.add_handler(CommandHandler("habits", self.cmd_habits))
         app.add_handler(CommandHandler("h", self.cmd_habits))
@@ -1465,6 +1509,7 @@ class HabitHandlers:
             return
         await self.refresh_habits_from_habitify(force_completions=True)
         await self.sync_habitify_notes()
+        await self.sync_habitify_completions_backfill()
         text, keyboard = self._eod_message()
         if text is None:
             return
@@ -1573,6 +1618,7 @@ class HabitHandlers:
         assert update.message is not None
         await self.refresh_habits_from_habitify(force_completions=True)
         await self.sync_habitify_notes()
+        await self.sync_habitify_completions_backfill()
         if not self.store.list_habits():
             await update.message.reply_text(
                 "No habits yet. Add one with <code>/addhabit Drink water</code>.",
