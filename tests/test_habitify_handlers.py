@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,7 @@ from habit_handlers import (
     HabitStore,
 )
 from habitify import HabitifyError
+from location import current_tz
 from logs import Logs
 
 
@@ -24,6 +26,12 @@ def _handlers_with_store(tmp_path) -> HabitHandlers:
     h.context = Context(tmp_path)
     h.store = HabitStore(h.logs.db, h.context)
     return h
+
+
+def _today() -> date:
+    # logs.write() buckets by local (Jerusalem, by default) day, not the system
+    # clock's date — matters right at the UTC/local day boundary.
+    return datetime.now(current_tz()).date()
 
 
 @pytest.mark.asyncio

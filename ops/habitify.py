@@ -296,15 +296,20 @@ class HabitifyHabitSync:
         return list(self._all_habits)
 
     def completions_for_date(self, target_date: str) -> dict[str, Any]:
-        """Return completed habits plus IDs whose daily state was resolved.
+        """Return completed habits, explicitly-failed habits, and IDs whose daily
+        state was resolved.
 
         A failed weekly-statistics read is deliberately left unresolved so a transient
-        Habitify error cannot erase the last known projected completion.
+        Habitify error cannot erase the last known projected completion. "Failed" is
+        Habitify's own explicit fail tap — distinct from a daily habit that's simply
+        not logged yet — surfaced only for daily habits since a weekly goal has no
+        single day it's "failed" on.
         """
         if not self._habits:
             self._refresh()
         active = {str(habit["id"]): habit for habit in self._habits}
         completed: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
         resolved_ids: set[str] = set()
         weekly: list[tuple[str, dict[str, Any]]] = []
         for row in self.client.journal(target_date):
@@ -314,7 +319,7 @@ class HabitifyHabitSync:
                 continue
             progress = row.get("progress") or {}
             periodicity = progress.get("periodicity", "daily")
-            done_today = row.get("status") == "completed"
+            status = row.get("status")
             if periodicity != "daily":
                 if float(progress.get("current", 0) or 0) > 0:
                     weekly.append((habit_id, habit))
@@ -322,8 +327,10 @@ class HabitifyHabitSync:
                     resolved_ids.add(habit_id)
                 continue
             resolved_ids.add(habit_id)
-            if done_today:
+            if status == "completed":
                 completed.append({"id": habit_id, "name": habit["name"].strip()})
+            elif status == "failed":
+                failed.append({"id": habit_id, "name": habit["name"].strip()})
 
         def weekly_done(
             item: tuple[str, dict[str, Any]],
@@ -354,7 +361,11 @@ class HabitifyHabitSync:
                     resolved_ids.add(habit_id)
                     if completion:
                         completed.append(completion)
-        return {"completed": completed, "resolved_ids": sorted(resolved_ids)}
+        return {
+            "completed": completed,
+            "failed": failed,
+            "resolved_ids": sorted(resolved_ids),
+        }
 
     def complete(self, local_name: str, target_date: str) -> None:
         habit_id = self.resolve_id(local_name)

@@ -1094,6 +1094,7 @@ class HabitHandlers:
                 self.store.sync_habitify_completions(
                     today, snapshot["completed"], snapshot["resolved_ids"]
                 )
+                self._record_habitify_failures(snapshot.get("failed", []))
                 self._habitify_completions_loaded_at = time.monotonic()
             return result
         except HabitifyError:
@@ -1101,6 +1102,26 @@ class HabitHandlers:
                 "Habitify definition refresh failed; using cached projection"
             )
             return None
+
+    def _record_habitify_failures(self, failed: list[dict[str, str]]) -> None:
+        """Turn Habitify's own explicit "failed" tap into a habit_missed entry right
+        away, instead of waiting for the 22:45 grace-cutoff to infer the same miss
+        from absence. A habit already resolved today (done, or already marked missed
+        some other way) is left alone, so this can't double-log or override a
+        completion recorded after the failed tap."""
+        if not failed:
+            return
+        by_habitify_id = {
+            h["habitify_id"]: h
+            for h in self.store.list_habits(tracked_only=False)
+            if h["habitify_id"]
+        }
+        pending_ids = {h["id"] for h in self._pending_today_habits()}
+        for item in failed:
+            habit = by_habitify_id.get(item["id"])
+            if habit is None or habit["id"] not in pending_ids:
+                continue
+            self.logs.write("habit_missed", habit["name"])
 
     async def sync_habitify_notes(self) -> int:
         """Pull new per-habit notes from Habitify's own notes endpoint into
@@ -1401,10 +1422,16 @@ class HabitHandlers:
     def _pending_today_habits(self, for_date=None) -> list[dict]:
         """Habit rows due `for_date` (default today) that have neither a done nor a missed
         log yet. The shared core of the end-of-day check and the /status snapshot. Passing
-        a past `for_date` powers the morning-after grace window (checking yesterday)."""
-        from datetime import date as _date
+        a past `for_date` powers the morning-after grace window (checking yesterday).
 
-        target = for_date or _date.today()
+        Default "today" is tz-aware (current_tz()), matching how logs.write() buckets
+        entries by day — a naive date.today() would read the wrong day's entries for
+        up to a few hours around midnight whenever the local zone is ahead of the
+        server's (UTC) clock.
+        """
+        from location import current_tz
+
+        target = for_date or datetime.now(current_tz()).date()
         target_weekday = target.weekday()
         sections = self.store.sections()
         entries = self._entries_for_date(target)
