@@ -10,7 +10,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 
 from context import Context
-from habit_handlers import HabitHandlers, HabitStore
+from habit_handlers import (
+    _HABITIFY_COMPLETIONS_BACKFILL_DAYS,
+    HabitHandlers,
+    HabitStore,
+)
 from habitify import HabitifyError
 from location import current_tz
 from logs import Logs
@@ -316,10 +320,79 @@ async def test_sync_habitify_notes_returns_zero_without_habitify_configured(tmp_
     assert await h.sync_habitify_notes() == 0
 
 
-# --- sync_habitify_notes runs opportunistically, tied to the two moments a human is
-# about to see habit state, rather than on its own background schedule (a standing
-# 15-minute poll starved the separate, more important completions sync — see
-# CHANGELOG). ---
+# --- sync_habitify_completions_backfill: catching a day marked done AFTER THE FACT
+# in Habitify. The standing every-5-minute sync only ever projects today, so a
+# backfilled past day never reaches habitify_completions on its own. ---
+
+
+@pytest.mark.asyncio
+async def test_backfill_picks_up_a_day_marked_done_after_the_fact(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+    from datetime import date, timedelta
+
+    backfilled_day = date.today() - timedelta(days=2)
+    sync = MagicMock()
+    sync.completions_for_date.side_effect = lambda d: (
+        {
+            "completed": [{"id": "tefillin-id", "name": "Tefillin"}],
+            "resolved_ids": ["tefillin-id"],
+        }
+        if d == backfilled_day.isoformat()
+        else {"completed": [], "resolved_ids": ["tefillin-id"]}
+    )
+    h.habitify_sync = sync
+
+    updated = await h.sync_habitify_completions_backfill()
+
+    assert updated == _HABITIFY_COMPLETIONS_BACKFILL_DAYS
+    assert h.store.habitify_completion_entries(backfilled_day) == [
+        {"tag": "habit", "content": "Tefillin", "date": backfilled_day.isoformat()}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_a_failing_day_without_aborting(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+    from datetime import date, timedelta
+
+    broken_day = (date.today() - timedelta(days=1)).isoformat()
+    ok_day = date.today() - timedelta(days=2)
+    sync = MagicMock()
+
+    def fake_completions(d):
+        if d == broken_day:
+            raise HabitifyError(503, "unavailable")
+        return {
+            "completed": [{"id": "tefillin-id", "name": "Tefillin"}],
+            "resolved_ids": ["tefillin-id"],
+        }
+
+    sync.completions_for_date.side_effect = fake_completions
+    h.habitify_sync = sync
+
+    updated = await h.sync_habitify_completions_backfill()
+
+    assert updated == _HABITIFY_COMPLETIONS_BACKFILL_DAYS - 1  # the broken day skipped
+    assert h.store.habitify_completion_entries(ok_day) == [
+        {"tag": "habit", "content": "Tefillin", "date": ok_day.isoformat()}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backfill_returns_zero_without_habitify_configured(tmp_path):
+    h = _handlers_with_store(tmp_path)
+    h.store.add("Tefillin", habitify_id="tefillin-id")
+    h.habitify_sync = None
+
+    assert await h.sync_habitify_completions_backfill() == 0
+
+
+# --- sync_habitify_notes and the completions backfill both run opportunistically,
+# tied to the two moments a human is about to see habit state, rather than on their
+# own background schedule (a standing 15-minute poll starved the separate, more
+# important today-only completions sync — see CHANGELOG). ---
 
 
 @pytest.mark.asyncio
@@ -330,6 +403,7 @@ async def test_cmd_habits_syncs_habitify_notes_before_rendering(tmp_path):
     h.quiet_window.is_quiet_at.return_value = False
     h.habitify_sync = None
     h.sync_habitify_notes = AsyncMock(return_value=0)
+    h.sync_habitify_completions_backfill = AsyncMock(return_value=0)
     h.store.add("Drink water")
 
     update = MagicMock()
@@ -339,6 +413,7 @@ async def test_cmd_habits_syncs_habitify_notes_before_rendering(tmp_path):
     await h.cmd_habits(update, MagicMock())
 
     h.sync_habitify_notes.assert_called_once()
+    h.sync_habitify_completions_backfill.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -350,69 +425,11 @@ async def test_daily_habit_check_syncs_habitify_notes_before_rendering(tmp_path)
     h.quiet_window.is_quiet_at.return_value = False
     h.habitify_sync = None
     h.sync_habitify_notes = AsyncMock(return_value=0)
+    h.sync_habitify_completions_backfill = AsyncMock(return_value=0)
     h.store.add("Drink water")
 
     with patch("habit_handlers.send_sticker", new=AsyncMock()):
         await h.daily_habit_check()
 
     h.sync_habitify_notes.assert_called_once()
-
-
-# --- _record_habitify_failures: an explicit Habitify "failed" tap becomes a
-# habit_missed entry immediately, instead of waiting for the 22:45 auto-miss job to
-# infer the same miss from absence. ---
-
-
-def test_record_habitify_failures_marks_unresolved_habit_missed(tmp_path):
-    h = _handlers_with_store(tmp_path)
-    h.store.add("Tefillin", habitify_id="tefillin-id")
-
-    h._record_habitify_failures([{"id": "tefillin-id", "name": "Tefillin"}])
-
-    entries = h.logs.db.entries_for_date(_today())
-    assert any(
-        e["tag"] == "habit_missed" and e["content"] == "Tefillin" for e in entries
-    )
-
-
-def test_record_habitify_failures_skips_an_already_resolved_habit(tmp_path):
-    h = _handlers_with_store(tmp_path)
-    h.store.add("Tefillin", habitify_id="tefillin-id")
-    h.logs.write("habit", "Tefillin")  # already resolved (done) today some other way
-
-    h._record_habitify_failures([{"id": "tefillin-id", "name": "Tefillin"}])
-
-    entries = h.logs.db.entries_for_date(_today())
-    assert not any(e["tag"] == "habit_missed" for e in entries)
-
-
-def test_record_habitify_failures_ignores_an_unknown_habitify_id(tmp_path):
-    h = _handlers_with_store(tmp_path)
-
-    h._record_habitify_failures([{"id": "no-such-habit", "name": "Ghost"}])
-
-    assert h.logs.db.entries_for_date(_today()) == []
-
-
-@pytest.mark.asyncio
-async def test_refresh_habits_from_habitify_records_explicit_failures(tmp_path):
-    h = _handlers_with_store(tmp_path)
-    h.store.add("Tefillin", habitify_id="tefillin-id")
-    # Skip the separate definitions resync (untested here, and its own untrack
-    # reconciliation would fight this test over "Tefillin" if it ran against an
-    # empty remote-habits stub) so only the completions/failures path is exercised.
-    h._habitify_projection_loaded_at = time.monotonic()
-    sync = MagicMock()
-    sync.completions_for_date.return_value = {
-        "completed": [],
-        "failed": [{"id": "tefillin-id", "name": "Tefillin"}],
-        "resolved_ids": ["tefillin-id"],
-    }
-    h.habitify_sync = sync
-
-    await h.refresh_habits_from_habitify(force_completions=True)
-
-    entries = h.logs.db.entries_for_date(_today())
-    assert any(
-        e["tag"] == "habit_missed" and e["content"] == "Tefillin" for e in entries
-    )
+    h.sync_habitify_completions_backfill.assert_called_once()

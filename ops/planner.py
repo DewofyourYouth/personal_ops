@@ -30,6 +30,28 @@ def day_type() -> str:
     return _day_type_for(date.today())
 
 
+_SQL_WRITE_KEYWORDS = re.compile(
+    r"\b(insert|update|delete|drop|alter|attach|detach|pragma|create|replace|vacuum|reindex)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_safe_select(sql: str) -> bool:
+    """True if `sql` is a single, read-only SELECT.
+
+    The guard between an LLM-generated query and the real database: rejects
+    multi-statement strings (so a stacked '; DROP TABLE ...' can't ride along) and
+    anything carrying a write/DDL keyword. Deliberately conservative — the model can
+    always ask a differently-shaped SELECT instead.
+    """
+    s = sql.strip().rstrip(";").strip()
+    if not s or ";" in s:
+        return False
+    if not re.match(r"(?is)^select\b", s):
+        return False
+    return not _SQL_WRITE_KEYWORDS.search(s)
+
+
 class Planner:
     def __init__(self, model: str, logs: Logs, context: Context | None = None):
         self.model = model
@@ -646,28 +668,130 @@ class Planner:
         )
         return response.content[0].text.strip()
 
+    def _db_schema_for_prompt(self) -> str:
+        """The live CREATE TABLE statements for every table in the log DB.
+
+        Generated fresh from sqlite_master rather than hand-maintained, so the SQL
+        the model writes never drifts from the real schema as columns get added
+        (this is exactly the kind of drift that broke the habits-table prompt
+        before — a stale copy of a schema is worse than reading the real one).
+        """
+        rows = self.logs.db.query(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+        )
+        return "\n\n".join(r["sql"] for r in rows if r["sql"])
+
+    async def _plan_feedback_queries(self, client, question: str) -> list[str]:
+        """Ask the model what data would answer `question`, as SQL against the
+        live schema — reasoning about what it needs to see, rather than always
+        pulling the same fixed 30-day bundle regardless of what was asked.
+        The DB call itself stays a deterministic read (see _is_safe_select);
+        only the choice of *what* to look at is the model's job.
+        """
+        try:
+            response = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=700,
+                tools=[
+                    {
+                        "name": "select_queries",
+                        "description": (
+                            "Write SQL SELECT queries against the user's own log "
+                            "database to fetch exactly the data needed to answer "
+                            "their question."
+                        ),
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "queries": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "1-5 read-only SQLite SELECT statements. Prefer "
+                                        "targeted WHERE/LIKE filters and date ranges over "
+                                        "dumping whole tables; add LIMIT for anything that "
+                                        "could be large. Empty array if the question needs "
+                                        "no data lookup at all."
+                                    ),
+                                }
+                            },
+                            "required": ["queries"],
+                        },
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "select_queries"},
+                system=(
+                    "You write SQL to fetch exactly the data needed to answer a "
+                    "personal-ops user's question, against their own SQLite log "
+                    f"database. Today is {date.today().isoformat()}; dates are stored "
+                    "as ISO 'YYYY-MM-DD' text, timestamps as ISO 8601 text.\n\n"
+                    "Schema:\n" + self._db_schema_for_prompt() + "\n\n"
+                    "The 'entries' table holds every logged item — free text in "
+                    "`content`, its category in `tag` (insight, hypothesis, note, "
+                    "task, friction, win, checkin, habit, food, backlog, feedback, "
+                    "log, ...). For 'what did I say about X' questions, search "
+                    "`content` with LIKE. Read-only: never write or alter data."
+                ),
+                messages=[{"role": "user", "content": f"Question: {question}"}],
+            )
+            for block in response.content:
+                if block.type == "tool_use":
+                    queries = block.input.get("queries", [])
+                    return [q for q in queries if isinstance(q, str) and q.strip()][:5]
+        except Exception:
+            pass
+        return []
+
+    def _run_feedback_queries(self, queries: list[str]) -> str:
+        """Execute the planned queries and render their results as prompt text.
+
+        A query that fails the read-only guard or errors at execution is skipped,
+        not fatal — a bad generated query just means less context for this reply,
+        never a crash.
+        """
+        blocks = []
+        for q in queries:
+            if not _is_safe_select(q):
+                continue
+            try:
+                rows = self.logs.db.query(q)
+            except Exception as e:
+                blocks.append(f"Query: {q}\n(failed: {e})")
+                continue
+            if not rows:
+                blocks.append(f"Query: {q}\n(no rows)")
+                continue
+            cols = rows[0].keys()
+            lines = [" | ".join(cols)]
+            lines += [" | ".join(str(r[c]) for c in cols) for r in rows[:200]]
+            blocks.append(f"Query: {q}\n" + "\n".join(lines))
+        return "\n\n".join(blocks)
+
     async def feedback(self, text: str) -> str:
         from habit_tracker import anchor_flow_state
 
         client = anthropic.AsyncAnthropic(max_retries=4)
         state = anchor_flow_state(self.logs)
 
-        # Include the user's actual logged data (metrics with trends, recent stats) so
-        # feedback on "is my weight plan on track?" can use real numbers, not just the
-        # stated system from the context files.
-        data_block = ""
-        metrics_text = self.logs.format_metrics_for_prompt(days=30)
-        if metrics_text:
-            data_block += f"{metrics_text}\n\n"
-        food_text = self.logs.format_food_for_prompt(days=30)
-        if food_text:
-            data_block += f"{food_text}\n\n"
-        tod_text = self.logs.format_time_of_day_for_prompt(days=30)
-        if tod_text:
-            data_block += f"{tod_text}\n\n"
-        stats_text = self.logs.format_stats_for_prompt(days=7)
-        if stats_text:
-            data_block += f"{stats_text}\n\n"
+        # Two-phase retrieval: first ask what data would answer THIS question (the
+        # model writes SQL against the live schema), then fetch exactly that —
+        # rather than always dumping the same fixed bundle regardless of the ask.
+        queries = await self._plan_feedback_queries(client, text)
+        data_block = self._run_feedback_queries(queries) if queries else ""
+
+        # The durable ledger — recurring reflections plus the weekly/monthly rollup
+        # — rides along on every call regardless of the question. It's small, and
+        # it's the part that makes this an *honest* oracle rather than an answer
+        # scoped to just this ask.
+        ledger_text = self.insights.format_for_prompt()
+        if ledger_text:
+            data_block = f"{ledger_text}\n\n{data_block}" if data_block else ledger_text
+        baseline_text = self.baseline.format_for_prompt()
+        if baseline_text:
+            data_block = (
+                f"{data_block}\n\n{baseline_text}" if data_block else baseline_text
+            )
 
         user_content = text
         if data_block:
