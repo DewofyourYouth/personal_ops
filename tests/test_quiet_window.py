@@ -1,6 +1,7 @@
 """Tests for QuietWindow — Shabbat + chag quiet-window logic."""
 
 import json
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from pyluach.dates import HebrewDate
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from quiet_window import QuietWindow
@@ -140,6 +142,91 @@ class TestChagQuietWindow:
         qw = QuietWindow(_make_shabbat(), chagim_path=path)
         dt = _dt("2026-06-22T14:00:00+03:00")
         assert qw.is_quiet_at(dt) is False
+
+
+class TestActiveWindowName:
+    def test_chag_window_reports_chag_name_not_shabbat(self):
+        # Regression: a chag quiet window (e.g. Rosh Hashana) was previously
+        # indistinguishable from Shabbat in is_quiet_at(), so callers hardcoded
+        # "Shabbat" in user-facing text even when the actual quiet window was
+        # a chag on a weekday.
+        chagim = [
+            {
+                "name": "Rosh Hashana 5787 day 1",
+                "quiet_start": "2026-09-10T18:00:00+03:00",
+                "quiet_end": "2026-09-11T21:00:00+03:00",
+            }
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(chagim, f)
+            path = f.name
+        qw = QuietWindow(_make_shabbat(), chagim_path=path)
+        # 2026-09-11 is a Friday, so without the chag this wouldn't be quiet yet.
+        dt = _dt("2026-09-11T09:00:00+03:00")
+        assert qw.active_window_name(dt) == "Rosh Hashana 5787 day 1"
+
+    def test_shabbat_window_reports_shabbat(self):
+        qw = QuietWindow(_make_shabbat())
+        dt = _dt("2026-06-20T09:00:00+03:00")  # Saturday morning
+        assert qw.active_window_name(dt) == "Shabbat"
+
+    def test_no_window_reports_none(self):
+        qw = QuietWindow(_make_shabbat())
+        dt = _dt("2026-06-22T14:00:00+03:00")  # Monday
+        assert qw.active_window_name(dt) is None
+
+
+class TestRealChagimFileDates:
+    """Cross-checks every ops/chagim.json entry against the real Hebrew
+    calendar (pyluach), so a hand-typed date can't silently drift.
+
+    Regression for a data bug (not a logic bug): every 5787 (2026) entry, and
+    the two 5786 Rosh Hashana entries, were dated one full day too early.
+    quiet_end is checked here because that's the entry's actual chag day:
+    quiet_start is candle lighting the evening *before*, so it always lands
+    one calendar day earlier than the chag itself.
+
+    The Hebrew month/day of each chag is a fixed calendrical fact (unlike its
+    Gregorian date, which shifts every year), so the expected date is
+    recomputed from pyluach rather than hardcoded — this stays correct as
+    new years are appended to chagim.json instead of needing a table update
+    for each one.
+    """
+
+    _CHAGIM_PATH = Path(__file__).parent.parent / "ops" / "chagim.json"
+    _HEBREW_YEAR_RE = re.compile(r"\b(57\d\d)\b")
+
+    # Name template (Hebrew year replaced with "{y}") -> (Hebrew month, day).
+    # Month numbering is the civil count used by pyluach: Nisan=1 ... Tishrei=7.
+    _CHAG_MONTH_DAY = {
+        "Rosh Hashana {y} day 1": (7, 1),
+        "Rosh Hashana {y} day 2": (7, 2),
+        "Yom Kippur {y}": (7, 10),
+        "Sukkot {y} (first day, Israel)": (7, 15),
+        "Shemini Atzeret / Simchat Torah {y} (Israel)": (7, 22),
+        "Pesach {y} first day (Israel)": (1, 15),
+        "Pesach {y} last day (Israel)": (1, 21),
+        "Shavuot {y} (Israel)": (3, 6),
+    }
+
+    def _expected_end_date(self, name: str) -> str:
+        m = self._HEBREW_YEAR_RE.search(name)
+        assert m, f"no Hebrew year found in chag name: {name!r}"
+        hebrew_year = int(m.group(1))
+        template = name.replace(m.group(1), "{y}", 1)
+        month, day = self._CHAG_MONTH_DAY[template]
+        return HebrewDate(hebrew_year, month, day).to_pydate().isoformat()
+
+    def test_every_entry_matches_its_hebrew_calendar_date(self):
+        entries = json.loads(self._CHAGIM_PATH.read_text())
+        assert entries, "chagim.json is empty"
+        for entry in entries:
+            expected = self._expected_end_date(entry["name"])
+            actual = entry["quiet_end"][:10]
+            assert actual == expected, (
+                f"{entry['name']}: quiet_end date is {actual}, expected "
+                f"{expected} per the Hebrew calendar"
+            )
 
 
 class TestWakingHours:

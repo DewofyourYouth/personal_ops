@@ -1318,10 +1318,11 @@ class HabitHandlers:
 
         # Only suppress the list while it's actually a quiet window — once it's out
         # (motzei Shabbat, after chag), the list comes back so the next period can start.
-        if self.quiet_window.is_quiet_at():
+        window_name = self.quiet_window.active_window_name()
+        if window_name is not None:
             return (
-                "🕯 <b>Shabbat</b> — habits aren't tracked now, and Shabbat never counts "
-                "against a streak. Rest.",
+                f"🕯 <b>{html.escape(window_name)}</b> — habits aren't tracked now, "
+                "and quiet windows never count against a streak. Rest.",
                 InlineKeyboardMarkup([]),
             )
         today_weekday = _date.today().weekday()

@@ -32,7 +32,7 @@ class QuietWindow:
 
     def __init__(self, shabbat, chagim_path: "Path | str | None" = None) -> None:
         self._shabbat = shabbat
-        self._chag_windows: list[tuple[datetime, datetime]] = []
+        self._chag_windows: list[tuple[str, datetime, datetime]] = []
         if chagim_path:
             self._load_chagim(Path(chagim_path))
 
@@ -44,20 +44,36 @@ class QuietWindow:
             for entry in json.loads(path.read_text()):
                 start = datetime.fromisoformat(entry["quiet_start"]).astimezone(tz)
                 end = datetime.fromisoformat(entry["quiet_end"]).astimezone(tz)
-                self._chag_windows.append((start, end))
+                self._chag_windows.append((entry.get("name", "Chag"), start, end))
         except Exception:
             pass  # malformed file → fall back to Shabbat-only mode
 
-    def _in_chag(self, dt: datetime) -> bool:
-        return any(start <= dt < end for start, end in self._chag_windows)
+    def _active_chag(self, dt: datetime) -> str | None:
+        for name, start, end in self._chag_windows:
+            if start <= dt < end:
+                return name
+        return None
 
     def is_quiet_at(self, dt: "datetime | None" = None) -> bool:
         """True if dt (default: now) is inside a quiet window (Shabbat or chag)."""
+        return self.active_window_name(dt) is not None
+
+    def active_window_name(self, dt: "datetime | None" = None) -> str | None:
+        """Name of the quiet window covering dt — a chag's name from chagim.json,
+        or 'Shabbat' — or None if dt isn't inside any quiet window. The single
+        source of truth for both "is it quiet" and "what should the bot call
+        it," so a chag window is never mislabeled as Shabbat in user-facing
+        text."""
         if dt is None:
             dt = datetime.now(location.current_tz())
         else:
             dt = dt.astimezone(location.current_tz())
-        return self._in_chag(dt) or self._is_shabbat_quiet(dt)
+        chag = self._active_chag(dt)
+        if chag is not None:
+            return chag
+        if self._is_shabbat_quiet(dt):
+            return "Shabbat"
+        return None
 
     def _is_shabbat_quiet(self, dt: datetime) -> bool:
         weekday = dt.weekday()
