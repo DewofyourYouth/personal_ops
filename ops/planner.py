@@ -1380,8 +1380,8 @@ class Planner:
         Callers should gate this behind a cheap keyword pre-filter (see
         text_router.py's intent-dispatch step) — most messages should never
         reach this call at all. Returns one of "candle_lighting", "reminder",
-        "calendar_event", "weekly_focus", or None if the message doesn't
-        clearly ask for any of them."""
+        "calendar_event", "weekly_focus", "agenda_add", or None if the message
+        doesn't clearly ask for any of them."""
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -1413,8 +1413,16 @@ class Planner:
                         'for the week is to catch up on job applications". '
                         "Not a one-off task to add to today's agenda — a "
                         "broader theme for the whole period.\n\n"
+                        "'agenda_add': naming one or more concrete tasks to work "
+                        "through on a specific day — today, tomorrow, or a "
+                        "named day — as that day's to-do list, however it's "
+                        'phrased, e.g. "for tomorrow I need to prep for the '
+                        'interview and do the Coursera work", "put calling the '
+                        "insurance company on Friday's list\". If the message is "
+                        "really about being pinged/alerted rather than having "
+                        "the item show up to work through, prefer 'reminder'.\n\n"
                         "'none': anything else, including a message that just "
-                        "mentions a meeting/reminder/candle lighting in "
+                        "mentions a meeting/reminder/candle lighting/agenda in "
                         "passing without asking the bot to do something about "
                         "it right now."
                     ),
@@ -1428,6 +1436,7 @@ class Planner:
                                     "reminder",
                                     "calendar_event",
                                     "weekly_focus",
+                                    "agenda_add",
                                     "none",
                                 ],
                             },
@@ -1443,6 +1452,69 @@ class Planner:
             if block.type == "tool_use":
                 action = block.input.get("action")
                 return str(action) if action and action != "none" else None
+        return None
+
+    async def parse_agenda_for_day(self, text: str) -> dict | None:
+        """Extract the target day and distinct item(s) from a conversationally
+        phrased request to put something on a day's agenda — reached only after
+        detect_action_intent has already classified the message as agenda_add.
+        Same split between routing and extraction as parse_reminder/parse_event.
+
+        Returns {"day": str, "items": list[str]}, or None if no concrete item
+        could be identified. "day" is 'today', 'tomorrow', a weekday name, or an
+        ISO date — resolve it the same way the explicit 'queue for <day>'
+        command does (text_router._resolve_agenda_for_day / _parse_queue_date).
+        """
+        client = anthropic.AsyncAnthropic(max_retries=2)
+        try:
+            response = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                tools=[
+                    {
+                        "name": "extract_agenda_items",
+                        "description": (
+                            "Extract the target day and the distinct agenda "
+                            "items from a request to put something on a day's "
+                            "agenda."
+                        ),
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "day": {
+                                    "type": "string",
+                                    "description": (
+                                        "The target day: 'today' if not stated, "
+                                        "otherwise 'tomorrow', a weekday name "
+                                        "(e.g. 'Friday'), or an ISO date."
+                                    ),
+                                },
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Each distinct task as its own short "
+                                        "phrase, preserving the original "
+                                        "wording. Split into separate items "
+                                        "whenever the message names more than "
+                                        "one concrete thing to do."
+                                    ),
+                                },
+                            },
+                            "required": ["day", "items"],
+                        },
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "extract_agenda_items"},
+                messages=[{"role": "user", "content": text}],
+            )
+        except Exception:
+            return None
+        for block in response.content:
+            if block.type == "tool_use":
+                items = [i.strip() for i in block.input.get("items", []) if i.strip()]
+                day = block.input.get("day") or "today"
+                return {"day": day, "items": items} if items else None
         return None
 
     async def parse_location_override(self, text: str) -> dict | None:

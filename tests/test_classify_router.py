@@ -15,6 +15,7 @@ that must NOT silently regress:
 import asyncio
 import sys
 import types
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
@@ -469,6 +470,17 @@ def test_intent_gate_does_not_fire_on_bare_this_week():
     assert not _intent_gate_matches("i've been tired this week")
 
 
+def test_intent_gate_matches_agenda_phrases():
+    """agenda_add's keyword gate is the safety net behind the exact-shape
+    regexes (_AGENDA_DEST_RE / _AGENDA_FOR_DAY_RE): any mention of 'agenda'
+    (or a to-do-list synonym) must reach the gate, however it's phrased —
+    a miss here means the LLM layer never gets a chance to catch it either."""
+    assert _intent_gate_matches(
+        "tomorrow i really need to prep for the interview, put that on my agenda"
+    )
+    assert _intent_gate_matches("add renewing my passport to my to-do list")
+
+
 class _Replies:
     def __init__(self):
         self.messages = []
@@ -731,3 +743,136 @@ def test_try_dispatch_known_intent_routes_to_weekly_focus():
     assert event_type == "dispatched"
     assert to_label == "weekly_focus"
     assert kw["call_site"] == "intent_router"
+
+
+# --- Agenda-add: the LLM safety net behind _AGENDA_DEST_RE / _AGENDA_FOR_DAY_RE.
+# Unlike the other intent-dispatch actions, this one exists specifically so a
+# phrasing miss on those regexes never means silent failure — see the comment
+# above _INTENT_ACTION_KEYWORDS. ---
+
+
+def _fake_agenda_feature():
+    committed = []
+    return types.SimpleNamespace(
+        committed=committed,
+        commit_agenda=lambda texts, source: committed.append((texts, source)),
+    )
+
+
+def _fake_queue():
+    added = []
+    return types.SimpleNamespace(
+        added=added, add=lambda text, day: added.append((text, day))
+    )
+
+
+def test_dispatch_agenda_add_commits_today_directly():
+    async def parse(text):
+        return {"day": "today", "items": ["call the dentist"]}
+
+    r = _router_full(planner=types.SimpleNamespace(parse_agenda_for_day=parse))
+    r.agenda_feature = _fake_agenda_feature()
+    r.queue = _fake_queue()
+    replies = _Replies()
+
+    asyncio.run(r._dispatch_agenda_add("for today I need to call the dentist", replies))
+
+    assert r.agenda_feature.committed == [(["call the dentist"], "user")]
+    assert r.queue.added == []
+    assert any("Added to today's agenda" in m for m in replies.messages)
+
+
+def test_dispatch_agenda_add_queues_a_future_day():
+    async def parse(text):
+        return {
+            "day": "tomorrow",
+            "items": ["prep for the interview", "do Coursera work"],
+        }
+
+    r = _router_full(planner=types.SimpleNamespace(parse_agenda_for_day=parse))
+    r.agenda_feature = _fake_agenda_feature()
+    r.queue = _fake_queue()
+    replies = _Replies()
+
+    asyncio.run(
+        r._dispatch_agenda_add(
+            "tomorrow I need to prep for the interview and do coursera work", replies
+        )
+    )
+
+    tomorrow = date.today() + timedelta(days=1)
+    assert r.queue.added == [
+        ("prep for the interview", tomorrow),
+        ("do Coursera work", tomorrow),
+    ]
+    assert r.agenda_feature.committed == []
+    assert any("Queued for" in m for m in replies.messages)
+
+
+def test_dispatch_agenda_add_asks_for_clarification_when_nothing_concrete():
+    async def parse(text):
+        return {"day": "today", "items": []}
+
+    r = _router_full(planner=types.SimpleNamespace(parse_agenda_for_day=parse))
+    r.agenda_feature = _fake_agenda_feature()
+    r.queue = _fake_queue()
+    replies = _Replies()
+
+    asyncio.run(r._dispatch_agenda_add("put stuff on my agenda", replies))
+
+    assert r.agenda_feature.committed == []
+    assert r.queue.added == []
+    assert any("Not sure what to add" in m for m in replies.messages)
+
+
+def test_try_dispatch_known_intent_routes_to_agenda_add():
+    """Regression: the exact reported bug — 'For tomorrow's agenda, ...' is one
+    phrasing the regex catches, but this is the general safety net for any OTHER
+    phrasing of the same intent that the regex doesn't happen to match."""
+
+    async def detect(text):
+        return "agenda_add"
+
+    async def parse(text):
+        return {"day": "tomorrow", "items": ["renew my passport"]}
+
+    logs = _FakeLogs()
+    r = _router_full(
+        planner=types.SimpleNamespace(
+            detect_action_intent=detect, parse_agenda_for_day=parse
+        ),
+        logs=logs,
+    )
+    r.agenda_feature = _fake_agenda_feature()
+    r.queue = _fake_queue()
+    replies = _Replies()
+    text = "don't forget I need to renew my passport, put that on tomorrow's list"
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(text, text.lower(), 1, replies)
+    )
+    assert dispatched
+    tomorrow = date.today() + timedelta(days=1)
+    assert r.queue.added == [("renew my passport", tomorrow)]
+    assert len(logs.events) == 1
+    _, event_type, _, to_label, kw = logs.events[0]
+    assert event_type == "dispatched"
+    assert to_label == "agenda_add"
+    assert kw["call_site"] == "intent_router"
+
+
+def test_try_dispatch_known_intent_agenda_add_falls_through_without_agenda_feature():
+    """No agenda_feature wired (e.g. a minimal test harness, or before bot.py
+    finishes composing plugins) — must decline to dispatch, not crash."""
+
+    async def detect(text):
+        return "agenda_add"
+
+    r = _router_full(planner=types.SimpleNamespace(detect_action_intent=detect))
+    r.agenda_feature = None
+    replies = _Replies()
+    text = "put finishing the deck on my agenda for tomorrow"
+    dispatched = asyncio.run(
+        r._try_dispatch_known_intent(text, text.lower(), 1, replies)
+    )
+    assert not dispatched
+    assert replies.messages == []
