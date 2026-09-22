@@ -207,6 +207,31 @@ _AGENDA_DEST_RE = re.compile(
     r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
 )
 
+# "For tomorrow's agenda, ..." / "For Sunday's agenda: ..." — agenda-phrase-FIRST,
+# item(s) after, the mirror image of _AGENDA_DEST_RE's "X to my agenda" shape (item
+# before the phrase). A voice note phrased this way used to fall through to the
+# classifier, get tagged a single generic #task, and never reach any agenda at all.
+_AGENDA_FOR_DAY_RE = re.compile(
+    r"^for\s+(my|the|today'?s?|tomorrow'?s?|monday'?s?|tuesday'?s?|wednesday'?s?|"
+    r"thursday'?s?|friday'?s?|saturday'?s?|sunday'?s?)\s+agenda\s*[,:]?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _resolve_agenda_for_day(day_word: str) -> date | None:
+    """Resolve the day token captured by _AGENDA_FOR_DAY_RE to a date.
+
+    'my'/'the'/'today[\\'s]' all mean today. A weekday name or 'tomorrow[\\'s]' is
+    resolved via _parse_queue_date, the same logic the explicit 'queue for <day>'
+    command already uses — that function only takes bare day names (no possessive
+    's'), so it's stripped first.
+    """
+    w = re.sub(r"'?s$", "", day_word.strip().lower())
+    if w in ("my", "the", "today"):
+        return date.today()
+    return _parse_queue_date(w)
+
+
 # A vague self-reference to unnamed past content ("whatever I missed", "what I
 # didn't get to") rather than a concrete task — a tell that the regex extractor
 # below grabbed meta-commentary, not an item. See _agenda_extraction_is_suspect.
@@ -238,7 +263,11 @@ _LOCATION_HINT_RE = re.compile(
 # fall through" tradeoff as _LOCATION_HINT_RE — so Planner.detect_action_intent
 # (the actual LLM classification) only runs on messages that could plausibly
 # be one of these. Deliberately narrow (see the intent-dispatch plan): habit/
-# backlog/food/agenda-add etc. already have adequate NL coverage elsewhere.
+# backlog/food etc. already have adequate NL coverage elsewhere. agenda_add is
+# the deliberate exception to "narrow": _AGENDA_DEST_RE/_AGENDA_FOR_DAY_RE only
+# catch two exact phrasings, and a regex miss must never mean silent failure —
+# the whole point of capturing frictionlessly is not having to remember the
+# magic words. This LLM layer is the actual safety net behind those regexes.
 _INTENT_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "candle_lighting": ("candle", "shabbat", "shabbos"),
     "reminder": ("remind", "forget"),
@@ -252,6 +281,7 @@ _INTENT_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
         "goal this week",
         "priority this week",
     ),
+    "agenda_add": ("agenda", "to-do", "todo", "to do list"),
 }
 
 
@@ -1773,6 +1803,20 @@ class TextRouter:
                 await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
                 return
 
+        # "For tomorrow's agenda, I need to X, Y, and Z" — agenda-phrase-first,
+        # possibly several items in one breath. 'today' commits straight to today's
+        # real agenda (same as the block above); a future day queues each item, the
+        # same destination the explicit 'queue for <day>: <item>' command below uses
+        # — so this is just a differently-phrased, multi-item way into that queue.
+        for_day_m = _AGENDA_FOR_DAY_RE.match(text.strip())
+        if for_day_m and self.agenda_feature:
+            target = _resolve_agenda_for_day(for_day_m.group(1))
+            rest = for_day_m.group(2).strip()
+            if target and rest:
+                items = await self._agenda_items_from_text(rest)
+                await self._commit_or_queue_agenda_items(items, target, reply)
+                return
+
         # "add X habit" / "add habit X" / "remove habit X" / "stop tracking X" —
         # natural-language habit list management, the conversational mirror of
         # /addhabit and /managehabits' delete button. Checked before the "add to"
@@ -2322,6 +2366,41 @@ class TextRouter:
         self.weekly_goals.add(goal)
         await reply(f"🎯 This week's focus: {goal}")
 
+    async def _commit_or_queue_agenda_items(
+        self, items: list[str], target: date, reply
+    ) -> None:
+        """Land `items` on `target`'s agenda: today commits straight to the real
+        agenda (Agenda has no concept of any other day), a future day queues each
+        item via AgendaQueue — the same destination the explicit 'queue for <day>'
+        command uses, which the morning agenda proposal already pulls from."""
+        if target == date.today():
+            self.agenda_feature.commit_agenda(items, source="user")
+            await reply(f"🗓 Added to today's agenda: {_format_agenda_items(items)}")
+        else:
+            for item in items:
+                self.queue.add(item, target)
+            await reply(
+                f"📅 Queued for {target.strftime('%A %b %d')}: "
+                f"{_format_agenda_items(items)}"
+            )
+
+    async def _dispatch_agenda_add(self, text: str, reply) -> None:
+        """Extract the day + item(s) from a conversationally-phrased agenda
+        request and land them, same honest-failure shape as _resolve_agenda_item
+        and _dispatch_weekly_focus: ask rather than guess when nothing concrete
+        comes back."""
+        try:
+            parsed = await self.planner.parse_agenda_for_day(text)
+        except Exception:
+            parsed = None
+        if not parsed or not parsed.get("items"):
+            await reply("Not sure what to add — could you name the specific task(s)?")
+            return
+        target = _resolve_agenda_for_day(parsed.get("day") or "today")
+        if target is None:
+            target = date.today()
+        await self._commit_or_queue_agenda_items(parsed["items"], target, reply)
+
     async def _try_dispatch_known_intent(
         self, text: str, lower: str, update_chat_id, reply
     ) -> bool:
@@ -2349,6 +2428,8 @@ class TextRouter:
             await self._dispatch_calendar_event(text, reply)
         elif action == "weekly_focus":
             await self._dispatch_weekly_focus(text, reply)
+        elif action == "agenda_add" and self.agenda_feature:
+            await self._dispatch_agenda_add(text, reply)
         else:
             return False
         if getattr(self, "logs", None) is not None:
