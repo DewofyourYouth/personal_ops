@@ -207,6 +207,31 @@ _AGENDA_DEST_RE = re.compile(
     r"\b(?:on|to|in(?:to)?)\s+(?:my|the)\s+agenda\b", re.IGNORECASE
 )
 
+# "For tomorrow's agenda, ..." / "For Sunday's agenda: ..." — agenda-phrase-FIRST,
+# item(s) after, the mirror image of _AGENDA_DEST_RE's "X to my agenda" shape (item
+# before the phrase). A voice note phrased this way used to fall through to the
+# classifier, get tagged a single generic #task, and never reach any agenda at all.
+_AGENDA_FOR_DAY_RE = re.compile(
+    r"^for\s+(my|the|today'?s?|tomorrow'?s?|monday'?s?|tuesday'?s?|wednesday'?s?|"
+    r"thursday'?s?|friday'?s?|saturday'?s?|sunday'?s?)\s+agenda\s*[,:]?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _resolve_agenda_for_day(day_word: str) -> date | None:
+    """Resolve the day token captured by _AGENDA_FOR_DAY_RE to a date.
+
+    'my'/'the'/'today[\\'s]' all mean today. A weekday name or 'tomorrow[\\'s]' is
+    resolved via _parse_queue_date, the same logic the explicit 'queue for <day>'
+    command already uses — that function only takes bare day names (no possessive
+    's'), so it's stripped first.
+    """
+    w = re.sub(r"'?s$", "", day_word.strip().lower())
+    if w in ("my", "the", "today"):
+        return date.today()
+    return _parse_queue_date(w)
+
+
 # A vague self-reference to unnamed past content ("whatever I missed", "what I
 # didn't get to") rather than a concrete task — a tell that the regex extractor
 # below grabbed meta-commentary, not an item. See _agenda_extraction_is_suspect.
@@ -1771,6 +1796,31 @@ class TextRouter:
                 items = await self._agenda_items_from_text(item)
                 self.agenda_feature.commit_agenda(items, source="user")
                 await reply(f"🗓 Added to agenda: {_format_agenda_items(items)}")
+                return
+
+        # "For tomorrow's agenda, I need to X, Y, and Z" — agenda-phrase-first,
+        # possibly several items in one breath. 'today' commits straight to today's
+        # real agenda (same as the block above); a future day queues each item, the
+        # same destination the explicit 'queue for <day>: <item>' command below uses
+        # — so this is just a differently-phrased, multi-item way into that queue.
+        for_day_m = _AGENDA_FOR_DAY_RE.match(text.strip())
+        if for_day_m and self.agenda_feature:
+            target = _resolve_agenda_for_day(for_day_m.group(1))
+            rest = for_day_m.group(2).strip()
+            if target and rest:
+                items = await self._agenda_items_from_text(rest)
+                if target == date.today():
+                    self.agenda_feature.commit_agenda(items, source="user")
+                    await reply(
+                        f"🗓 Added to today's agenda: {_format_agenda_items(items)}"
+                    )
+                else:
+                    for item in items:
+                        self.queue.add(item, target)
+                    await reply(
+                        f"📅 Queued for {target.strftime('%A %b %d')}: "
+                        f"{_format_agenda_items(items)}"
+                    )
                 return
 
         # "add X habit" / "add habit X" / "remove habit X" / "stop tracking X" —
