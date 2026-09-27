@@ -374,8 +374,10 @@ class Planner:
             )
         else:
             user_content = f"Review the last {days} days.\n"
-        if earliest_habit:
-            habit_days = (date.today() - earliest_habit).days + 1
+        habit_days = (date.today() - earliest_habit).days + 1 if earliest_habit else 0
+        # Only while tracking is younger than the review window — once it's months
+        # old, "low counts are expected" just licenses ignoring a real drop-off.
+        if earliest_habit and habit_days <= days:
             user_content += (
                 f"Note: habit tracking started {earliest_habit} ({habit_days} day{'s' if habit_days != 1 else ''} ago). "
                 f"Low habit log counts are expected — do not flag them as a pattern.\n"

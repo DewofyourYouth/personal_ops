@@ -33,7 +33,6 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 
-from habit_tracker import _matches
 from tags import TEXT_MINING_TAGS
 
 DB_PATH = "ops/log/ops.db"
@@ -78,26 +77,61 @@ def _num(v: str) -> float | None:
     return float(m.group(0)) if m else None
 
 
-def active_habit_names(c: sqlite3.Connection) -> set[str]:
-    """Names of habits still tracked and not currently paused. Adherence rows keyed
-    by a logged habit name that doesn't match any of these are ones the user has
-    cancelled or put on hold — reporting on them reads as nagging about something
-    they already stopped, so the adherence sections filter down to this set."""
+def active_habits(c: sqlite3.Connection) -> dict[str, str]:
+    """canonical_habit() key -> current name, for every habit still tracked and not
+    currently paused, keyed by its name and each of its aliases. Resolving logged
+    names through this folds old spellings ("Strength training — 3x/week
+    minimum") into the habit they became (Core Training). A logged name that
+    resolves to nothing belongs to a habit the user cancelled or put on hold —
+    reporting on it reads as nagging about something they already stopped, so the
+    adherence sections drop it."""
     today = date.today().isoformat()
     rows = c.execute(
-        "SELECT name, paused_until FROM habits WHERE tracked = 1"
+        "SELECT id, name, paused_until FROM habits WHERE tracked = 1"
     ).fetchall()
-    return {
-        name for name, paused_until in rows if not paused_until or paused_until < today
+    active = {
+        hid: name
+        for hid, name, paused_until in rows
+        if not paused_until or paused_until < today
     }
+    has_aliases = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'habit_aliases'"
+    ).fetchone()
+    aliases = (
+        c.execute("SELECT habit_id, alias FROM habit_aliases").fetchall()
+        if has_aliases
+        else []
+    )
+    keys = {
+        canonical_habit(alias): active[hid] for hid, alias in aliases if hid in active
+    }
+    # A habit's own name wins over another habit's alias that canonicalizes the same.
+    keys.update({canonical_habit(name): name for name in active.values()})
+    return keys
 
 
-def _filter_to_active(names: set[str], active: set[str] | None) -> set[str]:
-    """Keep only logged habit-content strings that word-match a currently active
-    habit name. `active=None` means no habits table was available — don't filter."""
+def _resolve(key: str, active: dict[str, str] | None) -> str | None:
+    """A logged habit key -> its current habit name; None if that habit is retired.
+    `active=None` means no habits table was available — keep every key as-is."""
     if active is None:
-        return names
-    return {n for n in names if any(_matches(a, n) for a in active)}
+        return key
+    return active.get(key)
+
+
+_HABIT_TIME_PREFIX = re.compile(r"^\d{1,2}:\d{2}(?:\s*[–-]\s*\d{1,2}:\d{2})?\s+")
+_HABIT_QUALIFIER = re.compile(r"\s*(?:\(|[—–]\s).*$")
+
+
+def canonical_habit(name: str) -> str:
+    """Collapse the spellings one habit has been logged under into one key.
+    Older rows carry the full definition as the name ("Weigh in — at least
+    3x/week, morning", "Shacharit (07:00–08:00)", "10:00–11:00 Yoma chavrusa")
+    and casing drifted ("brush teeth"/"Brush teeth"). Left apart, each variant
+    got its own adherence row, and the miss-only variants read as a stricter
+    habit stuck at 0% — so the advice said to "kill" habits that were fine."""
+    stripped = name.strip()
+    core = _HABIT_QUALIFIER.sub("", _HABIT_TIME_PREFIX.sub("", stripped)).strip()
+    return (core or stripped).casefold()
 
 
 def load_days(c) -> dict[str, dict]:
@@ -140,11 +174,25 @@ def load_days(c) -> dict[str, dict]:
     for tag, content, d in c.execute("SELECT tag, content, date FROM entries"):
         rec = days[d]
         if tag == "habit":
-            rec["habits"].add(content.strip())
+            rec["habits"].add(canonical_habit(content))
         elif tag == "habit_missed":
-            rec["missed"].add(content.strip())
+            rec["missed"].add(canonical_habit(content))
         if tag in TEXT_MINING_TAGS:
             rec["text"].append(content.lower())
+    # Habits checked off in the Habitify app never become `habit` entries — they
+    # live in this projection. Without it, every app-side check-off reads as a
+    # day with nothing done (and the auto-miss sweep's row as the only record).
+    has_completions = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'habitify_completions'"
+    ).fetchone()
+    if has_completions:
+        for habit, d in c.execute("SELECT habit, date FROM habitify_completions"):
+            days[d]["habits"].add(canonical_habit(habit))
+    for rec in days.values():
+        # Done and missed on the same day means it was marked missed and then
+        # completed (late check-off, or Habitify synced after the 22:45 sweep).
+        rec["missed"] -= rec["habits"]
     # collapse mood/energy lists to daily means
     for rec in days.values():
         rec["mood"] = float(np.mean(rec["mood"])) if rec["mood"] else None
@@ -262,7 +310,25 @@ class Finding:
     note: str = ""
 
 
-def report(days: dict, active_habit_names: set[str] | None = None) -> str:
+def _adherence_counts(
+    dated: dict, active: dict[str, str] | None
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Days done / days missed per current habit name, after resolving logged
+    spellings through `active`; retired habits drop out. A day with the same
+    habit both done and missed (under two spellings) counts as done."""
+    done_c: dict[str, int] = defaultdict(int)
+    miss_c: dict[str, int] = defaultdict(int)
+    for r in dated.values():
+        done = {n for h in r["habits"] if (n := _resolve(h, active))}
+        missed = {n for h in r["missed"] if (n := _resolve(h, active))} - done
+        for n in done:
+            done_c[n] += 1
+        for n in missed:
+            miss_c[n] += 1
+    return done_c, miss_c
+
+
+def report(days: dict, active: dict[str, str] | None = None) -> str:
     out: list[str] = []
     p = out.append
     dated = _dated_only(days)
@@ -397,15 +463,8 @@ def report(days: dict, active_habit_names: set[str] | None = None) -> str:
 
     # 7. Habit adherence (done vs missed logs)
     p(f"⑦ Habit adherence (logged done vs missed; min {MIN_N} tracked days):")
-    done_c = defaultdict(int)
-    miss_c = defaultdict(int)
-    for r in dated.values():
-        for h in r["habits"]:
-            done_c[h] += 1
-        for h in r["missed"]:
-            miss_c[h] += 1
-    candidates = _filter_to_active(set(done_c) | set(miss_c), active_habit_names)
-    tracked = [h for h in candidates if done_c[h] + miss_c[h] >= MIN_N]
+    done_c, miss_c = _adherence_counts(dated, active)
+    tracked = [h for h in set(done_c) | set(miss_c) if done_c[h] + miss_c[h] >= MIN_N]
     for h in sorted(tracked, key=lambda h: -(done_c[h] + miss_c[h]))[:12]:
         tot = done_c[h] + miss_c[h]
         rate = done_c[h] / tot if tot else 0
@@ -417,12 +476,10 @@ def report_for(db_path: str = DB_PATH) -> str:
     """Build the deterministic mining report for a given DB — used by the /mine command
     and the weekly job so they share the CLI's exact logic."""
     c = sqlite3.connect(db_path)
-    return report(load_days(c), active_habit_names(c))
+    return report(load_days(c), active_habits(c))
 
 
-def build_findings(
-    days: dict, active_habit_names: set[str] | None = None
-) -> list[Finding]:
+def build_findings(days: dict, active: dict[str, str] | None = None) -> list[Finding]:
     """The stats layer for LLM synthesis: every candidate finding, gated BEFORE
     it can reach a prompt. A row only gets verdict="report" if it clears both
     MIN_N_ADVICE and a 95% CI that excludes zero — nothing is filtered by
@@ -496,21 +553,17 @@ def build_findings(
             )
         )
 
-    # ③ habit ↔ same-day mood, as a mean-difference CI rather than a Pearson r
-    all_habits: set[str] = set()
-    for r in dated.values():
-        all_habits |= r["habits"]
+    # ③ habit ↔ same-day mood, as a mean-difference CI rather than a Pearson r.
+    # Logged spellings resolve to the current habit name; a retired habit keeps
+    # its own key — its history still says something about mood.
+    done_by_day = [
+        (r["mood"], {_resolve(h, active) or h for h in r["habits"]})
+        for r in dated.values()
+    ]
+    all_habits: set[str] = set().union(*(names for _, names in done_by_day))
     for h in sorted(all_habits):
-        done = [
-            r["mood"]
-            for r in dated.values()
-            if h in r["habits"] and r["mood"] is not None
-        ]
-        notd = [
-            r["mood"]
-            for r in dated.values()
-            if h not in r["habits"] and r["mood"] is not None
-        ]
+        done = [m for m, names in done_by_day if h in names and m is not None]
+        notd = [m for m, names in done_by_day if h not in names and m is not None]
         fid = f"habit:{h}"
         if len(done) < MIN_N_ADVICE or not notd:
             # insufficient data, not a pipeline problem — still surfaced as
@@ -704,14 +757,8 @@ def build_findings(
     # ⑦ habit adherence — descriptive only, no correlation/causal claim possible.
     # Filtered to currently active habits: a habit the user cancelled or paused
     # shouldn't keep showing up in adherence advice.
-    done_c: dict[str, int] = defaultdict(int)
-    miss_c: dict[str, int] = defaultdict(int)
-    for r in dated.values():
-        for h in r["habits"]:
-            done_c[h] += 1
-        for h in r["missed"]:
-            miss_c[h] += 1
-    for h in sorted(_filter_to_active(set(done_c) | set(miss_c), active_habit_names)):
+    done_c, miss_c = _adherence_counts(dated, active)
+    for h in sorted(set(done_c) | set(miss_c)):
         tot = done_c[h] + miss_c[h]
         if tot < MIN_N_ADVICE:
             continue
@@ -804,13 +851,20 @@ def _findings_prompt_block(findings: list[Finding]) -> str:
     )
 
 
+_TRAILING_CITATIONS = re.compile(r"(?:\s*\[[^\]]+\])+\s*$")
+
+
 def _validate_citations(text: str, valid_ids: set[str]) -> str:
-    """Drop any bullet whose trailing [id] citation doesn't resolve to a real
-    finding id — including bullets with no citation at all. This is the
+    """Keep only bullets whose trailing [id] citations all resolve to real
+    finding ids — including dropping bullets with no citation at all. This is the
     backstop against the failure mode that caused the fabricated weight
     correlation and the "notable" n=6 read: an LLM can still free-write a
     claim even when told not to, so anything it can't tie back to a specific
-    row in the input gets cut rather than trusted."""
+    row in the input gets cut rather than trusted.
+
+    Non-bullet lines go too: they're either the model's "Here are 4-6 pieces of
+    advice…" preamble or a free-standing claim that would dodge the citation
+    check. Kept bullets are rejoined evenly, so a dropped one leaves no gap."""
     kept: list[str] = []
     dropped = 0
     for line in text.splitlines():
@@ -819,14 +873,14 @@ def _validate_citations(text: str, valid_ids: set[str]) -> str:
             re.match(r"^\d+[.)]", stripped)
         )
         if not is_bullet:
-            kept.append(line)
             continue
-        m = re.search(r"\[([\w:.\- ]+)\]\s*$", stripped)
-        if m and m.group(1) in valid_ids:
-            kept.append(line)
+        trailing = _TRAILING_CITATIONS.search(stripped)
+        cited = re.findall(r"\[([^\]]+)\]", trailing.group(0)) if trailing else []
+        if cited and all(c in valid_ids for c in cited):
+            kept.append(stripped)
         else:
             dropped += 1
-    result = "\n".join(kept)
+    result = "\n\n".join(kept)
     if dropped:
         result += f"\n\n({dropped} uncited or unresolved claim(s) dropped.)"
     return result
@@ -860,7 +914,8 @@ async def advise(findings: list[Finding]) -> str:
         "What each finding's causal footing licenses in prose:\n"
         f"{guidance}\n\n"
         "Give me 4-6 specific, direct pieces of advice. End every bullet with its finding id "
-        "in brackets, e.g. '... [corr:mood_energy]'. No moralizing, no therapy voice."
+        "in brackets, e.g. '... [corr:mood_energy]'. Reply with the bullets only — no intro "
+        "line, no closing summary. No moralizing, no therapy voice."
     )
 
     import anthropic
@@ -880,7 +935,7 @@ async def advise_for(db_path: str = DB_PATH) -> str:
     advise and the weekly job. Independent of report_for(): the advice path
     reads structured findings, never the printed report's free text."""
     c = sqlite3.connect(db_path)
-    findings = build_findings(load_days(c), active_habit_names(c))
+    findings = build_findings(load_days(c), active_habits(c))
     return await advise(findings)
 
 
@@ -900,7 +955,7 @@ async def main() -> None:
         print(affect_report(load_affect_pairs(c)))
         return
     days = load_days(c)
-    active = active_habit_names(c)
+    active = active_habits(c)
     print(report(days, active))
     if args.advise:
         print("\n═══ SYNTHESIS ═══")

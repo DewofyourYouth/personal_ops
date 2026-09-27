@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import html
+import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -469,6 +470,9 @@ class Logs:
             s["habits"] = [
                 e["content"].strip().lower() for e in entries if e.get("tag") == "habit"
             ]
+            s["habits"] += [
+                h for h in self._habitify_completions_for(d) if h not in s["habits"]
+            ]
             s["skips"] = [
                 e["content"].strip() for e in entries if e.get("tag") == "skip"
             ]
@@ -497,9 +501,24 @@ class Logs:
             stats[str(d)] = s
         return stats
 
+    def _habitify_completions_for(self, d: date) -> list[str]:
+        """Habits checked off in the Habitify app on `d`, lowercased. Those land in
+        the habitify_completions projection, not as `habit` entries — a stat that
+        reads entries alone reports those days as having no habit logging."""
+        try:
+            rows = self.db.query(
+                "SELECT habit FROM habitify_completions WHERE date = ?",
+                (d.isoformat(),),
+            )
+        except sqlite3.OperationalError:
+            return []  # table only exists once HabitHandlers has set up its schema
+        return [r["habit"].strip().lower() for r in rows]
+
     def format_stats_for_prompt(self, days: int = 7) -> str:
         stats = self.compute_stats(days=days)
-        days_with_data = [s for s in stats.values() if s["completion"] or s["wins"]]
+        days_with_data = [
+            s for s in stats.values() if s["completion"] or s["wins"] or s["habits"]
+        ]
         if not days_with_data:
             return ""
 
@@ -546,7 +565,12 @@ class Logs:
         from collections import Counter
 
         habit_counts: Counter = Counter()
-        days_with_habit_logging = sum(1 for s in stats.values() if s["habits"])
+        # Shabbat is out of the denominator below, so keep it out of this count too.
+        days_with_habit_logging = sum(
+            1
+            for d, s in stats.items()
+            if s["habits"] and date.fromisoformat(d).weekday() != 5
+        )
         for s in stats.values():
             habit_counts.update(set(s["habits"]))  # count days, not occurrences
         if habit_counts:
@@ -564,7 +588,7 @@ class Logs:
             trackable_days = habit_window - shabbat_in_window
             lines.append("\n## Habit log\n")
             lines.append(
-                f"_(logged via `habit:` prefix; {days_with_habit_logging}/{trackable_days} non-Shabbat days had any habit entries"
+                f"_(logged via Habitify or the `habit:` prefix; {days_with_habit_logging}/{trackable_days} non-Shabbat days had any habit entries"
                 + (
                     f" — habit tracking started {earliest_habit})"
                     if earliest_habit and habit_days < days

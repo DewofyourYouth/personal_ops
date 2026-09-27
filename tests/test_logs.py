@@ -294,3 +294,23 @@ def test_read_skips_reminder_noise(tmp_path):
     text = logs.read_recent(days=1)
     assert "real content" in text
     assert "What are you doing" not in text
+
+
+def test_compute_stats_counts_habitify_app_completions(log_dir):
+    """Regression: habits checked off in the Habitify app live only in
+    habitify_completions, and the weekly digest reported "1/6 days had any habit
+    entries" because compute_stats read entries alone."""
+    log_dir.write("habit", "Anki")
+    log_dir.db.execute(
+        "CREATE TABLE habitify_completions "
+        "(habitify_id TEXT, date TEXT, habit TEXT, PRIMARY KEY (habitify_id, date))"
+    )
+    for hid, name in [("h1", "Anki"), ("h2", "Tefillin")]:
+        log_dir.db.execute(
+            "INSERT INTO habitify_completions VALUES (?, ?, ?)",
+            (hid, _today().isoformat(), name),
+        )
+
+    habits = log_dir.compute_stats(days=1)[str(_today())]["habits"]
+
+    assert sorted(habits) == ["anki", "tefillin"]

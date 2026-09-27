@@ -35,9 +35,12 @@ from mine_logs import (
     _corr_ci95,
     _mean_diff_ci95,
     _validate_citations,
+    active_habits,
     advise,
     build_findings,
+    canonical_habit,
     load_affect_pairs,
+    load_days,
 )
 
 TZ = ZoneInfo("Asia/Jerusalem")
@@ -244,6 +247,125 @@ def test_validate_citations_keeps_only_resolved_ids():
     assert "Habits correlate with weight loss somehow" not in result
     assert "Just a header with no citation" not in result
     assert "2 uncited or unresolved claim(s) dropped" in result
+
+
+def test_validate_citations_drops_preamble_and_leaves_no_gaps():
+    """Regression: the weekly message led with the model's "Here are 4-6 pieces
+    of advice…" line and had a blank hole where each dropped bullet had been."""
+    text = (
+        "Here are 4-6 pieces of advice grounded strictly in your findings:\n\n"
+        "- First. [trend:weight]\n\n"
+        "- Made up. [corr:nope]\n\n"
+        "- Second. [corr:mood_energy]\n"
+    )
+    result = _validate_citations(text, {"trend:weight", "corr:mood_energy"})
+
+    assert "Here are" not in result
+    assert result.startswith("- First. [trend:weight]\n\n- Second.")
+    assert "\n\n\n" not in result
+
+
+def test_validate_citations_requires_every_trailing_citation_to_resolve():
+    ok = "- Both real. [trend:weight] [corr:mood_energy]"
+    bad = "- One fake. [corr:nope] [trend:weight]"
+    result = _validate_citations(f"{ok}\n{bad}", {"trend:weight", "corr:mood_energy"})
+
+    assert "Both real" in result
+    assert "One fake" not in result
+
+
+# ── habit loading ────────────────────────────────────────────────────────
+
+
+def test_canonical_habit_merges_logged_variants():
+    """Regression: old rows logged the full definition or other casing as the
+    name, so one habit split into several adherence rows — the miss-only
+    variants read as a stricter habit stuck at 0%."""
+    assert canonical_habit("brush teeth") == canonical_habit("Brush teeth")
+    assert canonical_habit(
+        "Weigh in — at least 3x/week, morning, log in Apple Health"
+    ) == canonical_habit("Weigh in")
+    assert canonical_habit("Shacharit (07:00–08:00)") == canonical_habit("Shacharit")
+    assert canonical_habit("10:00–11:00 Yoma chavrusa") == canonical_habit(
+        "Yoma chavrusa"
+    )
+    assert canonical_habit("Eat at least 100 grams of protein.") == (
+        "eat at least 100 grams of protein."
+    )
+
+
+def test_load_days_counts_habitify_app_completions(tmp_path):
+    """Regression: check-offs made in the Habitify app only land in
+    habitify_completions, so the miner saw those days as nothing done — and a
+    same-day auto-miss row as the only record."""
+    logs = Logs(str(tmp_path))
+    logs.write("habit_missed", "Core Training", when=_dt(22, 45))
+    logs.db.execute(
+        "CREATE TABLE habitify_completions "
+        "(habitify_id TEXT, date TEXT, habit TEXT, PRIMARY KEY (habitify_id, date))"
+    )
+    logs.db.execute(
+        "INSERT INTO habitify_completions VALUES ('h1', '2026-07-10', 'Core Training')"
+    )
+
+    day = load_days(sqlite3.connect(logs.db.path))["2026-07-10"]
+
+    assert day["habits"] == {canonical_habit("Core Training")}
+    assert day["missed"] == set()
+
+
+def _alternating_days(done_key: str, missed_key: str) -> dict:
+    days = {}
+    for i in range(MIN_N_ADVICE + 1):
+        d = _base_day()
+        if i % 2:
+            d["habits"] = {done_key}
+        else:
+            d["missed"] = {missed_key}
+        days[f"2026-01-{i + 1:02d}"] = d
+    return days
+
+
+def test_adherence_merges_aliased_spellings_into_the_current_habit(tmp_path):
+    """Regression: "Strength training — 3x/week minimum" (miss-only) and
+    "Strength training" (mostly done) were separate rows, and the advice said to
+    kill the 0% "stricter variant". The habit_aliases table already maps the old
+    spelling to Core Training — adherence must count it there."""
+    logs = Logs(str(tmp_path))
+    c = sqlite3.connect(logs.db.path)
+    c.executescript(
+        "CREATE TABLE habits (id INTEGER PRIMARY KEY, name TEXT, tracked INTEGER,"
+        " paused_until TEXT);"
+        "CREATE TABLE habit_aliases (habit_id INTEGER, alias TEXT);"
+        "INSERT INTO habits VALUES (1, 'Core Training', 1, '');"
+        "INSERT INTO habits VALUES (2, 'Take morning meds', 0, '');"
+        "INSERT INTO habit_aliases VALUES "
+        "(1, 'Strength training — 3x/week minimum');"
+    )
+    days = _alternating_days(
+        canonical_habit("Strength training"),
+        canonical_habit("Strength training — 3x/week minimum"),
+    )
+    for d in days.values():
+        d["habits"].add(canonical_habit("Take morning meds"))  # untracked
+
+    findings = {f.id: f for f in build_findings(days, active_habits(c))}
+    adherence = [i for i in findings if i.startswith("adherence:")]
+
+    assert adherence == ["adherence:Core Training"]
+    assert findings["adherence:Core Training"].n == MIN_N_ADVICE + 1
+
+
+def test_adherence_counts_same_day_done_and_missed_as_done():
+    days = _alternating_days(canonical_habit("Weigh in"), canonical_habit("Weigh in"))
+    for d in days.values():
+        d["habits"] = {canonical_habit("Weigh in")}
+        d["missed"] = {canonical_habit("Weigh in — at least 3x/week, morning")}
+    active = {canonical_habit("Weigh in"): "Weigh in"}
+
+    f = next(f for f in build_findings(days, active) if f.id == "adherence:Weigh in")
+
+    assert f.stat.startswith("100% done")
 
 
 def test_advise_skips_the_llm_when_nothing_survives_the_gate(monkeypatch):
