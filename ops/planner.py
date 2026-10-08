@@ -72,6 +72,35 @@ _HIDDEN_DATA_NOTE = (
 )
 
 
+# Pre-built analyses the feedback/hypothesis query planner can request instead of
+# writing raw SQL for them. Some things a question might need — a correlation, a
+# nearest-timestamp pairing — aren't expressible as a single SELECT and asking an
+# LLM to eyeball a wall of joined rows and estimate a correlation itself is not
+# reliable; this is exactly the "deterministic core" the rest of this file keeps
+# to. One entry today (the voice-affect proxy mine_logs.py's /mine affect already
+# computes); add more here as the same gap shows up for other data shapes.
+_FEEDBACK_REPORTS: dict[str, str] = {
+    "voice_affect_correlation": (
+        "Correlates each voice note's auto-extracted prosody (speech rate, pause "
+        "length/count, pitch variance, energy) against the nearest "
+        "self_mood_rating tap within 30 minutes, reporting r and n per feature. "
+        "Use this for any question about whether voice/speech characteristics "
+        "relate to mood or energy — never estimate a correlation yourself from "
+        "raw joined rows."
+    ),
+}
+
+
+def _run_feedback_report(db_path: str, name: str) -> str:
+    """Run one named report. Caught by the caller — a report blowing up (e.g. no
+    pairs yet) must degrade to less context, same as a failed SQL query."""
+    import mine_logs
+
+    if name == "voice_affect_correlation":
+        return mine_logs.affect_report_for(db_path)
+    return ""
+
+
 class Planner:
     def __init__(self, model: str, logs: Logs, context: Context | None = None):
         self.model = model
@@ -704,12 +733,15 @@ class Planner:
         )
         return "\n\n".join(r["sql"] for r in rows if r["sql"])
 
-    async def _plan_feedback_queries(self, client, question: str) -> list[str]:
-        """Ask the model what data would answer `question`, as SQL against the
-        live schema — reasoning about what it needs to see, rather than always
-        pulling the same fixed 30-day bundle regardless of what was asked.
-        The DB call itself stays a deterministic read (see _is_safe_select);
-        only the choice of *what* to look at is the model's job.
+    async def _plan_feedback_queries(self, client, question: str) -> dict:
+        """Ask the model what data would answer `question` — SQL against the live
+        schema, plus any pre-built report (see _FEEDBACK_REPORTS) whose analysis
+        can't be expressed as a single SELECT — rather than always pulling the
+        same fixed 30-day bundle regardless of what was asked. Both stay
+        deterministic reads (see _is_safe_select, _run_feedback_report); only the
+        choice of *what* to look at is the model's job.
+
+        Returns {"queries": list[str], "reports": list[str]}.
         """
         try:
             response = await client.messages.create(
@@ -719,9 +751,10 @@ class Planner:
                     {
                         "name": "select_queries",
                         "description": (
-                            "Write SQL SELECT queries against the user's own log "
-                            "database to fetch exactly the data needed to answer "
-                            "their question."
+                            "Write SQL SELECT queries (and/or request pre-built "
+                            "reports) against the user's own log database to "
+                            "fetch exactly the data needed to answer their "
+                            "question."
                         ),
                         "input_schema": {
                             "type": "object",
@@ -730,15 +763,33 @@ class Planner:
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": (
-                                        "1-5 read-only SQLite SELECT statements. Prefer "
+                                        "0-5 read-only SQLite SELECT statements. Prefer "
                                         "targeted WHERE/LIKE filters and date ranges over "
                                         "dumping whole tables; add LIMIT for anything that "
                                         "could be large. Empty array if the question needs "
-                                        "no data lookup at all."
+                                        "no raw-row lookup."
                                     ),
-                                }
+                                },
+                                "reports": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": list(_FEEDBACK_REPORTS),
+                                    },
+                                    "description": (
+                                        "Pre-built analyses to run instead of writing raw "
+                                        "SQL for them — some things (a correlation, a "
+                                        "nearest-timestamp pairing) need real computation, "
+                                        "not a query you'd have to eyeball yourself. "
+                                        "Available: "
+                                        + "; ".join(
+                                            f"'{k}' — {v}"
+                                            for k, v in _FEEDBACK_REPORTS.items()
+                                        )
+                                    ),
+                                },
                             },
-                            "required": ["queries"],
+                            "required": ["queries", "reports"],
                         },
                     }
                 ],
@@ -763,7 +814,10 @@ class Planner:
                     "FROM entries` and/or `SELECT DISTINCT key FROM metrics` — "
                     "rather than guessing from column names alone and concluding "
                     "something isn't tracked when it might just be stored "
-                    "somewhere non-obvious.\n\n"
+                    "somewhere non-obvious. If the question needs a correlation or "
+                    "similar computed analysis, prefer a matching report over "
+                    "writing SQL you'd have to eyeball — a raw joined-rows dump is "
+                    "not a substitute for actually computing the statistic.\n\n"
                     "Read-only: never write or alter data."
                 ),
                 messages=[{"role": "user", "content": f"Question: {question}"}],
@@ -771,10 +825,16 @@ class Planner:
             for block in response.content:
                 if block.type == "tool_use":
                     queries = block.input.get("queries", [])
-                    return [q for q in queries if isinstance(q, str) and q.strip()][:5]
+                    reports = block.input.get("reports", [])
+                    return {
+                        "queries": [
+                            q for q in queries if isinstance(q, str) and q.strip()
+                        ][:5],
+                        "reports": [r for r in reports if r in _FEEDBACK_REPORTS],
+                    }
         except Exception:
             pass
-        return []
+        return {"queries": [], "reports": []}
 
     def _run_feedback_queries(self, queries: list[str]) -> str:
         """Execute the planned queries and render their results as prompt text.
@@ -799,6 +859,21 @@ class Planner:
             lines = [" | ".join(cols)]
             lines += [" | ".join(str(r[c]) for c in cols) for r in rows[:200]]
             blocks.append(f"Query: {q}\n" + "\n".join(lines))
+        return "\n\n".join(blocks)
+
+    def _run_feedback_reports(self, reports: list[str]) -> str:
+        """Run each requested pre-built report (see _FEEDBACK_REPORTS). A report
+        that errors (e.g. no paired data yet) is skipped, not fatal — same
+        degrade-gracefully contract as _run_feedback_queries."""
+        blocks = []
+        for name in reports:
+            try:
+                text = _run_feedback_report(self.logs.db.path, name)
+            except Exception as e:
+                blocks.append(f"Report: {name}\n(failed: {e})")
+                continue
+            if text:
+                blocks.append(text)
         return "\n\n".join(blocks)
 
     def _known_taxonomy_block(self) -> str:
@@ -851,10 +926,14 @@ class Planner:
         state = anchor_flow_state(self.logs)
 
         # Two-phase retrieval: first ask what data would answer THIS question (the
-        # model writes SQL against the live schema), then fetch exactly that —
-        # rather than always dumping the same fixed bundle regardless of the ask.
-        queries = await self._plan_feedback_queries(client, text)
-        data_block = self._run_feedback_queries(queries) if queries else ""
+        # model writes SQL and/or requests a pre-built report against the live
+        # schema), then fetch exactly that — rather than always dumping the same
+        # fixed bundle regardless of the ask.
+        plan = await self._plan_feedback_queries(client, text)
+        data_block = self._run_feedback_queries(plan["queries"])
+        report_text = self._run_feedback_reports(plan["reports"])
+        if report_text:
+            data_block = f"{data_block}\n\n{report_text}" if data_block else report_text
 
         # Deterministic, not left to the planning LLM's discretion: the real tag/
         # metric-key taxonomy, so "is X tracked" never depends on the model having
@@ -1886,11 +1965,19 @@ class Planner:
 
         # Many hypotheses aren't actually new — they're about something already
         # being logged (the voice-affect case: affect_features + self_mood_rating
-        # already exist and already pair up). Check existing data with the same
-        # SQL-planning mechanism feedback() uses before treating this as a test
-        # that starts from zero.
-        queries = await self._plan_feedback_queries(client, text)
-        existing_data_text = self._run_feedback_queries(queries) if queries else ""
+        # already exist and already pair up, and mine_logs.py already computes
+        # that correlation). Check existing data with the same SQL/report
+        # planning mechanism feedback() uses before treating this as a test that
+        # starts from zero.
+        plan = await self._plan_feedback_queries(client, text)
+        existing_data_text = self._run_feedback_queries(plan["queries"])
+        report_text = self._run_feedback_reports(plan["reports"])
+        if report_text:
+            existing_data_text = (
+                f"{existing_data_text}\n\n{report_text}"
+                if existing_data_text
+                else report_text
+            )
 
         response = await client.messages.create(
             model=self.model,
