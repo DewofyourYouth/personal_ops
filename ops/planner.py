@@ -733,7 +733,25 @@ class Planner:
                     "`content`, its category in `tag` (insight, hypothesis, note, "
                     "task, friction, win, checkin, habit, food, backlog, feedback, "
                     "log, ...). For 'what did I say about X' questions, search "
-                    "`content` with LIKE. Read-only: never write or alter data."
+                    "`content` with LIKE.\n\n"
+                    "`entries.extra` and `metrics.key` hold more than the obvious "
+                    "columns suggest — don't assume you already know the full "
+                    "taxonomy just from the column names. `extra` is a JSON blob "
+                    "carrying tag-specific structured data (e.g. a voice note's "
+                    'entry carries {"affect_features": {speech_rate, pause_ms, '
+                    "pitch_var, energy, ...}} — prosody extracted from the audio, "
+                    "queryable with `extra LIKE '%affect_features%'` then "
+                    "json_extract). `metrics.key` is not limited to mood/energy/"
+                    "sleep/steps/weight — e.g. 'self_mood_rating' is a separate "
+                    "ground-truth tap used to validate voice affect against. "
+                    "Before answering a question that depends on what data exists "
+                    "(especially anything exploratory, a correlation, or 'is X "
+                    "tracked'), include a discovery query — `SELECT DISTINCT tag "
+                    "FROM entries` and/or `SELECT DISTINCT key FROM metrics` — "
+                    "rather than guessing from column names alone and concluding "
+                    "something isn't tracked when it might just be stored "
+                    "somewhere non-obvious.\n\n"
+                    "Read-only: never write or alter data."
                 ),
                 messages=[{"role": "user", "content": f"Question: {question}"}],
             )
