@@ -610,6 +610,9 @@ def _hypothesis_summary(result: dict) -> str:
         lines.append(f"✅ Confirm: {esc(result['confirm_if'])}")
     if result.get("falsify_if"):
         lines.append(f"❌ Falsify: {esc(result['falsify_if'])}")
+    if result.get("current_read"):
+        lines.append("")
+        lines.append(f"📈 Already: {esc(result['current_read'])}")
 
     if result.get("metrics"):
         lines.append("")

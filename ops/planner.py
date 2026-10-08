@@ -52,6 +52,26 @@ def _is_safe_select(sql: str) -> bool:
     return not _SQL_WRITE_KEYWORDS.search(s)
 
 
+# Shared across every LLM call that has to reason about what's already measurable.
+# The obvious columns (entries.content/tag, metrics.key's common values) undersell
+# what's actually tracked — without this note, a call has no way to discover the
+# real taxonomy and will confidently invent a redundant new tracking mechanism for
+# something that already exists automatically. This independently bit both
+# feedback()'s query planning and evaluate_hypothesis's test setup before each
+# carried this note — kept as one shared fact so it can't drift out of sync again.
+_HIDDEN_DATA_NOTE = (
+    "`entries.extra` and `metrics.key` hold more than the obvious columns "
+    "suggest — don't assume you already know the full taxonomy. `extra` is a "
+    "JSON blob carrying tag-specific structured data (e.g. a voice note's "
+    'entry carries {"affect_features": {speech_rate, pause_ms, pitch_var, '
+    "energy, ...}} — prosody extracted from the audio automatically, no manual "
+    "logging involved). `metrics.key` is not limited to mood/energy/sleep/"
+    "steps/weight — e.g. 'self_mood_rating' is a separate ground-truth tap "
+    "already collected right after voice notes, specifically to compare "
+    "against that automatic affect data."
+)
+
+
 class Planner:
     def __init__(self, model: str, logs: Logs, context: Context | None = None):
         self.model = model
@@ -734,16 +754,9 @@ class Planner:
                     "task, friction, win, checkin, habit, food, backlog, feedback, "
                     "log, ...). For 'what did I say about X' questions, search "
                     "`content` with LIKE.\n\n"
-                    "`entries.extra` and `metrics.key` hold more than the obvious "
-                    "columns suggest — don't assume you already know the full "
-                    "taxonomy just from the column names. `extra` is a JSON blob "
-                    "carrying tag-specific structured data (e.g. a voice note's "
-                    'entry carries {"affect_features": {speech_rate, pause_ms, '
-                    "pitch_var, energy, ...}} — prosody extracted from the audio, "
-                    "queryable with `extra LIKE '%affect_features%'` then "
-                    "json_extract). `metrics.key` is not limited to mood/energy/"
-                    "sleep/steps/weight — e.g. 'self_mood_rating' is a separate "
-                    "ground-truth tap used to validate voice affect against. "
+                    + _HIDDEN_DATA_NOTE
+                    + " Queryable with `extra LIKE '%affect_features%'` then "
+                    "json_extract.\n\n"
                     "Before answering a question that depends on what data exists "
                     "(especially anything exploratory, a correlation, or 'is X "
                     "tracked'), include a discovery query — `SELECT DISTINCT tag "
@@ -788,6 +801,49 @@ class Planner:
             blocks.append(f"Query: {q}\n" + "\n".join(lines))
         return "\n\n".join(blocks)
 
+    def _known_taxonomy_block(self) -> str:
+        """The real tag/metric-key taxonomy, fetched deterministically — not left
+        to the planning LLM to discover (or forget to).
+
+        _plan_feedback_queries nudges the model to run a DISTINCT discovery query
+        before concluding something isn't tracked, but a prompt nudge to a fast/
+        cheap model is a suggestion, not a guarantee — it can still skip it and
+        confidently assert something doesn't exist when it does (this is exactly
+        what happened with voice affect_features/self_mood_rating). Two cheap,
+        always-safe queries cost nothing to just always run, so the real
+        taxonomy is in front of the final answer regardless of what the planning
+        step chose to ask for.
+        """
+        try:
+            tags = sorted(
+                {
+                    r["tag"]
+                    for r in self.logs.db.query("SELECT DISTINCT tag FROM entries")
+                }
+            )
+        except Exception:
+            tags = []
+        try:
+            keys = sorted(
+                {
+                    r["key"]
+                    for r in self.logs.db.query("SELECT DISTINCT key FROM metrics")
+                }
+            )
+        except Exception:
+            keys = []
+        lines = [_HIDDEN_DATA_NOTE]
+        if tags or keys:
+            lines.append(
+                "\nKnown taxonomy (what's actually logged — trust this over any "
+                "assumption about what is or isn't tracked):"
+            )
+            if tags:
+                lines.append(f"- entries.tag values in use: {', '.join(tags)}")
+            if keys:
+                lines.append(f"- metrics.key values in use: {', '.join(keys)}")
+        return "\n".join(lines)
+
     async def feedback(self, text: str) -> str:
         from habit_tracker import anchor_flow_state
 
@@ -799,6 +855,15 @@ class Planner:
         # rather than always dumping the same fixed bundle regardless of the ask.
         queries = await self._plan_feedback_queries(client, text)
         data_block = self._run_feedback_queries(queries) if queries else ""
+
+        # Deterministic, not left to the planning LLM's discretion: the real tag/
+        # metric-key taxonomy, so "is X tracked" never depends on the model having
+        # bothered to check.
+        taxonomy_text = self._known_taxonomy_block()
+        if taxonomy_text:
+            data_block = (
+                f"{taxonomy_text}\n\n{data_block}" if data_block else taxonomy_text
+            )
 
         # The durable ledger — recurring reflections plus the weekly/monthly rollup
         # — rides along on every call regardless of the question. It's small, and
@@ -1807,6 +1872,8 @@ class Planner:
           - restatement: str — the hypothesis sharpened to one sentence
           - confirm_if: str — what would confirm it (short phrase)
           - falsify_if: str — what would falsify it (short phrase)
+          - current_read: str — what existing data already shows, if enough of it
+            exists to say anything (empty string otherwise)
           - metrics: list of {"key": str, "description": str}
           - habits: list of str — habit names to watch
           - follow_up_days: int — days until check-in
@@ -1815,6 +1882,16 @@ class Planner:
         """
         client = anthropic.AsyncAnthropic(max_retries=2)
         today = date.today().isoformat()
+        taxonomy_text = self._known_taxonomy_block()
+
+        # Many hypotheses aren't actually new — they're about something already
+        # being logged (the voice-affect case: affect_features + self_mood_rating
+        # already exist and already pair up). Check existing data with the same
+        # SQL-planning mechanism feedback() uses before treating this as a test
+        # that starts from zero.
+        queries = await self._plan_feedback_queries(client, text)
+        existing_data_text = self._run_feedback_queries(queries) if queries else ""
+
         response = await client.messages.create(
             model=self.model,
             max_tokens=600,
@@ -1827,10 +1904,25 @@ class Planner:
                         "not prose. No preamble, no narrative, no advice.\n\n"
                         "- restatement: sharpen the hypothesis to ONE sentence.\n"
                         "- confirm_if / falsify_if: a short phrase each, not a paragraph.\n"
-                        "- metrics: 1-2 max, only what's genuinely measurable. Keys are short "
-                        "snake_case (e.g. shami_cards, prep_hours). description = what/when to log, terse.\n"
-                        "- habits: only existing/new habits genuinely relevant as signals; often none.\n"
-                        "- follow-up in 14-21 days."
+                        "- current_read: if the existing data below already lets you say "
+                        "something about this hypothesis RIGHT NOW, state it in 1-2 terse "
+                        "sentences with actual numbers (a count, a correlation, a trend). "
+                        "Empty string if there genuinely isn't enough existing data yet — "
+                        "never speculate or pad this out.\n"
+                        "- metrics: 1-2 max, only what's genuinely measurable AND not "
+                        "already covered by current_read/existing data. Keys are short "
+                        "snake_case (e.g. shami_cards, prep_hours). description = what/when "
+                        "to log, terse.\n"
+                        "- habits: only existing/new habits genuinely relevant as signals; "
+                        "often none.\n"
+                        "- follow-up in 14-21 days.\n\n"
+                        + taxonomy_text
+                        + "\n\nBefore proposing a new metric, check whether the hypothesis "
+                        "is actually already measurable with something already tracked "
+                        "above, or with the existing data provided below — if so, say so "
+                        "plainly in current_read/confirm_if and reuse the EXISTING key "
+                        "rather than inventing a new one that duplicates hand-logging "
+                        "something already captured automatically."
                     ),
                     "cache_control": {"type": "ephemeral"},
                 },
@@ -1858,6 +1950,14 @@ class Planner:
                             "falsify_if": {
                                 "type": "string",
                                 "description": "What would falsify it — short phrase",
+                            },
+                            "current_read": {
+                                "type": "string",
+                                "description": (
+                                    "What existing data already shows about this "
+                                    "hypothesis, with real numbers. Empty string if "
+                                    "there isn't enough existing data yet."
+                                ),
                             },
                             "metrics": {
                                 "type": "array",
@@ -1895,6 +1995,7 @@ class Planner:
                             "restatement",
                             "confirm_if",
                             "falsify_if",
+                            "current_read",
                             "metrics",
                             "follow_up_days",
                             "follow_up_note",
@@ -1904,7 +2005,17 @@ class Planner:
             ],
             tool_choice={"type": "tool", "name": "setup_hypothesis_tracking"},
             messages=[
-                {"role": "user", "content": f"Today is {today}. Hypothesis: {text}"}
+                {
+                    "role": "user",
+                    "content": (
+                        f"Today is {today}. Hypothesis: {text}"
+                        + (
+                            f"\n\nExisting logged data relevant to this hypothesis:\n{existing_data_text}"
+                            if existing_data_text
+                            else ""
+                        )
+                    ),
+                }
             ],
         )
 
@@ -1918,6 +2029,7 @@ class Planner:
                     "restatement": d["restatement"],
                     "confirm_if": d["confirm_if"],
                     "falsify_if": d["falsify_if"],
+                    "current_read": d.get("current_read", ""),
                     "metrics": d.get("metrics", []),
                     "habits": d.get("habits", []),
                     "follow_up_days": d["follow_up_days"],
@@ -1929,6 +2041,7 @@ class Planner:
             "restatement": text,
             "confirm_if": "",
             "falsify_if": "",
+            "current_read": "",
             "metrics": [],
             "habits": [],
             "follow_up_days": 14,

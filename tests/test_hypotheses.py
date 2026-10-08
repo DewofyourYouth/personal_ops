@@ -107,3 +107,33 @@ def test_summary_is_compact_and_escaped():
     assert "Check back" in out
     # Terse: no multi-paragraph narrative.
     assert out.count("\n") < 8
+
+
+def test_summary_shows_current_read_when_present():
+    """A hypothesis already checkable with existing data surfaces that read,
+    escaped, instead of only ever looking like a test starting from zero."""
+    result = {
+        "restatement": "voice speed correlates with mood",
+        "confirm_if": "r >= 0.3 over 10+ paired samples",
+        "falsify_if": "no consistent pattern after 3 weeks",
+        "current_read": "12 voice notes have affect_features & 4 have a mood tap",
+        "metrics": [],
+        "habits": [],
+    }
+    out = _hypothesis_summary(result)
+    assert (
+        "📈 Already: 12 voice notes have affect_features &amp; 4 have a mood tap" in out
+    )
+
+
+def test_summary_omits_current_read_when_empty():
+    result = {
+        "restatement": "a brand new idea",
+        "confirm_if": "x",
+        "falsify_if": "y",
+        "current_read": "",
+        "metrics": [],
+        "habits": [],
+    }
+    out = _hypothesis_summary(result)
+    assert "📈" not in out
