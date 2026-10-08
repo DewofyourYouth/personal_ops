@@ -143,3 +143,28 @@ async def test_feedback_falls_back_gracefully_when_planning_fails(planner):
         result = await planner.feedback("any thoughts?")
 
     assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_feedback_query_planning_prompt_surfaces_hidden_data(planner):
+    """Regression: the planner once confidently told the user that voice-note
+    prosody (affect_features) and the self_mood_rating ground-truth tap weren't
+    tracked anywhere — both are real, just stored somewhere a plain read of the
+    column names wouldn't reveal (a JSON blob in entries.extra; a metrics.key
+    value outside the obvious mood/energy/sleep/steps/weight set). The planning
+    prompt must name both explicitly and push the model to run a discovery
+    query instead of guessing from column names and concluding 'not tracked'."""
+    fake_tool_response = SimpleNamespace(
+        content=[SimpleNamespace(type="tool_use", input={"queries": []})]
+    )
+    fake_final_response = SimpleNamespace(content=[SimpleNamespace(text="ok")])
+
+    with patch("planner.anthropic.AsyncAnthropic") as mock_client:
+        create = AsyncMock(side_effect=[fake_tool_response, fake_final_response])
+        mock_client.return_value.messages.create = create
+        await planner.feedback("does my voice speed correlate with my mood?")
+
+    planning_call_system = create.call_args_list[0].kwargs["system"]
+    assert "affect_features" in planning_call_system
+    assert "self_mood_rating" in planning_call_system
+    assert "DISTINCT" in planning_call_system
