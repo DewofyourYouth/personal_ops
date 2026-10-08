@@ -152,3 +152,39 @@ async def test_evaluate_hypothesis_current_read_defaults_empty(planner):
         result = await planner.evaluate_hypothesis("brand new idea with no history")
 
     assert result["current_read"] == ""
+
+
+@pytest.mark.asyncio
+async def test_evaluate_hypothesis_requested_report_reaches_the_setup_call(planner):
+    """Regression: even once it knew the data existed, the setup call could only
+    describe a future SQL join — it never actually ran the correlation
+    mine_logs.py already computes. A requested report's real numbers (r, n) must
+    reach the setup call so current_read can cite them instead of a query plan."""
+    fake_plan_response = SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                type="tool_use",
+                input={"queries": [], "reports": ["voice_affect_correlation"]},
+            )
+        ]
+    )
+    fake_setup_response = _fake_tool_response(
+        current_read="speech_rate r=+0.41 (n=12) vs self_mood_rating."
+    )
+
+    with (
+        patch("planner.anthropic.AsyncAnthropic") as mock_client,
+        patch(
+            "mine_logs.affect_report_for",
+            return_value="═══ AFFECT PROXY REPORT ═══\n   speech_rate    r=+0.41  (n=12)",
+        ),
+    ):
+        create = AsyncMock(side_effect=[fake_plan_response, fake_setup_response])
+        mock_client.return_value.messages.create = create
+        result = await planner.evaluate_hypothesis(
+            "voice speed correlates with my mood"
+        )
+
+    assert "r=+0.41" in result["current_read"]
+    setup_call_messages = create.call_args_list[-1].kwargs["messages"]
+    assert "r=+0.41" in setup_call_messages[0]["content"]
