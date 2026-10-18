@@ -22,17 +22,16 @@ import html
 import logging
 from datetime import date, datetime
 
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
 import voice
 from agenda_handlers import AgendaHandlers
 from bot_constants import STATUS_ICONS
 from gcal import GCal
 from habit_handlers import HabitHandlers
+from location import current_tz
 from planner import Planner, day_type
 from rich import send_rich_message
-from location import current_tz
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 _log = logging.getLogger(__name__)
 
@@ -76,6 +75,10 @@ class StatusHandlers:
 
     def _agenda_section(self) -> str:
         status = self.agenda_feature.status_text()
+        if status is None and not getattr(
+            self.agenda_feature, "generation_enabled", True
+        ):
+            return ""
         if status is None:
             return "📋 <b>Agenda</b>\nNo agenda yet — /plan to generate one."
         return "📋 <b>Agenda</b>\n" + html.escape(status)
@@ -121,6 +124,8 @@ class StatusHandlers:
         """Agenda as a table: number, status icon, item. The number column keeps the
         'done 2' / 'missed 3' marking workflow legible."""
         items = self.agenda_feature.status_items()
+        if not items and not getattr(self.agenda_feature, "generation_enabled", True):
+            return ""
         if not items:
             return "<p><b>📋 Agenda</b><br>No agenda yet — /plan to generate one.</p>"
         head = '<tr><th>#</th><th></th><th align="left">Item</th></tr>'

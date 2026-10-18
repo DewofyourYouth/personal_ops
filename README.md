@@ -4,7 +4,7 @@ A local-first Telegram bot that acts as a personal ops layer — capturing logs,
 
 ## What it does
 
-- Proposes a daily agenda each morning using Claude, aware of your goals, priorities, calendar, and recent logs
+- Optionally proposes a daily agenda using Claude (generation is disabled by default)
 - Tracks agenda items (done/missed) and carries state across re-plans; calibrates to your real completion rate over time
 - Tracks habits (streaks, chains, implementation intentions, identities) and negative "slips", with habit-stack routines
 - Estimates nutrition for meals typed or photographed, and tracks weight progress with a chart
@@ -28,7 +28,7 @@ single-letter alias (`/p`, `/a`, `/s`, `/h`, `/l`, `/m`, `/w`, `/v`, `/b`, `/r`,
 
 | Command | Description |
 |---|---|
-| `/plan` | Generate today's agenda (also runs daily at the configured hour) |
+| `/plan` | Generate today's agenda when generation is enabled |
 | `/agenda` | Open items with ✅ Done / ❌ Missed buttons |
 | `/status` | Day snapshot: open habits, agenda, calendar, and a read on how it's going |
 | `/queue` | Queued future agenda items |
@@ -193,3 +193,49 @@ tests/
   test_reminders.py
   test_status_command.py
 ```
+
+
+## Disable or restore agenda generation
+
+Agenda generation is **off by default**. Set `OPS_AGENDA_GENERATION_ENABLED=false`
+in the running instance's `.env` and restart the bot to make the setting explicit.
+Both automatic proposals and `/plan` (`/p`) are disabled. Old proposal buttons
+cannot accept or edit proposals, and logging confirmations no longer suggest
+routing tasks onto an agenda. Empty `/status` agendas no longer prompt `/plan`.
+Manual agenda viewing, user-added items, and marking existing items remain available.
+
+Startup opens the scheduler **paused**, removes only the persisted `morning_plan`
+job, and then resumes other jobs. It does not delete `scheduler.db`, logs, queued
+items, agenda history, or any other user data. Weight charts, logging, calendar
+integration, explicit reminders, tracking nudges, and digests keep running.
+Friday candle-lighting notifications have their own job, independent of proposals.
+
+To restore proposals, set `OPS_AGENDA_GENERATION_ENABLED=true` and restart.
+`OPS_PLAN_HOUR` and `OPS_PLAN_MINUTE` still set the morning proposal time
+(default 08:00 in the active timezone), and the Friday notification time.
+Accepted boolean values are true/false, yes/no, on/off, and 1/0; typos fail startup.
+
+### Deploy and verify
+
+The CI workflow deploys pushes to `main` after tests pass; PR branches do not deploy.
+The live `.env` and mounted user data are not committed. Before deployment, back up
+`ops/log` while the bot is stopped (including SQLite WAL/SHM sidecars if present),
+retain `.env` and calendar credentials, and record the previous deployed commit.
+Do not delete or recreate persistent volumes.
+
+On the VPS, check the effective flag without exposing secrets:
+
+```sh
+docker compose exec -T bot python -c 'from ops.config import Config; print(Config.from_env().agenda_generation_enabled)'
+```
+
+After restarting with generation disabled, verify the stored job is absent:
+
+```sh
+docker compose exec -T bot python -c 'import sqlite3; from ops.config import Config; c=sqlite3.connect(Config.from_env().data_dir / "scheduler.db"); print(c.execute("SELECT id FROM apscheduler_jobs WHERE id = ?", ("morning_plan",)).fetchall())'
+```
+
+Expected output is `False` and `[]`. Check `/weight`, a test log, calendar reading,
+and a disposable reminder. `/plan` should reply that generation is disabled.
+If rolling back code, keep the backup: the old version unconditionally restores
+morning agendas. Restore generation via the flag on this version instead when possible.
