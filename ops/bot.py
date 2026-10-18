@@ -323,10 +323,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def morning_plan():
     # A scheduled job — only ever runs after post_init has set _bot.
     assert _bot is not None
-    if shabbat_.quiet_now():
+    if not config.agenda_generation_enabled or shabbat_.quiet_now():
         return
     # The "plan" sticker now fires inside send_proposal (so manual /plan shows it too).
     await agenda_feature.send_proposal(ALLOWED_USER)
+
+
+async def friday_candle_notification():
+    if shabbat_.quiet_now():
+        return
     # Friday: candle lighting is computed automatically (sunset in Beit Shemesh
     # minus the offset) — just notify, unless the user set a manual override.
     if datetime.now(current_tz()).weekday() == 4:
@@ -1143,10 +1148,21 @@ async def _post_init(application):
             "weekly_retrain": weekly_retrain,
             "weekly_goal_review": weekly_goal_review,
         },
+        agenda_generation_enabled=config.agenda_generation_enabled,
         plan_hour=PLAN_HOUR,
         plan_minute=PLAN_MINUTE,
         extra_jobs=[
             *collect_jobs(plugins),
+            {
+                "id": "friday_candle_notification",
+                "func": friday_candle_notification,
+                "trigger": "cron",
+                "kwargs": {
+                    "day_of_week": "fri",
+                    "hour": PLAN_HOUR,
+                    "minute": PLAN_MINUTE,
+                },
+            },
             {
                 "id": "staleness_check",
                 "func": _staleness_check,
@@ -1222,7 +1238,14 @@ def main():
     # Feature handlers (own their commands + callbacks via register()).
     global agenda_feature
     agenda_feature = AgendaHandlers(
-        app.bot, agenda_, queue_, gcal_, planner_, logs, ALLOWED_USER
+        app.bot,
+        agenda_,
+        queue_,
+        gcal_,
+        planner_,
+        logs,
+        ALLOWED_USER,
+        generation_enabled=config.agenda_generation_enabled,
     )
     agenda_feature.register(app)
 

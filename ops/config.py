@@ -38,6 +38,7 @@ class Config:
     # Haiku in the methods that do it. See bot.py for the rationale.
     model: str = "claude-sonnet-4-6"
     timezone: str = "Asia/Jerusalem"
+    agenda_generation_enabled: bool = False
     plan_hour: int = 8
     plan_minute: int = 0
     # Below this classifier vote-share the bot shows the category picker right away
@@ -57,6 +58,7 @@ class Config:
             context_dir=Path(os.environ.get("OPS_CONTEXT_DIR", _DEFAULT_CONTEXT_DIR)),
             model=os.environ.get("OPS_MODEL", "claude-sonnet-4-6"),
             timezone=os.environ.get("OPS_TIMEZONE", "Asia/Jerusalem"),
+            agenda_generation_enabled=_env_bool("OPS_AGENDA_GENERATION_ENABLED", False),
             plan_hour=int(os.environ.get("OPS_PLAN_HOUR", "8")),
             plan_minute=int(os.environ.get("OPS_PLAN_MINUTE", "0")),
             reclassify_confidence_threshold=float(
@@ -68,3 +70,15 @@ class Config:
     def tz(self) -> ZoneInfo:
         """The instance's timezone as a ZoneInfo, for datetime construction."""
         return ZoneInfo(self.timezone)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true/false, yes/no, on/off, or 1/0")

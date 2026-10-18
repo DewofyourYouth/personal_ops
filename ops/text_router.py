@@ -18,13 +18,13 @@ circular import (this module never imports bot.py).
 import asyncio
 import difflib
 import html
-from typing import Any
 import logging
 import os
 import re
 import tempfile
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
+from typing import Any
 
 import location
 import voice
@@ -79,7 +79,7 @@ _NUM_WORDS = {
     "ten": "10",
 }
 
-_UNICODE_JUNK = re.compile("[​-‏‪-‮⁠-⁤﻿]+")
+_UNICODE_JUNK = re.compile("[\u200b-‏‪-‮⁠-⁤﻿]+")
 
 # A "structured" nutrition entry already carries a calorie figure AND a macro breakdown
 # (e.g. "chicken bowl — 550 kcal, 40g protein"). Requiring BOTH keeps offhand mentions
@@ -2197,6 +2197,12 @@ class TextRouter:
             else []
         )
         if routing_row := self._routing_row(entry_id, tag):
+            if not getattr(self.agenda_feature, "generation_enabled", True):
+                routing_row = [
+                    b
+                    for b in routing_row
+                    if not b.callback_data.startswith("route:agenda:")
+                ]
             extra_rows = [routing_row] + extra_rows
         if self._is_low_confidence(confidence):
             return picker_keyboard(entry_id, tag, extra_rows=extra_rows)

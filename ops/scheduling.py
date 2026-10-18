@@ -9,6 +9,7 @@ once those helpers are extracted.
 
 from zoneinfo import ZoneInfo
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,6 +20,7 @@ def start(
     log_dir: str,
     jobs: dict,
     *,
+    agenda_generation_enabled: bool = False,
     plan_hour: int,
     plan_minute: int,
     extra_jobs: list = (),
@@ -45,14 +47,15 @@ def start(
         },
         timezone=tz,
     )
-    scheduler.add_job(
-        jobs["morning_plan"],
-        "cron",
-        hour=plan_hour,
-        minute=plan_minute,
-        id="morning_plan",
-        replace_existing=True,
-    )
+    if agenda_generation_enabled:
+        scheduler.add_job(
+            jobs["morning_plan"],
+            "cron",
+            hour=plan_hour,
+            minute=plan_minute,
+            id="morning_plan",
+            replace_existing=True,
+        )
     scheduler.add_job(
         jobs["remind_upcoming"],
         "interval",
@@ -128,7 +131,14 @@ def start(
             replace_existing=True,
             **spec.get("kwargs", {}),
         )
-    scheduler.start()
+    # Load persisted jobs without allowing overdue jobs to execute first.
+    scheduler.start(paused=True)
+    if not agenda_generation_enabled:
+        try:
+            scheduler.remove_job("morning_plan")
+        except JobLookupError:
+            pass  # new installation, or already removed on a previous boot
+    scheduler.resume()
     return scheduler
 
 

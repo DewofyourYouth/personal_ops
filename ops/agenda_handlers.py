@@ -5,15 +5,12 @@ its handlers are methods; the proposal conversation state (`_pending`) is
 instance state rather than a module global. Imports only leaf modules, so it
 never depends on bot.py.
 
-Note: `morning_plan` (the scheduled job) stays in bot.py — it mixes agenda with
-the Friday candle-lighting prompt — and calls `send_proposal` here.
+Note: `morning_plan` (the scheduled job) stays in bot.py and calls
+`send_proposal` here. Friday candle notifications are scheduled separately.
 """
 
 import asyncio
 import html
-
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from agenda import Agenda
 from agenda_queue import AgendaQueue
@@ -22,6 +19,8 @@ from gcal import GCal
 from logs import Logs
 from media import send_sticker
 from planner import Planner, day_type
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 from tg_common import encourage, safe_answer
 
 
@@ -35,7 +34,10 @@ class AgendaHandlers:
         planner: Planner,
         logs: Logs,
         allowed_user: int,
+        *,
+        generation_enabled: bool = True,
     ) -> None:
+        self.generation_enabled = generation_enabled
         self.bot = bot
         self.agenda = agenda
         self.queue = queue
@@ -139,6 +141,9 @@ class AgendaHandlers:
     async def cmd_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != self.allowed_user:
             return
+        if not self.generation_enabled:
+            await update.message.reply_text("Agenda generation is disabled.")
+            return
         await update.message.reply_text("Generating today's agenda…")
         await self.send_proposal(update.effective_chat.id)
 
@@ -148,7 +153,8 @@ class AgendaHandlers:
         open_items = self.agenda.get_open()
         if not open_items:
             await update.message.reply_text(
-                "No open agenda items. Use /plan to generate one."
+                "No open agenda items."
+                + (" Use /plan to generate one." if self.generation_enabled else "")
             )
             return
         text, keyboard = self._agenda_message(open_items)
@@ -180,6 +186,9 @@ class AgendaHandlers:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         query = update.callback_query
+        if not self.generation_enabled:
+            await safe_answer(query, "Agenda generation is disabled.")
+            return
         await safe_answer(query)
 
         chat_id = update.effective_chat.id
@@ -239,6 +248,8 @@ class AgendaHandlers:
         """If the user is mid-edit of a proposed item, apply their reply and
         re-render. Called by the central message dispatcher; returns True if it
         consumed the message."""
+        if not self.generation_enabled:
+            return False
         chat_id = update.effective_chat.id
         if chat_id in self._pending and "editing" in self._pending[chat_id]:
             text = update.message.text.strip()
@@ -274,6 +285,10 @@ class AgendaHandlers:
     # --- Proposal generation ---
 
     async def send_proposal(self, chat_id: int) -> None:
+        # Shared boundary: stale scheduler calls must be silent and must not
+        # consume queued items, call the LLM/calendar, or write agenda data.
+        if not self.generation_enabled:
+            return
         calendar_events = ""
         try:
             events = await asyncio.to_thread(self.gcal.get_today_events)
