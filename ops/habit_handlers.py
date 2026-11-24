@@ -131,6 +131,20 @@ _HABITIFY_NOTES_LOOKBACK_DAYS = 3
 # than the notes window since a backfill can surface days after the fact.
 _HABITIFY_COMPLETIONS_BACKFILL_DAYS = 7
 
+# Consecutive failed syncs (one every ~5 min) before a transient-looking Habitify
+# error is worth a Telegram alert. Auth errors alert on the first failure: a bad
+# key never heals itself, and a silent one cost a month of completions (2026-10-26
+# → 11-23) while the 22:45 sweep marked every habit missed.
+_HABITIFY_ALERT_AFTER_FAILURES = 3
+_HABITIFY_AUTH_STATUSES = {401, 403}
+
+# Weekly "shrink this habit" suggestions: only the worst few per week (19 habits
+# qualified at once in 2026-11 — a wall of tips is ignored), and a habit that just
+# got a suggestion waits this long, so a shrunk habit has time to show whether
+# the smaller version sticks before it's judged again.
+_MAX_WEEKLY_SUGGESTIONS = 3
+_SUGGESTION_COOLDOWN_DAYS = 28
+
 # Identity is many-to-many: a habit can vote for several identities, and an identity is
 # reinforced by several habits. This join table is the source of truth; the dormant
 # habits.identity column is kept in sync as a denormalised comma-joined cache so existing
@@ -196,6 +210,35 @@ CREATE TABLE IF NOT EXISTS habit_suggestions (
 """
 
 _INT_TO_ABBR = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
+
+# ✏️ Adjust on a weekly suggestion: what to send back, per suggested action.
+_ADJUST_PROMPT = {
+    "rename": "Send the habit as you want it (the new name).",
+    "set_cue": "Send the cue as you want it (e.g. <i>After Shacharit, I will …</i>).",
+    "set_days": "Send the days as you want them (e.g. <code>sun,tue,thu</code>).",
+    "archive": "Send a smaller version to rename it to instead of archiving.",
+}
+
+
+def _adjusted_change(action: str, text: str) -> tuple[str, dict] | None:
+    """The user's typed version of a suggested change -> (action, value). An
+    adjusted archive becomes a rename: typing a version means keep it, smaller.
+    None when a set_days reply names no recognisable day."""
+    text = text.strip()
+    match action:
+        case "set_cue":
+            return "set_cue", {"cue": text}
+        case "set_days":
+            days = sorted(
+                {
+                    Context._DAY_NAMES[t[:3]]
+                    for t in re.split(r"[\s,]+", text.lower())
+                    if t[:3] in Context._DAY_NAMES
+                }
+            )
+            return ("set_days", {"days": days}) if days else None
+        case _:
+            return "rename", {"name": text}
 
 
 def _days_to_csv(days: list[int] | None) -> str:
@@ -859,6 +902,30 @@ class HabitStore:
             "status": r["status"],
         }
 
+    def recently_suggested_habits(self, days: int) -> set[str]:
+        """Casefolded names of habits that got a suggestion (any outcome) within
+        the last `days` days."""
+        from datetime import datetime
+        from location import current_tz
+
+        cutoff = (datetime.now(current_tz()) - timedelta(days=days)).isoformat()
+        rows = self.db.query(
+            "SELECT habit FROM habit_suggestions WHERE ts >= ?", (cutoff,)
+        )
+        return {r["habit"].casefold() for r in rows}
+
+    def update_suggestion_change(
+        self, suggestion_id: int, action: str, value: dict
+    ) -> None:
+        """Replace a suggestion's change with the user's adjusted version, so the
+        record shows what was actually applied."""
+        import json
+
+        self.db.execute(
+            "UPDATE habit_suggestions SET action = ?, value = ? WHERE id = ?",
+            (action, json.dumps(value), suggestion_id),
+        )
+
     def update_suggestion_status(self, suggestion_id: int, status: str) -> None:
         self.db.execute(
             "UPDATE habit_suggestions SET status = ? WHERE id = ?",
@@ -1096,12 +1163,56 @@ class HabitHandlers:
                 )
                 self._record_habitify_failures(snapshot.get("failed", []))
                 self._habitify_completions_loaded_at = time.monotonic()
+            await self._note_habitify_sync_ok()
             return result
-        except HabitifyError:
+        except HabitifyError as exc:
             logger.exception(
                 "Habitify definition refresh failed; using cached projection"
             )
+            await self._note_habitify_sync_failed(exc)
             return None
+
+    async def _note_habitify_sync_failed(self, exc: HabitifyError) -> None:
+        """Alert once per outage: immediately for an auth error, otherwise after
+        _HABITIFY_ALERT_AFTER_FAILURES consecutive failures. Held during quiet
+        windows — the next failed sync after it ends sends it instead."""
+        self._habitify_failures = getattr(self, "_habitify_failures", 0) + 1
+        if getattr(self, "_habitify_alerted", False):
+            return
+        is_auth = exc.status in _HABITIFY_AUTH_STATUSES
+        if not is_auth and self._habitify_failures < _HABITIFY_ALERT_AFTER_FAILURES:
+            return
+        if self.quiet_window.is_quiet_at():
+            return
+        cause = (
+            "the API key was rejected — update HABITIFY_API_KEY on the VPS and "
+            "recreate the container"
+            if is_auth
+            else f"{self._habitify_failures} syncs in a row failed"
+        )
+        sent = await self._send_habitify_alert(
+            f"⚠️ Habitify sync is failing: {cause}.\n"
+            f"{str(exc)[:200]}\n\n"
+            "Until it recovers, check-offs in Habitify won't reach the bot and the "
+            "22:45 sweep will mark them missed."
+        )
+        self._habitify_alerted = sent
+
+    async def _note_habitify_sync_ok(self) -> None:
+        """Reset the failure streak; if an outage was alerted, say it recovered."""
+        self._habitify_failures = 0
+        if getattr(self, "_habitify_alerted", False):
+            self._habitify_alerted = False
+            await self._send_habitify_alert("✅ Habitify sync is working again.")
+
+    async def _send_habitify_alert(self, text: str) -> bool:
+        """Best-effort: a Telegram hiccup must not break the sync job itself."""
+        try:
+            await self.bot.send_message(chat_id=self.allowed_user, text=text)
+            return True
+        except Exception:
+            logger.exception("Could not send Habitify sync alert")
+            return False
 
     def _record_habitify_failures(self, failed: list[dict[str, str]]) -> None:
         """Turn Habitify's own explicit "failed" tap into a habit_missed entry right
@@ -1258,7 +1369,7 @@ class HabitHandlers:
         )
         app.add_handler(
             CallbackQueryHandler(
-                self.handle_suggestion, pattern="^hbs_(accept|reject):"
+                self.handle_suggestion, pattern="^hbs_(accept|reject|adjust):"
             )
         )
 
@@ -2430,12 +2541,19 @@ class HabitHandlers:
             return
         from habit_tracker import struggling_habits
 
-        strugglers = struggling_habits(self.logs)
+        recent = self.store.recently_suggested_habits(_SUGGESTION_COOLDOWN_DAYS)
+        strugglers = [
+            s
+            for s in struggling_habits(self.logs)
+            if s["name"].casefold() not in recent
+        ][:_MAX_WEEKLY_SUGGESTIONS]
         if not strugglers or not self.planner:
             return
         try:
             suggestions = await self.planner.habit_weekly_suggestions(strugglers)
         except Exception:
+            # Was a bare `return` — the job failed silently for five months.
+            logger.exception("Weekly habit suggestions failed")
             return
         _ACTION_LABEL = {
             "set_cue": "✅ Add cue",
@@ -2457,6 +2575,9 @@ class HabitHandlers:
                         InlineKeyboardButton(
                             _ACTION_LABEL.get(action, "✅ Apply"),
                             callback_data=f"hbs_accept:{sid}",
+                        ),
+                        InlineKeyboardButton(
+                            "✏️ Adjust", callback_data=f"hbs_adjust:{sid}"
                         ),
                         InlineKeyboardButton("Skip", callback_data=f"hbs_reject:{sid}"),
                     ]
@@ -2514,19 +2635,73 @@ class HabitHandlers:
             )
             return
 
-        # Accept — apply the mechanical change
+        if action_str == "hbs_adjust":
+            if not hasattr(self, "_awaiting_adjust"):
+                self._awaiting_adjust = {}
+            self._awaiting_adjust[query.message.chat_id] = suggestion_id
+            await query.edit_message_text(
+                f"{html.escape(sugg['display'])}\n\n✏️ "
+                + _ADJUST_PROMPT.get(sugg["action"], _ADJUST_PROMPT["rename"])
+                + " Or /cancel.",
+                parse_mode="HTML",
+            )
+            return
+
+        result = await self._apply_suggestion(sugg)
+        if result.startswith("✅"):
+            self.store.update_suggestion_status(suggestion_id, "accepted")
+        await query.edit_message_text(
+            f"{html.escape(sugg['display'])}\n\n{result}", parse_mode="HTML"
+        )
+
+    async def try_handle_text(self, update: Update, text: str) -> bool:
+        """If an ✏️ Adjust is pending, this reply is the user's own version of the
+        suggested change: store it on the suggestion, then apply it exactly like
+        ✅ would. Returns True if it consumed the message."""
+        # Only called from bot.py's text-message handler, which always has a
+        # message (and so a chat).
+        assert update.effective_chat is not None and update.message is not None
+        awaiting = getattr(self, "_awaiting_adjust", {})
+        sid = awaiting.pop(update.effective_chat.id, None)
+        if sid is None:
+            return False
+        if text.strip().lower() == "/cancel":
+            await update.message.reply_text("Adjustment cancelled — nothing changed.")
+            return True
+        sugg = self.store.get_suggestion(sid)
+        if not sugg or sugg["status"] != "pending":
+            await update.message.reply_text("That suggestion is no longer pending.")
+            return True
+        adjusted = _adjusted_change(sugg["action"], text)
+        if adjusted is None:
+            awaiting[update.effective_chat.id] = sid  # let them try again
+            await update.message.reply_text(
+                "Couldn't read that as days — try e.g. <code>sun,tue,thu</code>, "
+                "or /cancel.",
+                parse_mode="HTML",
+            )
+            return True
+        action, value = adjusted
+        self.store.update_suggestion_change(sid, action, value)
+        sugg = {**sugg, "action": action, "value": value}
+        result = await self._apply_suggestion(sugg)
+        if result.startswith("✅"):
+            self.store.update_suggestion_status(sid, "accepted")
+        await update.message.reply_text(result, parse_mode="HTML")
+        return True
+
+    async def _apply_suggestion(self, sugg: dict) -> str:
+        """Apply a suggestion's mechanical change. Returns the HTML result line;
+        anything not starting with ✅ means nothing changed and the suggestion
+        should stay pending."""
         habit = sugg["habit"]
         action = sugg["action"]
         val = sugg["value"]
         if self.habitify_is_source and action in {"set_days", "rename", "archive"}:
-            self.store.update_suggestion_status(suggestion_id, "rejected")
-            await query.edit_message_text(
-                f"{html.escape(sugg['display'])}\n\n"
-                "Habitify owns that field. If you want this change, make it in "
-                "Habitify and Personal Ops will pick it up automatically.",
-                parse_mode="HTML",
-            )
-            return
+            # Habitify owns these fields, so the change is made there and pulled
+            # back by a forced sync (which also records the old name as an alias,
+            # keeping the habit's history attached after a rename).
+            return await self._apply_suggestion_in_habitify(habit, action, val)
         try:
             # `matched`/`h` come back None when the habit named in the suggestion
             # no longer resolves (renamed/archived/removed since the suggestion
@@ -2535,6 +2710,7 @@ class HabitHandlers:
             # suggestion pending (retryable) instead of being silently marked
             # "accepted" for a change that never actually happened.
             success = True
+            result = ""
             if action == "set_cue":
                 cue = val.get("cue", "")
                 matched = self.store.set_cue_by_name(habit, cue)
@@ -2585,17 +2761,59 @@ class HabitHandlers:
                 success = False
                 result = "Unknown action type."
 
-            if success:
-                self.store.update_suggestion_status(suggestion_id, "accepted")
-            await query.edit_message_text(
-                f"{html.escape(sugg['display'])}\n\n{result}",
-                parse_mode="HTML",
-            )
+            return result if success else f"<i>{result}</i>"
         except Exception as e:
-            await query.edit_message_text(
-                f"{html.escape(sugg['display'])}\n\n<i>Failed to apply: {html.escape(str(e))}</i>",
-                parse_mode="HTML",
+            return f"<i>Failed to apply: {html.escape(str(e))}</i>"
+
+    async def _apply_suggestion_in_habitify(
+        self, habit: str, action: str, val: dict
+    ) -> str:
+        """Make an accepted rename/set_days/archive in Habitify, then re-sync.
+        Returns the HTML result line; anything not starting with ✅ is a failure
+        and leaves the suggestion pending so the button can be retried."""
+        h = self.store._habit_by_name(habit)
+        if h is None or not h["habitify_id"]:
+            return f"Habit not found in Habitify: {html.escape(habit)}"
+        sync = getattr(self, "habitify_sync", None)
+        if not isinstance(sync, HabitifyHabitSync):
+            return "<i>Habitify isn't configured — nothing changed.</i>"
+        client = sync.client
+        hid = h["habitify_id"]
+        name = html.escape(h["name"])
+        try:
+            match action:
+                case "rename":
+                    new_name = str(val.get("name", "")).strip()
+                    if not new_name:
+                        return "<i>Suggestion had no new name — nothing changed.</i>"
+                    await asyncio.to_thread(
+                        client.update_habit, hid, {"name": new_name}
+                    )
+                    result = f"✅ <b>{name}</b> → <b>{html.escape(new_name)}</b>"
+                case "set_days":
+                    days = val.get("days") or None
+                    occurrence = {"type": "weekDays", "days": _to_habitify_days(days)}
+                    await asyncio.to_thread(
+                        client.update_habit, hid, {"occurrence": occurrence}
+                    )
+                    days_str = (
+                        ", ".join(_INT_TO_ABBR[d] for d in sorted(days))
+                        if days
+                        else "daily"
+                    )
+                    result = f"✅ Schedule for <b>{name}</b>: {days_str}"
+                case "archive":
+                    await asyncio.to_thread(client.archive, hid)
+                    result = f"✅ <b>{name}</b> archived — history is kept."
+                case _:
+                    return "Unknown action type."
+        except HabitifyError as exc:
+            return (
+                f"<i>Habitify rejected the change ({html.escape(str(exc)[:200])}). "
+                "Nothing changed — tap again to retry.</i>"
             )
+        await self.refresh_habits_from_habitify(force=True)
+        return result + " (updated in Habitify)"
 
     def _manage_message(self) -> tuple[str, InlineKeyboardMarkup]:
         rows = []
