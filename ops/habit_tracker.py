@@ -217,9 +217,14 @@ def struggling_habits(
     window: int = 14,
     threshold: float = 0.5,
     logged_by_day: dict[str, list[str]] | None = None,
+    min_due_days: int = 10,
 ) -> list[dict]:
     """Tracked habits whose completion over the last `window` due days is below
     `threshold` — the 'these need a strategy' set. Reads the habits table directly.
+
+    Meant to catch a habit that's *consistently* missed, not one with a couple of
+    off days: under 50% of 14 due days is 8+ misses, and a habit with fewer than
+    `min_due_days` due days of history is too new to judge.
 
     Excludes habits never once done (longest streak 0): those are not-yet-started,
     not failing. Returns worst-first dicts with the stats the strategy call needs.
@@ -246,15 +251,29 @@ def struggling_habits(
             if pf_raw and pu_raw
             else None
         )
+        first_done = next(
+            (
+                d
+                for d in sorted(logged_by_day)
+                if any(_matches(r["name"], h) for h in logged_by_day[d])
+            ),
+            None,
+        )
+        if first_done is None:  # never started — not failing, just unbegun
+            continue
+        # Count due days only from the first completion on: without this bound a
+        # habit started 5 days ago (done 5/5) scored 5/14 against 9 days it
+        # didn't exist yet. A habit shrunk via rename starts fresh the same way.
         chain = recent_chain(
             logs,
             r["name"],
             due,
             n=window,
+            lookback=(today - date.fromisoformat(first_done)).days + 1,
             logged_by_day=logged_by_day,
             paused=paused,
         )
-        if not chain:
+        if len(chain) < min_due_days:
             continue
         rate = sum(chain) / len(chain)
         if rate >= threshold:

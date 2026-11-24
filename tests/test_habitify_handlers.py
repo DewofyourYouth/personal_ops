@@ -1,7 +1,6 @@
 from datetime import date, datetime
 from pathlib import Path
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -433,3 +432,75 @@ async def test_daily_habit_check_syncs_habitify_notes_before_rendering(tmp_path)
 
     h.sync_habitify_notes.assert_called_once()
     h.sync_habitify_completions_backfill.assert_called_once()
+
+
+# --- Sync-failure alerts. A rejected key once failed silently for a month
+# (2026-10-26 → 11-23) while the 22:45 sweep marked every habit missed. ---
+
+
+def _alerting_handlers(tmp_path, error: HabitifyError) -> HabitHandlers:
+    h = _handlers_with_store(tmp_path)
+    h.allowed_user = 1
+    h.bot = MagicMock()
+    h.bot.send_message = AsyncMock()
+    h.quiet_window = MagicMock()
+    h.quiet_window.is_quiet_at.return_value = False
+    sync = MagicMock()
+    sync.definition_habits.side_effect = error
+    h.habitify_sync = sync
+    return h
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_alerts_immediately_and_only_once(tmp_path):
+    h = _alerting_handlers(tmp_path, HabitifyError(401, "Invalid API key"))
+
+    for _ in range(3):
+        await h.refresh_habits_from_habitify(force=True)
+
+    h.bot.send_message.assert_awaited_once()
+    assert "API key" in h.bot.send_message.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_alerts_only_after_a_streak(tmp_path):
+    from habit_handlers import _HABITIFY_ALERT_AFTER_FAILURES
+
+    h = _alerting_handlers(tmp_path, HabitifyError(503, "unavailable"))
+
+    for _ in range(_HABITIFY_ALERT_AFTER_FAILURES - 1):
+        await h.refresh_habits_from_habitify(force=True)
+    h.bot.send_message.assert_not_awaited()
+
+    await h.refresh_habits_from_habitify(force=True)
+    h.bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_an_alerted_outage_says_so_once(tmp_path):
+    h = _alerting_handlers(tmp_path, HabitifyError(401, "Invalid API key"))
+    await h.refresh_habits_from_habitify(force=True)
+
+    h.habitify_sync.definition_habits.side_effect = None
+    h.habitify_sync.definition_habits.return_value = []
+    h.habitify_sync.completions_for_date.return_value = {
+        "completed": [],
+        "resolved_ids": [],
+    }
+    await h.refresh_habits_from_habitify(force=True)
+    await h.refresh_habits_from_habitify(force=True)
+
+    texts = [c.kwargs["text"] for c in h.bot.send_message.call_args_list]
+    assert len(texts) == 2 and "working again" in texts[1]
+
+
+@pytest.mark.asyncio
+async def test_alert_is_held_during_a_quiet_window_then_sent(tmp_path):
+    h = _alerting_handlers(tmp_path, HabitifyError(401, "Invalid API key"))
+    h.quiet_window.is_quiet_at.return_value = True
+    await h.refresh_habits_from_habitify(force=True)
+    h.bot.send_message.assert_not_awaited()
+
+    h.quiet_window.is_quiet_at.return_value = False
+    await h.refresh_habits_from_habitify(force=True)
+    h.bot.send_message.assert_awaited_once()

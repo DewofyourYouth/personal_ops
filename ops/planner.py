@@ -987,7 +987,10 @@ class Planner:
         client = anthropic.AsyncAnthropic(max_retries=4)
         response = await client.messages.create(
             model=self.model,
-            max_tokens=800,
+            # 800 truncated the tool call mid-array once more than a few habits
+            # qualified, and a truncated call parses to zero suggestions — the
+            # weekly job sent nothing from 2026-06-14 to 2026-11-24.
+            max_tokens=2000,
             tools=[
                 {
                     "name": "habit_suggestions",
@@ -1051,16 +1054,25 @@ class Planner:
                 {
                     "type": "text",
                     "text": (
-                        "You're an Atomic Habits coach. For each struggling habit, produce one "
-                        "structured suggestion using James Clear's Four Laws: Obvious (clear cue), "
-                        "Attractive, Easy (two-minute rule), Satisfying.\n\n"
+                        "You're an Atomic Habits coach. Each habit below has been missed "
+                        "consistently (most of its recent due days), so the habit as defined "
+                        "is too big — not a willpower problem. Produce one structured "
+                        "suggestion per habit using James Clear's Four Laws, leaning hardest "
+                        "on Easy (two-minute rule).\n\n"
                         "For each habit, pick ONE mechanical change that would most unblock it:\n"
-                        "- set_cue: add or improve the implementation intention "
-                        "('After [X], I will [habit]') — prefer this, it's highest-leverage\n"
-                        "- set_days: reduce the schedule (e.g. 7→3 days/week) to make success easier\n"
-                        "- rename: shrink to a two-minute version ('60 min workout' → "
-                        "'Put on gym clothes')\n"
-                        "- archive: park it — too much friction, revisit later\n\n"
+                        "- rename: shrink it to a smaller, more atomic version that's nearly "
+                        "impossible to skip ('Eat at least 100 grams of protein' → 'Protein "
+                        "with breakfast'; '60 min workout' → 'Put on gym clothes'). The new "
+                        "name IS the new habit, so it must be concrete and done in ~2 minutes. "
+                        "Prefer this by default.\n"
+                        "- set_cue: add/improve the implementation intention ('After [X], I "
+                        "will [habit]') — only when the habit is already small and the "
+                        "problem is clearly forgetting\n"
+                        "- set_days: reduce the schedule (e.g. 7→3 days/week)\n"
+                        "- archive: park it — only for something near 0% for weeks that "
+                        "isn't a core value\n\n"
+                        "In `display`, state the miss pattern (e.g. '2/14 due days'), the "
+                        "likely friction, and the exact smaller version.\n\n"
                         "days are 0=Mon,1=Tue,2=Wed,3=Thu,4=Fri,5=Sat,6=Sun.\n\n"
                         "No shame, no moralizing, no lectures. Be concrete and small."
                     ),
@@ -1069,6 +1081,10 @@ class Planner:
             ],
             messages=[{"role": "user", "content": json.dumps(strugglers)}],
         )
+        if response.stop_reason == "max_tokens":
+            raise RuntimeError(
+                "habit_weekly_suggestions hit max_tokens — tool call truncated"
+            )
         for block in response.content:
             if block.type == "tool_use":
                 return block.input.get("suggestions", [])

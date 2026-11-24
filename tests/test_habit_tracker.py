@@ -3,7 +3,6 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ops"))
 from habit_tracker import (
@@ -11,7 +10,6 @@ from habit_tracker import (
     _is_due,
     anchor_flow_state,
     compute_streak,
-    load_habit_logs,
     missed_last_due_day,
     recent_chain,
 )
@@ -541,3 +539,36 @@ def test_two_due_day_misses_after_saturday_still_break_streak(tmp_path):
     assert current == 0, (
         "Two consecutive missed due days (Sun+Mon) must break the streak even with Sat bonus"
     )
+
+
+def test_struggling_ignores_a_habit_too_new_to_judge(tmp_path):
+    """Regression: the 14-due-day window used to reach back before a habit existed,
+    so a habit started 5 days ago and done every day scored 5/14 — "struggling"."""
+    from habit_tracker import struggling_habits
+
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Floss',1)")
+    today = date.today()
+    for i in range(5):
+        d = today - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Floss")
+
+    assert struggling_habits(logs, window=14, threshold=0.5) == []
+
+
+def test_struggling_ignores_a_couple_of_misses(tmp_path):
+    """A habit missed 3 of its last 14 due days is fine — only consistent misses count."""
+    from habit_tracker import struggling_habits
+
+    logs = Logs(str(tmp_path))
+    logs.db.execute(_HABITS_TABLE)
+    logs.db.execute("INSERT INTO habits (section,name,tracked) VALUES ('S','Floss',1)")
+    today = date.today()
+    for i in range(30):
+        if i in (2, 6, 9):
+            continue
+        d = today - timedelta(days=i)
+        logs.db.insert_entry(f"{d}T09:00:00+03:00", d.isoformat(), "habit", "Floss")
+
+    assert struggling_habits(logs, window=14, threshold=0.5) == []
